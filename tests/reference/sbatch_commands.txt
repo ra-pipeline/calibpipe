@@ -1,0 +1,46 @@
+=====BEGIN basic_line1_explicit_recipe=====
+-----COMMAND-----
+sbatch -p plwg -N 1 -n 8 --export=ALL --job-name=X1_X1_2026-01-01 --mail-user=testuser --mail-type=ALL --mem=248G -o batch.X1_X1_2026-01-01.out -e batch.X1_X1_2026-01-01.err <SBATCH_SCRIPT>
+-----SCRIPT-----
+#!/bin/sh
+ulimit -Sn 8192
+umask 002
+<CALIBPIPEIF> --staticobscal --mous=uid___A001_X1_X1 --recipe=calimage --config=<CONFIG> --env=main
+=====END basic_line1_explicit_recipe=====
+=====BEGIN basic_line2_default_recipe=====
+-----COMMAND-----
+sbatch -p plwg -N 1 -n 8 --export=ALL --job-name=X2_X2_2026-01-01 --mail-user=testuser --mail-type=ALL --mem=248G -o batch.X2_X2_2026-01-01.out -e batch.X2_X2_2026-01-01.err <SBATCH_SCRIPT>
+-----SCRIPT-----
+#!/bin/sh
+ulimit -Sn 8192
+umask 002
+<CALIBPIPEIF> --staticobscal --mous=uid___A001_X2_X2 --recipe=calimage --config=<CONFIG> --env=main
+=====END basic_line2_default_recipe=====
+=====BEGIN custom_cores_mem_batch2=====
+-----COMMAND-----
+sbatch -p batch2 -N 1 -n 4 --export=ALL --job-name=X3_X3_2026-01-01 --mail-user=testuser --mail-type=ALL --mem=32G -o batch.X3_X3_2026-01-01.out -e batch.X3_X3_2026-01-01.err <SBATCH_SCRIPT>
+-----SCRIPT-----
+#!/bin/sh
+ulimit -Sn 8192
+umask 002
+<CALIBPIPEIF> --staticobscal --mous=uid___A001_X3_X3 --recipe=calimage --config=<CONFIG> --env=main
+=====END custom_cores_mem_batch2=====
+=====BEGIN extra_args_and_pl2025_env=====
+-----COMMAND-----
+sbatch -p plwg -N 1 -n 8 --export=ALL --job-name=X3_X3_2026-01-01 --mail-user=testuser --mail-type=ALL --mem=248G -o batch.X3_X3_2026-01-01.out -e batch.X3_X3_2026-01-01.err <SBATCH_SCRIPT>
+-----SCRIPT-----
+#!/bin/sh
+ulimit -Sn 8192
+umask 002
+<CALIBPIPEIF> --staticobscal --mous=uid___A001_X3_X3 --recipe=calimage --config=<CONFIG> --env=pl2025 --legacy --noupdate
+=====END extra_args_and_pl2025_env=====
+=====BEGIN custom_outfile_errfile_mail_type=====
+-----COMMAND-----
+sbatch -p plwg -N 1 -n 8 --export=ALL --job-name=X3_X3_2026-01-01 --mail-user=testuser --mail-type=FAIL --mem=248G -o my.out -e my.err <SBATCH_SCRIPT>
+-----SCRIPT-----
+#!/bin/sh
+ulimit -Sn 8192
+umask 002
+<CALIBPIPEIF> --staticobscal --mous=uid___A001_X3_X3 --recipe=calimage --config=<CONFIG> --env=main
+=====END custom_outfile_errfile_mail_type=====
+

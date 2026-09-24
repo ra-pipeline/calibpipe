@@ -1,0 +1,25 @@
+# Reference for tests/test_calibPipeIF.py -- the ordered sequence of
+# pipelineMakeRequest/copy/casa calls each scenario produces. This file IS
+# the spec these tests check against (review/diff it directly), same as
+# reference/sbatch_commands.txt is for test_runbatch.py.
+#
+# One call per line, "<category> | <field> | <field> ...". <TMP> stands in
+# for this test run's temp fixture directory (SCIPIPE_ROOTDIR and the
+# --flag dir both live under it) -- the only nondeterministic part of any
+# recorded call.
+#
+# Note the doubled slashes in some working-dir paths below (".../MOUS_.../
+# //working/") are not a typo -- they're a real artifact of how
+# calibPipeIF.py builds ppmr_fulldir via string concatenation, faithfully
+# reproduced here rather than cleaned up.
+=====BEGIN with_flag_dir=====
+pipelineMakeRequest | pipelineMakeRequest uid://A001/X1/X1 intents_hifa.xml procedure_hifa_calimage.xml true false
+copy | shutil.copy | <TMP>/flagdir/uid___A001_X1_Xc.flagtsystemplate.txt | <TMP>/rootdir/2019.1.01234.S_run1/SOUS_uid___A001_X1_Xa/GOUS_uid___A001_X1_Xb/MOUS_uid___A001_X1_Xc///working/
+copy | shutil.copy | <TMP>/flagdir/uid___A001_X1_Xc.flagtsystemplate.txt | <TMP>/rootdir/2019.1.01234.S_run1/SOUS_uid___A001_X1_Xa/GOUS_uid___A001_X1_Xb/MOUS_uid___A001_X1_Xc///working/
+copy | shutil.copytree | <TMP>/flagdir/uid___A001_X1_Xc.ms.wvr | <TMP>/rootdir/2019.1.01234.S_run1/SOUS_uid___A001_X1_Xa/GOUS_uid___A001_X1_Xb/MOUS_uid___A001_X1_Xc//working/uid___A001_X1_Xc.ms.wvr
+casa | xvfb-run -d /fake/casa/main/bin/mpicasa -n 8  /fake/casa/main/bin/casa --nocrashreport --notelemetry --nogui --agg -c "eppr.executeppr('../working/PPR_uid___A001_X1_Xc.xml',importonly=True, loglevel='debug');execfile('sacmPL-fixes.casa.py.txt');eppr.executeppr('../working/PPR_uid___A001_X1_Xc.xml',importonly=False,loglevel='debug');exit;"
+=====END with_flag_dir=====
+=====BEGIN without_flag_dir=====
+pipelineMakeRequest | pipelineMakeRequest uid://A001/X1/X1 intents_hifa.xml procedure_hifa_calimage.xml true false
+casa | xvfb-run -d /fake/casa/main/bin/mpicasa -n 8  /fake/casa/main/bin/casa --nocrashreport --notelemetry --nogui --agg -c "eppr.executeppr('../working/PPR_uid___A001_X1_Xc.xml',importonly=True, loglevel='debug');execfile('sacmPL-fixes.casa.py.txt');eppr.executeppr('../working/PPR_uid___A001_X1_Xc.xml',importonly=False,loglevel='debug');exit;"
+=====END without_flag_dir=====

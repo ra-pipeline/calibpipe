@@ -1,0 +1,5 @@
+# sample pipefile -- comments and blank lines below must be skipped
+
+uid___A001_X1_X1 calimage
+
+uid___A001_X2_X2

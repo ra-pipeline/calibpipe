@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local personal configs (never commit your own)
+/config.toml
+/config-*.toml
+
+# Slurm batch logs
+batch*.err
+batch*.out
+*.log

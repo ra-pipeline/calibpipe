@@ -1,0 +1,66 @@
+# Example calibpipe personal config.
+#
+# Copy this file to config.toml in the same directory as calibPipeIF.py
+# (gitignored -- see .gitignore), and edit the values below to point at your
+# own CASA builds and pipeline checkouts. You can keep as many
+# differently-named copies as you like (config-testing.toml,
+# config-2026val.toml, ...) and select one at runtime with
+# --config=<path> or $CALIBPIPE_CONFIG.
+
+default_env = "main"
+
+[paths]
+# heuristics_root is OPTIONAL. calibPipeIF.py normally lives inside a
+# pipeline branch checkout's own scripts/ directory, so if this isn't set,
+# SCIPIPE_HEURISTICS defaults to that checkout itself (one level up from
+# wherever calibPipeIF.py is running from -- "../").
+#
+# Only set heuristics_root if you want --env to select among *other*
+# branch checkouts elsewhere on disk, one subdirectory per branch name
+# (e.g. .../branches/main, .../branches/remy).
+# heuristics_root = "/lustre/naasc/sciops/comm/rindebet/pipeline/branches"
+
+# {user} is substituted with $USER. These directories are created if missing.
+scipipe_rootdir = "/lustre/naasc/sciops/comm/{user}/pipeline/root"
+scipipe_logdir  = "/lustre/naasc/sciops/comm/{user}/pipeline/logs"
+pickle_dir     = "/lustre/naasc/sciops/comm/{user}/pipeline/pickles"
+
+obscaldir      = "/lustre/naasc/sciops/comm/rindebet/pipeline/obscal2021"
+aUdir          = "/home/casa/contrib/AIV/science/analysis_scripts/"
+validation_dir = "/lustre/naasc/projects/pipeline_validation_c8/CASA6.1.63"
+
+
+# Each [envs.<name>] table is one selectable CASA + pipeline-branch
+# combination, picked with --env=<name>. `branch` defaults to the table
+# name itself if not given. Adding a new CASA build or branch is just
+# adding a new table here -- no script forking required.
+
+[envs.main]
+casa_root = "/stor/naasc/sciops/comm/dkunneri/pipeline/CASA_PL/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12.el8"
+
+[envs.remy]
+casa_root = "/stor/naasc/sciops/comm/dkunneri/pipeline/CASA_PL/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12.el8"
+heuristics_dir = "/lustre/naasc/sciops/comm/rindebet/pipeline/branches/remy"
+
+# "internal" isn't a separate env -- it's a way any env's pipeline
+# heuristics can live packaged inside its own casa_root rather than in a
+# separate branch checkout: set heuristics_dir to override
+# heuristics_root/branch. {casa_root} and {branch} are available as
+# substitutions.
+[envs.pl2025]
+casa_root = "/lustre/naasc/sciops/comm/rindebet/casa/casa-6.6.6-17-pipeline-2025.1.0.35-py3.10.el8"
+heuristics_dir = "{casa_root}/pipeline"
+
+
+# [site] is optional -- these are the same for everyone at NAASC, so
+# envconfig.py ships built-in defaults for all of them. Only set this table
+# (or individual keys within it) if your site or account differs.
+# [site]
+# java_home = "/usr/lib/jvm/java-21-openjdk-21.0.6.0.7-1.el8.x86_64"
+# pmr_home = "/home/pipetools/latest/build"
+# acsdata = "/home/pipedrive/acsdata"
+# datapacker_home = "/home/pipedrive/datapacker/current"
+# flux_service_url = "https://almascience.org/sc/flux"
+# flux_service_url_backup = "https://asa.alma.cl/sc/flux"
+# casa_enable_telemetry = false
+# submit_host = "cvpost-master-1"   # runbatch.py refuses to run elsewhere if set

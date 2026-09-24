@@ -1,0 +1,10 @@
+# Same as config.toml but with a submit_host set, for testing
+# check_submit_host()'s abort-on-mismatch behavior.
+
+default_env = "main"
+
+[site]
+submit_host = "the-required-submit-host"
+
+[envs.main]
+casa_root = "/fake/casa/main"

@@ -1,0 +1,8 @@
+# Fixture config for testing runbatch.py
+default_env = "main"
+
+[envs.main]
+casa_root = "/fake/casa/main"
+
+[envs.pl2025]
+casa_root = "/fake/casa/pl2025"
