@@ -45,6 +45,9 @@ calibpipe = "calibpipe.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+calibpipe = ["templates/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"

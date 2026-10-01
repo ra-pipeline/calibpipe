@@ -1,0 +1,16 @@
+"""Auto-generated CASA startup script for calibpipe run."""
+import os
+import sys
+
+# Ensure custom pipeline heuristics checkout takes precedence if configured
+heuristics = os.environ.get("SCIPIPE_HEURISTICS")
+if heuristics and os.path.isdir(heuristics):
+    sys.path.insert(0, os.path.abspath(heuristics))
+
+# Initialize ALMA Science Pipeline CLI and execution interface
+try:
+    import pipeline
+    pipeline.initcli()
+    import pipeline.infrastructure.executeppr as eppr
+except Exception as exc:
+    print(f"[calibpipe] Warning: Failed to import or initialize pipeline: {exc}", file=sys.stderr)

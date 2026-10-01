@@ -22,5 +22,11 @@ htmlcov/
 # Slurm batch logs & job files
 batch*.err
 batch*.out
+batch*.sbatch
+*.sbatch
 *.log
 *.run
+myjob*.txt
+
+# Editor / IDE
+*.code-workspace

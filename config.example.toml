@@ -51,16 +51,22 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 # 2. Environments ([envs.<name>])
 # ------------------------------------------------------------------------------
 # Each table defines a selectable CASA + pipeline configuration.
+# Environments can be either:
+#   A) Traditional monolithic CASA installation (via 'casa_root')
+#   B) Modular CASA environment managed by Pixi (via 'pixi_dir')
+#
 # Select at runtime with: calibpipe run --env=<name> (or calibpipe batch ... --env=<name>)
 #
 # Available fields per environment:
-#   casa_root      [Required] Directory containing bin/casa and bin/mpicasa.
+#   casa_root      [Required for A] Directory containing bin/casa and bin/mpicasa.
+#   pixi_dir       [Required for B] Directory containing pyproject.toml / pixi.toml.
+#   pixi_env       [Optional for B] Target Pixi environment name (default: "default").
 #   branch         [Optional] Branch name (defaults to table name, e.g. "main").
 #   heuristics_dir [Optional] Custom pipeline checkout path. Supports template
-#                             variables '{casa_root}' and '{branch}'. If omitted,
-#                             uses bundled CASA heuristics or heuristics_root.
+#                             variables '{casa_root}', '{pixi_dir}', and '{branch}'.
+#                             If omitted in Pixi mode, defaults to {pixi_dir}/pipeline.
 
-# Default production environment
+# Default production environment (Monolithic CASA)
 [envs.main]
 casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 
@@ -74,14 +80,22 @@ heuristics_dir = "/data/pipeline/branches/dev"
 casa_root = "/opt/casa/casa-6.6.6-17-pipeline-2025.1.0.35-py3.10"
 heuristics_dir = "{casa_root}/pipeline"
 
+# Example: Modular CASA environment managed by Pixi
+[envs.modular]
+pixi_dir = "/data/pipeline/branches/main"
+# pixi_env = "default"                 # Optional environment name in pixi workspace (default: "default")
+# branch = "main"                      # Optional branch name (defaults to table name)
+# heuristics_dir = "{pixi_dir}/pipeline" # Optional custom heuristics path (defaults to {pixi_dir}/pipeline)
+
 # ------------------------------------------------------------------------------
 # 3. Site & Cluster Overrides ([site]) (Optional)
 # ------------------------------------------------------------------------------
-# Built-in defaults match NAASC cluster tooling.
-# Uncomment and adjust these settings only if your cluster host or tooling paths differ.
+# Built-in defaults are generic fallbacks (/opt/pipetools/latest, etc.).
+# Configure this section to match your site or observatory cluster tooling paths.
 #
 # [site]
 # submit_host = "submit-node-1"           # Refuses to submit Slurm batches unless run on this host
+# pixi_bin = "/opt/pixi/bin/pixi"        # Custom Pixi executable path (defaults to 'pixi' in PATH)
 # java_home = "/usr/lib/jvm/java-21"      # Java runtime for PMR and datapacker
 # pmr_home = "/opt/pipetools/latest"      # pipelineMakeRequest installation root
 # acsdata = "/opt/pipedrive/acsdata"      # ACS data directory
@@ -89,3 +103,37 @@ heuristics_dir = "{casa_root}/pipeline"
 # flux_service_url = "https://almascience.org/sc/flux"
 # flux_service_url_backup = "https://asa.alma.cl/sc/flux"
 # casa_enable_telemetry = false           # Set to true to enable CASA telemetry
+# use_custom_rcdir = true                 # Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: true)
+
+# ------------------------------------------------------------------------------
+# 4. Slurm Batch Job Defaults ([batch]) (Optional)
+# ------------------------------------------------------------------------------
+# Defaults when submitting jobs via 'calibpipe batch':
+#
+# [batch]
+# queue = "plwg"                          # Slurm partition/queue
+# cores = 8                               # Cores per batch job (--ntasks)
+# mem = 248                               # Memory in GB per batch job (--mem; mutually exclusive with mem_per_cpu)
+# node = "1"                              # Number of nodes (--nodes)
+# mail_type = "ALL"                       # Slurm email notification type (--mail-type)
+# walltime = "24:00:00"                   # Slurm walltime limit (--time; omitted if unset)
+# nodelist = "cvpost01"                   # Pin jobs to a specific node or node list (--nodelist)
+# chdir = "/lustre/pipeline/working"      # Slurm working directory override (--chdir)
+# cpus_per_task = 4                       # CPUs per MPI task for mpicasa (--cpus-per-task)
+# mem_per_cpu = "30G"                     # Memory per CPU (--mem-per-cpu; replaces mem if set)
+# hint = "nomultithread"                  # Scheduler binding hint (--hint)
+# ntasks_per_core = 1                     # Tasks per core (1 to disable hyperthreading)
+# distribution = "cyclic:cyclic"          # Task distribution policy (--distribution)
+# no_requeue = true                       # Prevent job requeuing on node failure (--no-requeue, default: true)
+
+# ------------------------------------------------------------------------------
+# 5. Pipeline Run Defaults ([run]) (Optional)
+# ------------------------------------------------------------------------------
+# Defaults when executing 'calibpipe run':
+#
+# [run]
+# recipe = "calimage"                     # Pipeline recipe (cal, calimage, image, etc.)
+# ncores = 8                              # Number of cores for CASA/mpicasa
+# loglevel = "debug"                      # Pipeline log level
+# useresume = false                       # Use break/resume instead of two contexts
+

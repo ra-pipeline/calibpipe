@@ -55,6 +55,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print plain KEY=value pairs instead of 'export KEY=value'",
     )
 
+    # 'config' subcommand
+    config_parser = subparsers.add_parser(
+        "config",
+        help="Inspect resolved configuration values, paths, and environment definitions",
+    )
+    config_parser.add_argument("action", nargs="?", default="show", choices=["show"], help="Action to perform (default: show)")
+    config_parser.add_argument("--config", help="Path to TOML config file")
+    config_parser.add_argument("--env", help="[envs.<name>] table to inspect")
+
     return parser
 
 
@@ -74,7 +83,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     # Ergonomic routing: if first arg is not a known subcommand or global option,
     # assume the user wants `run` (e.g. `calibpipe --mous=uid://...`)
-    known_commands = {"run", "batch", "env", "-h", "--help", "-V", "--version"}
+    known_commands = {"run", "batch", "env", "config", "-h", "--help", "-V", "--version"}
     if args_list[0] not in known_commands:
         args_list.insert(0, "run")
 
@@ -93,6 +102,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             spec = envconfig.resolve_env(cfg, args.env)
             env = envconfig.build_environment(cfg, spec, subdir=args.subdir)
             print(envconfig.format_shell_exports(env, export=not args.print_env))
+        except envconfig.ConfigError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif args.subcommand == "config":
+        try:
+            cfg_path = envconfig.find_config_path(args.config)
+            cfg = envconfig.load_config(cfg_path)
+            print(envconfig.format_config_overview(cfg, env_name=args.env, config_path=cfg_path))
         except envconfig.ConfigError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)

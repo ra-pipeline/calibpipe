@@ -23,15 +23,20 @@ The package keeps site-specific execution details in TOML configuration rather t
 
 ## Quick Start
 
-### 1. Installation
+### 1. Installation & Environment Setup
 
-Install in editable mode for local development:
+Using `uv` (recommended):
 ```bash
-pip install -e .
+# Sync local virtual environment with dev and docs tools:
+uv sync --extra dev --extra docs
+
+# Or install globally as an isolated CLI tool on your cluster account:
+uv tool install --editable .
 ```
-Or install in an isolated environment via `pipx` (recommended on multi-user clusters):
+
+Alternative pip / pipx methods:
 ```bash
-pipx install .
+pip install -e .     # or: pipx install .
 ```
 
 ### 2. Configuration
