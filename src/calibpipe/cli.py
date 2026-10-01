@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Resolve and print CASA/pipeline environment variables for shell sourcing",
     )
     env_parser.add_argument("--config", help="Path to TOML config file")
+    env_parser.add_argument(
+        "--no-site-config",
+        action="store_true",
+        default=False,
+        help="Do not load site-level configuration",
+    )
     env_parser.add_argument("--env", help="[envs.<name>] table to resolve")
     env_parser.add_argument("--subdir", help="Subdirectory appended to SCIPIPE_ROOTDIR")
     env_parser.add_argument(
@@ -62,6 +68,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     config_parser.add_argument("action", nargs="?", default="show", choices=["show"], help="Action to perform (default: show)")
     config_parser.add_argument("--config", help="Path to TOML config file")
+    config_parser.add_argument(
+        "--no-site-config",
+        action="store_true",
+        default=False,
+        help="Do not load site-level configuration",
+    )
     config_parser.add_argument("--env", help="[envs.<name>] table to inspect")
 
     return parser
@@ -97,8 +109,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         batch.main(args_list[1:])
     elif args.subcommand == "env":
         try:
-            cfg_path = envconfig.find_config_path(args.config)
-            cfg = envconfig.load_config(cfg_path)
+            cfg = envconfig.load_merged_config(
+                cli_arg=args.config,
+                include_site=not getattr(args, "no_site_config", False),
+            )
             spec = envconfig.resolve_env(cfg, args.env)
             env = envconfig.build_environment(cfg, spec, subdir=args.subdir)
             print(envconfig.format_shell_exports(env, export=not args.print_env))
@@ -107,9 +121,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             sys.exit(1)
     elif args.subcommand == "config":
         try:
-            cfg_path = envconfig.find_config_path(args.config)
-            cfg = envconfig.load_config(cfg_path)
-            print(envconfig.format_config_overview(cfg, env_name=args.env, config_path=cfg_path))
+            cfg = envconfig.load_merged_config(
+                cli_arg=args.config,
+                include_site=not getattr(args, "no_site_config", False),
+            )
+            print(envconfig.format_config_overview(cfg, env_name=args.env))
         except envconfig.ConfigError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)

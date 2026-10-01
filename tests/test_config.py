@@ -13,11 +13,16 @@ from calibpipe import cli
 from calibpipe.config import (
     ConfigError,
     EnvSpec,
+    _deep_merge_dict,
     build_environment,
     check_paths,
+    find_config_layers,
     find_config_path,
+    find_site_config,
+    find_user_configs,
     format_shell_exports,
     load_config,
+    load_merged_config,
     resolve_batch_options,
     resolve_env,
     resolve_run_options,
@@ -383,6 +388,223 @@ class TestPixiConfig(unittest.TestCase):
         self.assertIn("Pixi Dir:       /stor/pixi/modular", overview)
         self.assertIn("Pixi Env:       py312", overview)
         self.assertIn("Pixi Bin:        /opt/pixi/bin/pixi", overview)
+
+
+class TestCascadingConfig(unittest.TestCase):
+    def test_deep_merge_dict(self):
+        base = {
+            "default_env": "main",
+            "site": {"submit_host": "cluster01", "pixi_bin": "/opt/pixi"},
+            "envs": {"main": {"casa_root": "/opt/casa"}},
+        }
+        overlay = {
+            "default_env": "dev",
+            "site": {"pixi_bin": "/user/pixi"},
+            "envs": {"dev": {"casa_root": "/user/casa"}},
+        }
+        merged = _deep_merge_dict(base, overlay)
+        self.assertEqual(merged["default_env"], "dev")
+        self.assertEqual(merged["site"]["submit_host"], "cluster01")
+        self.assertEqual(merged["site"]["pixi_bin"], "/user/pixi")
+        self.assertEqual(merged["envs"]["main"]["casa_root"], "/opt/casa")
+        self.assertEqual(merged["envs"]["dev"]["casa_root"], "/user/casa")
+
+    def test_find_site_config_env_var(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            site_file = Path(td) / "site.toml"
+            site_file.touch()
+            with patch.dict(os.environ, {"CALIBPIPE_SITE_CONFIG": str(site_file)}):
+                found = find_site_config()
+                self.assertEqual(found, site_file.resolve())
+
+            with patch.dict(os.environ, {"CALIBPIPE_SITE_CONFIG": str(Path(td) / "missing.toml")}):
+                with self.assertRaises(ConfigError):
+                    find_site_config()
+
+    def test_find_config_layers_site_and_cli(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            site_file = Path(td) / "site.toml"
+            site_file.touch()
+            cli_file = Path(td) / "cli.toml"
+            cli_file.touch()
+
+            with patch.dict(os.environ, {"CALIBPIPE_SITE_CONFIG": str(site_file)}):
+                layers = find_config_layers(cli_arg=str(cli_file))
+                self.assertEqual(layers, [site_file.resolve(), cli_file.resolve()])
+
+    def test_find_config_layers_no_site_flag(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            site_file = Path(td) / "site.toml"
+            site_file.touch()
+            cli_file = Path(td) / "cli.toml"
+            cli_file.touch()
+
+            with patch.dict(os.environ, {"CALIBPIPE_SITE_CONFIG": str(site_file)}):
+                # When include_site is False
+                layers = find_config_layers(cli_arg=str(cli_file), include_site=False)
+                self.assertEqual(layers, [cli_file.resolve()])
+
+                # When CALIBPIPE_NO_SITE_CONFIG is set
+                with patch.dict(os.environ, {"CALIBPIPE_NO_SITE_CONFIG": "1"}):
+                    layers2 = find_config_layers(cli_arg=str(cli_file))
+                    self.assertEqual(layers2, [cli_file.resolve()])
+
+    def test_find_user_configs_xdg_and_dot(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            xdg_dir = fake_home / ".config" / "calibpipe"
+            xdg_dir.mkdir(parents=True)
+            xdg_file = xdg_dir / "config.toml"
+            xdg_file.touch()
+
+            dot_dir = fake_home / ".calibpipe"
+            dot_dir.mkdir(parents=True)
+            dot_file = dot_dir / "config.toml"
+            dot_file.touch()
+
+            with patch("pathlib.Path.home", return_value=fake_home):
+                with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(fake_home / ".config")}):
+                    cfgs = find_user_configs()
+                    self.assertEqual(cfgs, [xdg_file.resolve(), dot_file.resolve()])
+
+    def test_load_config_cascading_merge(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            site_file = Path(td) / "site.toml"
+            site_file.write_text("""
+default_env = "main"
+
+[site]
+submit_host = "cluster01"
+pmr_home = "/opt/pmr"
+
+[batch]
+queue = "plwg"
+cores = 8
+
+[paths]
+scipipe_rootdir = "/site/root/{user}"
+obscaldir = "/site/obscal"
+
+[envs.main]
+casa_root = "/opt/casa/main"
+""")
+
+            user_file = Path(td) / "user.toml"
+            user_file.write_text("""
+default_env = "custom_pixi"
+
+[paths]
+scipipe_rootdir = "/user/root/{user}"
+
+[batch]
+mail_type = "FAIL"
+
+[envs.custom_pixi]
+pixi_dir = "/user/ws"
+""")
+
+            cfg = load_config([site_file, user_file])
+            self.assertEqual(cfg.default_env, "custom_pixi")
+            # Inherited site tools
+            self.assertEqual(cfg.site.submit_host, "cluster01")
+            self.assertEqual(cfg.site.pmr_home, "/opt/pmr")
+            # Inherited paths and overridden paths
+            self.assertEqual(cfg.paths.obscaldir, "/site/obscal")
+            self.assertEqual(cfg.paths.scipipe_rootdir, "/user/root/{user}")
+            # Inherited and overridden batch directives
+            self.assertEqual(cfg.batch.queue, "plwg")
+            self.assertEqual(cfg.batch.cores, 8)
+            self.assertEqual(cfg.batch.mail_type, "FAIL")
+            # Additive environments
+            self.assertIn("main", cfg.envs)
+            self.assertIn("custom_pixi", cfg.envs)
+            self.assertEqual(cfg.envs["main"].casa_root, "/opt/casa/main")
+            self.assertEqual(cfg.envs["custom_pixi"].pixi_dir, "/user/ws")
+            # Provenance tracking
+            self.assertEqual(cfg.loaded_layers, [site_file.resolve(), user_file.resolve()])
+
+    def test_load_merged_config(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            site_file = Path(td) / "site.toml"
+            site_file.write_text("""
+[site]
+submit_host = "submit01"
+[envs.main]
+casa_root = "/opt/casa"
+""")
+            cli_file = Path(td) / "job.toml"
+            cli_file.write_text("""
+[paths]
+scipipe_rootdir = "/tmp/root"
+""")
+            with patch.dict(os.environ, {"CALIBPIPE_SITE_CONFIG": str(site_file)}):
+                cfg = load_merged_config(cli_arg=cli_file)
+                self.assertEqual(cfg.site.submit_host, "submit01")
+                self.assertEqual(cfg.paths.scipipe_rootdir, "/tmp/root")
+                self.assertEqual(cfg.loaded_layers, [site_file.resolve(), cli_file.resolve()])
+
+    def test_format_config_overview_multiple_layers(self):
+        from calibpipe.config import CalibpipeConfig, format_config_overview
+
+        cfg = CalibpipeConfig(
+            default_env="main",
+            loaded_layers=[Path("/etc/calibpipe/config.toml"), Path("/home/user/.config/calibpipe/config.toml")],
+        )
+        overview = format_config_overview(cfg)
+        self.assertIn("Configuration Layers (lowest to highest priority):", overview)
+        self.assertIn("[1] /etc/calibpipe/config.toml", overview)
+        self.assertIn("[2] /home/user/.config/calibpipe/config.toml", overview)
+
+
+class TestConfigExampleSchemaDrift(unittest.TestCase):
+    """Ensure config.example.toml never drifts from the typed dataclass schema in config.py."""
+
+    def test_config_example_covers_all_schema_fields(self):
+        import dataclasses
+        from calibpipe.config import (
+            BatchConfig,
+            CalibpipeConfig,
+            EnvSpec,
+            PathsConfig,
+            RunConfig,
+            SiteConfig,
+        )
+
+        example_path = Path(__file__).resolve().parent.parent / "config.example.toml"
+        self.assertTrue(example_path.is_file(), f"config.example.toml not found at {example_path}")
+
+        # 1. Ensure config.example.toml parses cleanly without syntax or type errors
+        cfg = load_config(example_path)
+        self.assertIsInstance(cfg, CalibpipeConfig)
+
+        # 2. Ensure every field of every config model is documented in config.example.toml
+        content = example_path.read_text(encoding="utf-8")
+        missing_fields: list[str] = []
+        for model_cls in (PathsConfig, SiteConfig, BatchConfig, RunConfig, EnvSpec):
+            for f in dataclasses.fields(model_cls):
+                if f.name in ("name", "extra_vars"):
+                    continue
+                if f.name not in content:
+                    missing_fields.append(f"{model_cls.__name__}.{f.name}")
+
+        self.assertEqual(
+            missing_fields,
+            [],
+            f"The following schema fields are missing from config.example.toml: {missing_fields}. "
+            "Please document them in config.example.toml to keep the template up-to-date.",
+        )
 
 
 if __name__ == "__main__":

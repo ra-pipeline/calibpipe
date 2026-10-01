@@ -51,12 +51,14 @@ uv tool install --editable /path/to/calibpipe
 
 ### Alternative Installation Methods
 
-* **Standard Editable / Local Install:**
+- **Standard Editable / Local Install:**
+
   ```bash
   pip install -e .
   ```
 
-* **Isolated Install via `pipx`:**
+- **Isolated Install via `pipx`:**
+
   ```bash
   pipx install /path/to/calibpipe
   ```
@@ -90,8 +92,10 @@ uv tool install --editable /path/to/calibpipe
    heuristics_dir = "{casa_root}/pipeline"
    ```
 
-**Config Resolution Order:**
-Searches `--config=<path>` $\to$ `$CALIBPIPE_CONFIG` $\to$ `./config.toml` $\to$ `~/.config/calibpipe/config.toml`.
+**Cascading Configuration Architecture:**
+Discovers and deep-merges configuration across layers:
+Site config (`/etc/calibpipe/config.toml`, `$CALIBPIPE_SITE_CONFIG`, or `config.site.toml`) $\to$ User config (`~/.config/calibpipe/config.toml`) $\to$ Workspace (`./config.toml`) $\to$ Explicit CLI (`--config=<path>`).
+On shared clusters, users inherit site infrastructure automatically and only specify personal overrides. Pass `--no-site-config` to run fully isolated.
 
 For the complete schema (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`, `[run]`), variable interpolation, and architecture flowcharts, see [User Guide: Configuration](docs/guide.md#configuration).
 
@@ -116,10 +120,10 @@ calibpipe --mous=uid://A001/X128a/Xb9 --env=main
 
 ```bash
 # Using unified CLI
-calibpipe batch quick.run --env=main -c 8 -m 248 -p plwg
+calibpipe batch quick.run --env=main -c 8 -m 248 -p
 
 # Legacy interface (backward-compatible script shim)
-./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
+./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p
 ```
 
 `quick.run` format:
@@ -146,16 +150,16 @@ calibpipe env --env=main --print-env
 ```
 
 Use `scripts/calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
- 
+
 ### 4. Inspect Configuration
- 
+
 Inspect active settings, paths, and environment defaults resolved from `config.toml`:
- 
+
 ```bash
 calibpipe config show --env=main
 ```
- 
-For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows).
+
+For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows). For staging lifecycle, PMR resolution, and directory layout details, see [Execution Internals](docs/internals.md). For library evolution and release notes, see [Changelog](docs/changelog.md).
 
 ---
 

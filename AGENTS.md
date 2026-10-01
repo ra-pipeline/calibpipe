@@ -65,6 +65,7 @@ The preferred typing style is modern, but this repository still supports Python 
   - `docs/api/index.md` (and `docs/api/*.md`)
 - Prefer documenting setup and docs workflows with `uv` examples first.
 - API reference pages should use `mkdocstrings` directives instead of hand-maintained signature dumps.
+- **Config Template Lockstep:** Whenever schema fields or dataclasses in `src/calibpipe/config.py` are modified, always update `config.example.toml` and documentation in lockstep (enforced by `TestConfigExampleSchemaDrift` in `tests/test_config.py`).
 - **Terminology:** Always refer to the pipeline as the **ALMA pipeline** (or ALMA Science Pipeline), never as "CASA pipeline". CASA is the underlying data processing dependency; the pipeline itself is the ALMA or CASA-based pipeline.
 
 ## 6. Validation Expectations
@@ -93,6 +94,10 @@ uv run --extra dev ruff format <path>
 - Do not read `.env*`, private SSH material, cloud credential files, or similar secret-bearing files unless the user explicitly asks and the task requires it.
 - Never hardcode secrets into code, tests, docs, examples, or logs.
 - Use synthetic placeholders in examples and fixtures rather than real internal identities, hostnames, or credentials.
+- **Privacy and Identity Sanitization:** Always perform a privacy check before finalizing or reviewing changes.
+  Ensure local usernames, user home paths (e.g., `/users/<name>` or `/home/<name>`), personal initials, internal email
+  addresses, and cluster node hostnames are never included in code, tests, docs, or commit messages; always sanitize
+  them to generic synthetic placeholders (e.g., `user`, `/home/user`, `cluster01`).
 - Never stage, commit, or push changes unless explicitly asked.
 - Never use destructive git or filesystem commands without explicit user approval.
 - Do not revert user changes you did not make.

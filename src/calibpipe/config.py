@@ -10,6 +10,7 @@ import os
 import shlex
 import shutil
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -149,6 +150,7 @@ class RunConfig:
     ncores: int = 8
     loglevel: str = "debug"
     useresume: bool = False
+    symlink_shortcuts: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
@@ -158,6 +160,9 @@ class RunConfig:
             ncores=int(data.get("ncores", default_inst.ncores)),
             loglevel=str(data.get("loglevel", default_inst.loglevel)),
             useresume=bool(data.get("useresume", default_inst.useresume)),
+            symlink_shortcuts=bool(
+                data.get("symlink_shortcuts", default_inst.symlink_shortcuts)
+            ),
         )
 
 
@@ -213,6 +218,7 @@ class CalibpipeConfig(dict):
         batch: BatchConfig | None = None,
         run: RunConfig | None = None,
         raw_dict: dict[str, Any] | None = None,
+        loaded_layers: Sequence[str | Path] | None = None,
     ) -> None:
         super().__init__(raw_dict or {})
         self.default_env = default_env
@@ -221,6 +227,7 @@ class CalibpipeConfig(dict):
         self.site = site or SiteConfig()
         self.batch = batch or BatchConfig()
         self.run = run or RunConfig()
+        self.loaded_layers: list[Path] = [Path(p) for p in loaded_layers] if loaded_layers else []
 
         # Synchronize dictionary keys for backwards compatibility
         self["default_env"] = self.default_env
@@ -233,7 +240,11 @@ class CalibpipeConfig(dict):
         self["run"] = asdict(self.run)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> CalibpipeConfig:
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        loaded_layers: Sequence[str | Path] | None = None,
+    ) -> CalibpipeConfig:
         """Construct a strongly-typed CalibpipeConfig from a parsed TOML dictionary."""
         default_env = str(data.get("default_env", "main"))
         paths = PathsConfig.from_dict(data.get("paths", {}))
@@ -273,6 +284,7 @@ class CalibpipeConfig(dict):
             batch=batch,
             run=run,
             raw_dict=data,
+            loaded_layers=loaded_layers,
         )
 
 
@@ -287,6 +299,7 @@ class ResolvedRunOptions:
     loglevel: str
     useresume: bool
     use_custom_rcdir: bool
+    symlink_shortcuts: bool = True
     flag_dir: str | None = None
     ppr: str | None = None
     subdir: str | None = None
@@ -313,6 +326,11 @@ def resolve_run_options(
     else:
         use_custom_rcdir = cfg.site.use_custom_rcdir
 
+    if getattr(cli_opts, "symlink_shortcuts", None) is not None:
+        symlink_shortcuts = bool(cli_opts.symlink_shortcuts)
+    else:
+        symlink_shortcuts = cfg.run.symlink_shortcuts
+
     recipe = getattr(cli_opts, "recipe", None) or cfg.run.recipe
     ncores = getattr(cli_opts, "ncores", None)
     if ncores is None:
@@ -329,6 +347,7 @@ def resolve_run_options(
         loglevel=loglevel,
         useresume=bool(useresume),
         use_custom_rcdir=use_custom_rcdir,
+        symlink_shortcuts=symlink_shortcuts,
         flag_dir=getattr(cli_opts, "flag", None),
         ppr=getattr(cli_opts, "ppr", None),
         subdir=getattr(cli_opts, "subdir", None),
@@ -432,92 +451,346 @@ def resolve_batch_options(
     )
 
 
-def find_config_path(cli_arg: str | Path | None = None) -> Path:
-    """Resolve which TOML config file to use.
+def _deep_merge_dict(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge overlay dictionary into base dictionary.
 
-    Search order:
-    1. Explicit CLI argument (--config=<path>)
-    2. $CALIBPIPE_CONFIG environment variable
-    3. config.toml in current working directory
-    4. ~/.config/calibpipe/config.toml
-    5. config.toml in project root (when running from source)
+    Nested dictionaries are merged recursively. All other values in overlay
+    replace the corresponding value in base.
 
     Args:
-        cli_arg: Explicit config path passed on the command line.
+        base: Baseline mapping (e.g. from site configuration).
+        overlay: Higher-priority mapping (e.g. from user or project configuration).
 
     Returns:
-        Resolved path to the configuration file.
+        New dictionary containing the deep-merged result.
+    """
+    merged = dict(base)
+    for key, val in overlay.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = _deep_merge_dict(merged[key], val)
+        else:
+            merged[key] = val
+    return merged
+
+
+def find_site_config() -> Path | None:
+    """Locate the site-level configuration file if present.
+
+    Search order:
+    1. $CALIBPIPE_SITE_CONFIG environment variable (must exist if set).
+    2. /etc/calibpipe/config.toml (standard Linux system configuration).
+    3. config.site.toml in the repository root (e.g. for cluster shared checkouts).
+    4. config.site.toml alongside the calibpipe package.
+
+    Returns:
+        Resolved Path to the site configuration file, or None if no site configuration exists.
+
+    Raises:
+        ConfigError: If $CALIBPIPE_SITE_CONFIG is set but points to a non-existent file.
+    """
+    env_site = os.environ.get("CALIBPIPE_SITE_CONFIG")
+    if env_site:
+        path = Path(env_site).expanduser().resolve()
+        if not path.is_file():
+            raise ConfigError(f"$CALIBPIPE_SITE_CONFIG file not found: {path}")
+        return path
+
+    etc_config = Path("/etc/calibpipe/config.toml")
+    if etc_config.is_file():
+        return etc_config.resolve()
+
+    repo_site_config = Path(__file__).resolve().parent.parent.parent / "config.site.toml"
+    if repo_site_config.is_file():
+        return repo_site_config.resolve()
+
+    pkg_site_config = Path(__file__).resolve().parent / "config.site.toml"
+    if pkg_site_config.is_file():
+        return pkg_site_config.resolve()
+
+    return None
+
+
+def find_xdg_user_config() -> Path | None:
+    """Locate user XDG configuration file (~/.config/calibpipe/config.toml).
+
+    Returns:
+        Resolved Path to the XDG config file, or None if not found.
+    """
+    xdg_base = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_base:
+        user_xdg = Path(xdg_base).expanduser() / "calibpipe" / "config.toml"
+    else:
+        user_xdg = Path.home() / ".config" / "calibpipe" / "config.toml"
+
+    if user_xdg.is_file():
+        return user_xdg.resolve()
+    return None
+
+
+def find_dot_user_config() -> Path | None:
+    """Locate user dot-directory configuration file (~/.calibpipe/config.toml).
+
+    Returns:
+        Resolved Path to the ~/.calibpipe/config.toml file, or None if not found.
+    """
+    dot_user = Path.home() / ".calibpipe" / "config.toml"
+    if dot_user.is_file():
+        return dot_user.resolve()
+    return None
+
+
+def find_user_configs() -> list[Path]:
+    """Locate all existing user-level configuration files in merge order.
+
+    Returns paths for:
+    1. $XDG_CONFIG_HOME/calibpipe/config.toml (or ~/.config/calibpipe/config.toml)
+    2. ~/.calibpipe/config.toml
+
+    Returns:
+        List of existing user configuration paths in increasing priority order.
+    """
+    configs: list[Path] = []
+    xdg = find_xdg_user_config()
+    if xdg:
+        configs.append(xdg)
+    dot = find_dot_user_config()
+    if dot:
+        configs.append(dot)
+    return configs
+
+
+def find_user_config() -> Path | None:
+    """Locate the highest-precedence user-level configuration file if present.
+
+    Search order:
+    1. ~/.calibpipe/config.toml
+    2. $XDG_CONFIG_HOME/calibpipe/config.toml (or ~/.config/calibpipe/config.toml)
+
+    Returns:
+        Resolved Path to the user configuration file, or None if not found.
+    """
+    configs = find_user_configs()
+    return configs[-1] if configs else None
+
+
+def find_project_config() -> Path | None:
+    """Locate the workspace or current-directory configuration file if present.
+
+    Search order:
+    1. ./config.toml (in current working directory).
+    2. ./.calibpipe.toml.
+
+    Returns:
+        Resolved Path to the project configuration file, or None if not found.
+    """
+    cwd_config = Path.cwd() / "config.toml"
+    if cwd_config.is_file():
+        return cwd_config.resolve()
+
+    dot_config = Path.cwd() / ".calibpipe.toml"
+    if dot_config.is_file():
+        return dot_config.resolve()
+
+    return None
+
+
+def find_config_layers(
+    cli_arg: str | Path | None = None,
+    *,
+    include_site: bool = True,
+) -> list[Path]:
+    """Discover all applicable configuration files in increasing priority order.
+
+    Resolution layers (lowest to highest priority):
+    1. Site configuration (system-wide cluster defaults, tool paths, baseline envs)
+    2. User XDG configuration (~/.config/calibpipe/config.toml)
+    3. User home configuration (~/.calibpipe/config.toml)
+    4. Workspace configuration (./config.toml)
+    5. Explicit CLI argument (--config) or $CALIBPIPE_CONFIG
+
+    If an explicit CLI argument or $CALIBPIPE_CONFIG is provided, it replaces
+    the user and workspace layers, but still layers on top of the site configuration
+    (unless site config is excluded via include_site=False or $CALIBPIPE_NO_SITE_CONFIG=1).
+
+    Args:
+        cli_arg: Optional explicit configuration path provided by CLI.
+        include_site: Whether to search for and include the site-level configuration layer.
+
+    Returns:
+        List of resolved Paths in order of application (base first, overlay last).
+
+    Raises:
+        ConfigError: If an explicit path does not exist, or if no configuration file
+            can be found at any layer.
+    """
+    no_site_env = os.environ.get("CALIBPIPE_NO_SITE_CONFIG", "").lower() in ("1", "true", "yes")
+    should_include_site = include_site and not no_site_env
+
+    layers: list[Path] = []
+
+    if should_include_site:
+        site_cfg = find_site_config()
+        if site_cfg:
+            layers.append(site_cfg)
+
+    explicit_path: Path | None = None
+    if cli_arg:
+        path = Path(cli_arg).expanduser().resolve()
+        if not path.exists():
+            raise ConfigError(f"--config file not found: {path}")
+        explicit_path = path
+    elif "CALIBPIPE_CONFIG" in os.environ:
+        env_val = os.environ["CALIBPIPE_CONFIG"]
+        if env_val:
+            path = Path(env_val).expanduser().resolve()
+            if not path.exists():
+                raise ConfigError(f"$CALIBPIPE_CONFIG file not found: {path}")
+            explicit_path = path
+
+    if explicit_path:
+        layers.append(explicit_path)
+    else:
+        user_cfgs = find_user_configs()
+        layers.extend(user_cfgs)
+
+        proj_cfg = find_project_config()
+        if proj_cfg:
+            layers.append(proj_cfg)
+
+        # Fallback to repo root config.toml if no user or project config was found
+        if not user_cfgs and not proj_cfg:
+            repo_root_config = Path(__file__).resolve().parent.parent.parent / "config.toml"
+            if repo_root_config.is_file():
+                layers.append(repo_root_config.resolve())
+            else:
+                local_config = Path(__file__).resolve().parent / "config.toml"
+                if local_config.is_file():
+                    layers.append(local_config.resolve())
+
+    # Deduplicate while preserving order
+    unique_layers: list[Path] = []
+    seen: set[Path] = set()
+    for p in layers:
+        resolved = p.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique_layers.append(resolved)
+
+    if not unique_layers:
+        raise ConfigError(
+            "No config file found. Pass --config=<path>, set $CALIBPIPE_CONFIG, "
+            "or create config.toml (see config.example.toml for the schema)."
+        )
+
+    return unique_layers
+
+
+def find_config_path(cli_arg: str | Path | None = None) -> Path:
+    """Locate the primary TOML configuration file to use.
+
+    Maintained for backward compatibility. Returns the highest-priority configuration
+    file found, or raises ConfigError if none is found.
+
+    Args:
+        cli_arg: Optional explicit path provided by the caller.
+
+    Returns:
+        Resolved Path to the highest-priority config file.
 
     Raises:
         ConfigError: If an explicit or environment-provided path does not
             exist, or no usable config file can be found.
     """
-    if cli_arg:
-        path = Path(cli_arg).expanduser().resolve()
-        if not path.exists():
-            raise ConfigError(f"--config file not found: {path}")
-        return path
-
-    env_path = os.environ.get("CALIBPIPE_CONFIG")
-    if env_path:
-        path = Path(env_path).expanduser().resolve()
-        if not path.exists():
-            raise ConfigError(f"$CALIBPIPE_CONFIG file not found: {path}")
-        return path
-
-    cwd_config = Path.cwd() / "config.toml"
-    if cwd_config.exists():
-        return cwd_config.resolve()
-
-    user_config = Path.home() / ".config" / "calibpipe" / "config.toml"
-    if user_config.exists():
-        return user_config.resolve()
-
-    # Look in repository root (up from src/calibpipe/config.py)
-    repo_root_config = Path(__file__).resolve().parent.parent.parent / "config.toml"
-    if repo_root_config.exists():
-        return repo_root_config.resolve()
-
-    # Legacy location: in same dir as config.py
-    local_config = Path(__file__).resolve().parent / "config.toml"
-    if local_config.exists():
-        return local_config.resolve()
-
-    raise ConfigError(
-        "No config file found. Pass --config=<path>, set $CALIBPIPE_CONFIG, "
-        "or create config.toml (see config.example.toml for the schema)."
-    )
+    layers = find_config_layers(cli_arg)
+    return layers[-1]
 
 
-def load_config(path: str | Path) -> CalibpipeConfig:
-    """Parse a TOML configuration file into a typed CalibpipeConfig object.
+def load_config(
+    path: str | Path | Sequence[str | Path] | None = None,
+    *,
+    site_config: str | Path | None = None,
+    no_site_config: bool = False,
+) -> CalibpipeConfig:
+    """Parse one or more TOML configuration files into a typed CalibpipeConfig object.
+
+    When multiple paths are provided (as a sequence), they are deep-merged in order,
+    allowing user/project configs to override site defaults while inheriting shared settings.
 
     Args:
-        path: Path to the TOML file.
+        path: A single path, sequence of paths to merge, or None (to discover layers automatically).
+        site_config: Optional explicit site configuration path to prepend as the base layer.
+        no_site_config: If True, do not automatically discover or include site configuration.
 
     Returns:
         Parsed configuration mapping with typed attributes and backward-compatible dict access.
 
     Raises:
-        ConfigError: If the file does not exist or cannot be parsed.
+        ConfigError: If a file does not exist, cannot be parsed, or no config file is found.
     """
-    config_path = Path(path).expanduser().resolve()
-    if not config_path.is_file():
-        raise ConfigError(f"Config file does not exist: {config_path}")
-    try:
-        with open(config_path, "rb") as fd:
-            data = tomllib.load(fd)
-        return CalibpipeConfig.from_dict(data)
-    except Exception as e:
-        if isinstance(e, ConfigError):
-            raise
-        raise ConfigError(f"Failed to parse TOML config {config_path}: {e}") from e
+    if path is None:
+        raw_layers: list[Path] = find_config_layers(include_site=not no_site_config)
+    elif isinstance(path, (str, Path)):
+        raw_layers = [Path(path)]
+        if site_config is not None:
+            raw_layers.insert(0, Path(site_config))
+    else:
+        raw_layers = [Path(p) for p in path]
+        if site_config is not None:
+            raw_layers.insert(0, Path(site_config))
+
+    merged_data: dict[str, Any] = {}
+    resolved_layers: list[Path] = []
+    for p in raw_layers:
+        resolved = Path(p).expanduser().resolve()
+        if not resolved.is_file():
+            raise ConfigError(f"Config file does not exist: {resolved}")
+        try:
+            with open(resolved, "rb") as fd:
+                data = tomllib.load(fd)
+        except Exception as e:
+            if isinstance(e, ConfigError):
+                raise
+            raise ConfigError(f"Failed to parse TOML config {resolved}: {e}") from e
+        merged_data = _deep_merge_dict(merged_data, data)
+        resolved_layers.append(resolved)
+
+    cfg = CalibpipeConfig.from_dict(merged_data, loaded_layers=resolved_layers)
+    return cfg
+
+
+def load_merged_config(
+    cli_arg: str | Path | None = None,
+    *,
+    include_site: bool = True,
+) -> CalibpipeConfig:
+    """Discover configuration layers and return the deep-merged CalibpipeConfig.
+
+    Discovers files across the hierarchy:
+    1. Site configuration (from $CALIBPIPE_SITE_CONFIG, /etc/calibpipe/config.toml, etc.)
+    2. User configuration (~/.config/calibpipe/config.toml)
+    3. Workspace configuration (./config.toml)
+    4. Explicit CLI/env override (--config or $CALIBPIPE_CONFIG)
+
+    Args:
+        cli_arg: Optional explicit configuration path from CLI.
+        include_site: Whether to search for and include site-level configuration.
+
+    Returns:
+        Deep-merged CalibpipeConfig with loaded_layers populated.
+
+    Raises:
+        ConfigError: If an explicit config file does not exist, or if no config
+            file is found across all layers.
+    """
+    layers = find_config_layers(cli_arg, include_site=include_site)
+    return load_config(layers)
 
 
 def format_config_overview(
     config: CalibpipeConfig | dict[str, Any],
     env_name: str | None = None,
     config_path: str | Path | None = None,
+    config_layers: Sequence[str | Path] | None = None,
 ) -> str:
     """Format a human-readable summary of the resolved configuration.
 
@@ -525,6 +798,7 @@ def format_config_overview(
         config: Loaded configuration object or dictionary.
         env_name: Environment name to display details for.
         config_path: Path to the loaded configuration file.
+        config_layers: Optional sequence of loaded configuration layer paths.
 
     Returns:
         Formatted multi-line summary.
@@ -542,8 +816,19 @@ def format_config_overview(
         "calibpipe Configuration Overview",
         "=" * 80,
     ]
-    if config_path:
+
+    layers: list[Path] = [Path(p) for p in config_layers] if config_layers else []
+    if not layers and isinstance(config, CalibpipeConfig) and config.loaded_layers:
+        layers = config.loaded_layers
+
+    if layers and len(layers) > 1:
+        lines.append("Configuration Layers (lowest to highest priority):")
+        for i, lp in enumerate(layers, 1):
+            lines.append(f"  [{i}] {lp}")
+    elif config_path:
         lines.append(f"Config File:      {config_path}")
+    elif layers and len(layers) == 1:
+        lines.append(f"Config File:      {layers[0]}")
     lines.extend(
         [
             f"Default Env:      {cfg.default_env}",
@@ -881,7 +1166,10 @@ def check_paths(
             (
                 "pixi_dir",
                 pixi_dir,
-                "Please configure [envs.<name>].pixi_dir in config.toml to point to a valid Pixi environment directory.",
+                (
+                    "Please configure [envs.<name>].pixi_dir in config.toml "
+                    "to point to a valid Pixi environment directory."
+                ),
             )
         )
         pixi_bin = site.get("pixi_bin") or shutil.which("pixi")
@@ -915,7 +1203,10 @@ def check_paths(
             (
                 "pmr_home",
                 env.get("ACSROOT", ""),
-                "Please configure [site].pmr_home in config.toml (or copy from notes/config.internal.example.toml for NAASC cluster).",
+                (
+                    "Please configure [site].pmr_home in config.toml "
+                    "(or copy from notes/config.internal.example.toml for NAASC cluster)."
+                ),
             ),
             (
                 "datapacker_home",
