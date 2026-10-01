@@ -160,6 +160,7 @@ class TestTypedModels(unittest.TestCase):
         self.assertEqual(res1.recipe, "calimage")
         self.assertEqual(res1.ncores, 8)
         self.assertTrue(res1.use_custom_rcdir)
+        self.assertFalse(res1.log2term)
 
         # 2. CLI overrides
         override_opts = argparse.Namespace(
@@ -169,6 +170,7 @@ class TestTypedModels(unittest.TestCase):
             custom_rcdir=False,
             useresume=True,
             loglevel="info",
+            log2term=True,
         )
         res2 = resolve_run_options(cfg, override_opts)
         self.assertEqual(res2.recipe, "image")
@@ -176,6 +178,7 @@ class TestTypedModels(unittest.TestCase):
         self.assertFalse(res2.use_custom_rcdir)
         self.assertTrue(res2.useresume)
         self.assertEqual(res2.loglevel, "info")
+        self.assertTrue(res2.log2term)
 
     def test_resolve_batch_options_precedence(self):
         import argparse
@@ -242,6 +245,7 @@ class TestTypedModels(unittest.TestCase):
         self.assertIn("calibpipe Configuration Overview", overview)
         self.assertIn("Default Env:      main", overview)
         self.assertIn("Custom RCDIR:    True", overview)
+        self.assertIn("Log2term:        False", overview)
         self.assertIn("Queue:           plwg", overview)
 
         # When optional batch directives are configured

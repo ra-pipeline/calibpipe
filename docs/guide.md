@@ -279,6 +279,7 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 - `submit_host`: If set, `calibpipe batch` strictly refuses to submit Slurm jobs unless run on this specific hostname.
 - `strict_paths`: If set to `true`, path validation aborts with an error instead of issuing warnings.
 - `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py` and `startup.py`) inside the run tree, ensuring pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`.
+- `log2term`: Mirror CASA log output directly to stdout / terminal in real time (default: `false`).
 
 #### Tier 4: Slurm Batch Defaults (`[batch]`) (Optional)
 
@@ -308,6 +309,7 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `loglevel`: Default pipeline log level (default: `debug`).
 - `useresume`: Use breakpoint / resume execution instead of two sequential CASA contexts (default: `false`).
 - `symlink_shortcuts`: Automatically create convenience symlinks (`working`, `products`, `rawdata`) in the project run root (default: `true`; override via `--symlink-shortcuts` / `--no-symlink-shortcuts`).
+- `log2term`: Mirror CASA log messages to stdout / terminal in real time (default: `false`; override via `--log2term` / `--no-log2term`).
 *(Note: Isolated CASA runtime directory generation is configured under `[site].use_custom_rcdir` and can be overridden via `--custom-rcdir` / `--no-custom-rcdir`).*
 
 ---

@@ -4,6 +4,7 @@ import time
 
 telemetry_enabled = $telemetry
 crashreporter_enabled = False
+log2term = $log2term
 
 # Ensure CASA log is written to the run's working directory
 _workdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) if "__file__" in globals() else os.getcwd()

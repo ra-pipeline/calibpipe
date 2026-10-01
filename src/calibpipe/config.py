@@ -63,6 +63,7 @@ class SiteConfig:
     use_custom_rcdir: bool = True
     strict_paths: bool = False
     pixi_bin: str | None = None
+    log2term: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SiteConfig:
@@ -87,6 +88,7 @@ class SiteConfig:
             ),
             strict_paths=bool(data.get("strict_paths", default_inst.strict_paths)),
             pixi_bin=data.get("pixi_bin", default_inst.pixi_bin),
+            log2term=bool(data.get("log2term", default_inst.log2term)),
         )
 
 
@@ -151,6 +153,7 @@ class RunConfig:
     loglevel: str = "debug"
     useresume: bool = False
     symlink_shortcuts: bool = True
+    log2term: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
@@ -163,6 +166,7 @@ class RunConfig:
             symlink_shortcuts=bool(
                 data.get("symlink_shortcuts", default_inst.symlink_shortcuts)
             ),
+            log2term=bool(data.get("log2term", default_inst.log2term)),
         )
 
 
@@ -300,6 +304,7 @@ class ResolvedRunOptions:
     useresume: bool
     use_custom_rcdir: bool
     symlink_shortcuts: bool = True
+    log2term: bool = False
     flag_dir: str | None = None
     ppr: str | None = None
     subdir: str | None = None
@@ -331,6 +336,11 @@ def resolve_run_options(
     else:
         symlink_shortcuts = cfg.run.symlink_shortcuts
 
+    if getattr(cli_opts, "log2term", None) is not None:
+        log2term = bool(cli_opts.log2term)
+    else:
+        log2term = cfg.run.log2term or cfg.site.log2term
+
     recipe = getattr(cli_opts, "recipe", None) or cfg.run.recipe
     ncores = getattr(cli_opts, "ncores", None)
     if ncores is None:
@@ -348,6 +358,7 @@ def resolve_run_options(
         useresume=bool(useresume),
         use_custom_rcdir=use_custom_rcdir,
         symlink_shortcuts=symlink_shortcuts,
+        log2term=log2term,
         flag_dir=getattr(cli_opts, "flag", None),
         ppr=getattr(cli_opts, "ppr", None),
         subdir=getattr(cli_opts, "subdir", None),
@@ -889,6 +900,7 @@ def format_config_overview(
             f"  ACS Data:        {cfg.site.acsdata}",
             f"  Custom RCDIR:    {cfg.site.use_custom_rcdir}",
             f"  Telemetry:       {cfg.site.casa_enable_telemetry}",
+            f"  Log2term:        {cfg.run.log2term or cfg.site.log2term}",
             "",
             "Slurm Batch Defaults ([batch]):",
             f"  Queue:           {cfg.batch.queue}",

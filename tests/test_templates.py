@@ -15,6 +15,7 @@ class TestTemplates(unittest.TestCase):
         rendered = render_template("casa_config.py.in", telemetry="True")
         self.assertIn("telemetry_enabled = True", rendered)
         self.assertIn("crashreporter_enabled = False", rendered)
+        self.assertIn("log2term = False", rendered)
         self.assertIn("measures_auto_update = False", rendered)
         self.assertIn("/home/casa/data/distro", rendered)
         self.assertIn("logfile = os.path.join(_workdir,", rendered)
