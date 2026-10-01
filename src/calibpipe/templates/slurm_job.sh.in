@@ -1,14 +1,14 @@
 #!/bin/sh
 #SBATCH -p $queue
-#SBATCH -N $node
-#SBATCH -n $cores
-#SBATCH --mem=$mem
+#SBATCH --nodes=$node
+#SBATCH --ntasks=$cores
 #SBATCH --job-name=$job_name
 #SBATCH --mail-user=$mail_user
 #SBATCH --mail-type=$mail_type
 #SBATCH -o $outfile
 #SBATCH -e $errfile
 #SBATCH --export=ALL
+$extra_directives
 ulimit -Sn 8192
 umask 002
 $pipejob

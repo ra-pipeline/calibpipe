@@ -211,5 +211,68 @@ class TestScriptRecord(RunbatchCaptureCase):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+class TestSlurmDirectives(RunbatchCaptureCase):
+    """Verify that advanced Slurm directives render correctly in submitted scripts."""
+
+    def test_advanced_directives_rendered_in_sbatch(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "-t", "12:00:00",
+            "--nodelist=cvpost01",
+            "--chdir=/lustre/work",
+            "--cpus-per-task=4",
+            "--ntasks-per-core=1",
+            "--hint=nomultithread",
+            "--distribution=cyclic:cyclic",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, script = calls[0]
+        self.assertIn("#SBATCH --time=12:00:00", script)
+        self.assertIn("#SBATCH --nodelist=cvpost01", script)
+        self.assertIn("#SBATCH --chdir=/lustre/work", script)
+        self.assertIn("#SBATCH --cpus-per-task=4", script)
+        self.assertIn("#SBATCH --ntasks-per-core=1", script)
+        self.assertIn("#SBATCH --hint=nomultithread", script)
+        self.assertIn("#SBATCH --distribution=cyclic:cyclic", script)
+        self.assertIn("#SBATCH --no-requeue", script)
+        self.assertIn("#SBATCH --mem=248G", script)
+
+    def test_mem_per_cpu_suppresses_mem(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--mem-per-cpu=30G",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, script = calls[0]
+        self.assertIn("#SBATCH --mem-per-cpu=30G", script)
+        self.assertNotIn("#SBATCH --mem=", script)
+
+    def test_requeue_flag_omits_no_requeue(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--requeue",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, script = calls[0]
+        self.assertNotIn("#SBATCH --no-requeue", script)
+
+    def test_mem_and_mem_per_cpu_cli_mutual_exclusion(self):
+        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+            self.run_and_capture([
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "-m", "100",
+                "--mem-per-cpu=30G",
+            ])
+        self.assertEqual(cm.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

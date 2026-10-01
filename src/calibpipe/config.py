@@ -78,6 +78,11 @@ class SiteConfig:
         )
 
 
+def _int_or_none(value: Any) -> int | None:
+    """Return int(value) or None if value is None or empty string."""
+    return None if value is None or value == "" else int(value)
+
+
 @dataclass
 class BatchConfig:
     """Slurm batch cluster resource submission defaults."""
@@ -87,6 +92,16 @@ class BatchConfig:
     mem: int = 248
     node: str = "1"
     mail_type: str = "ALL"
+    # Optional Slurm directives — None means the directive is omitted entirely.
+    walltime: str | None = None        # --time  (e.g. "24:00:00")
+    nodelist: str | None = None        # --nodelist  (pin to a specific node)
+    chdir: str | None = None           # --chdir  (Slurm working directory)
+    cpus_per_task: int | None = None   # --cpus-per-task  (for mpicasa: ntasks × cpus-per-task)
+    mem_per_cpu: str | None = None     # --mem-per-cpu  (mutually exclusive with mem)
+    hint: str | None = None            # --hint  (e.g. "nomultithread")
+    ntasks_per_core: int | None = None # --ntasks-per-core  (e.g. 1 to disable HT)
+    distribution: str | None = None    # --distribution  (e.g. "cyclic:cyclic")
+    no_requeue: bool = True            # --no-requeue  (prevent silent resubmission)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
@@ -97,6 +112,15 @@ class BatchConfig:
             mem=int(data.get("mem", default_inst.mem)),
             node=str(data.get("node", default_inst.node)),
             mail_type=str(data.get("mail_type", default_inst.mail_type)),
+            walltime=data.get("walltime", default_inst.walltime),
+            nodelist=data.get("nodelist", default_inst.nodelist),
+            chdir=data.get("chdir", default_inst.chdir),
+            cpus_per_task=_int_or_none(data.get("cpus_per_task", default_inst.cpus_per_task)),
+            mem_per_cpu=data.get("mem_per_cpu", default_inst.mem_per_cpu),
+            hint=data.get("hint", default_inst.hint),
+            ntasks_per_core=_int_or_none(data.get("ntasks_per_core", default_inst.ntasks_per_core)),
+            distribution=data.get("distribution", default_inst.distribution),
+            no_requeue=bool(data.get("no_requeue", default_inst.no_requeue)),
         )
 
 
@@ -282,6 +306,16 @@ class ResolvedBatchOptions:
     outfile: str | None = None
     errfile: str | None = None
     extra_args: list[str] = field(default_factory=list)
+    # Optional Slurm directives
+    walltime: str | None = None
+    nodelist: str | None = None
+    chdir: str | None = None
+    cpus_per_task: int | None = None
+    mem_per_cpu: str | None = None
+    hint: str | None = None
+    ntasks_per_core: int | None = None
+    distribution: str | None = None
+    no_requeue: bool = True
 
 
 def resolve_batch_options(
@@ -310,6 +344,24 @@ def resolve_batch_options(
     node = getattr(cli_args, "node", None) or cfg.batch.node
     mail_type = getattr(cli_args, "mail_type", None) or cfg.batch.mail_type
 
+    # Optional directives — CLI overrides config, then falls back to None/default.
+    def _cli_or_cfg(attr: str, cfg_val: Any) -> Any:
+        v = getattr(cli_args, attr, None)
+        return v if v is not None else cfg_val
+
+    walltime = _cli_or_cfg("walltime", cfg.batch.walltime)
+    nodelist = _cli_or_cfg("nodelist", cfg.batch.nodelist)
+    chdir = _cli_or_cfg("chdir", cfg.batch.chdir)
+    cpus_per_task = _int_or_none(_cli_or_cfg("cpus_per_task", cfg.batch.cpus_per_task))
+    mem_per_cpu = _cli_or_cfg("mem_per_cpu", cfg.batch.mem_per_cpu)
+    hint = _cli_or_cfg("hint", cfg.batch.hint)
+    ntasks_per_core = _int_or_none(_cli_or_cfg("ntasks_per_core", cfg.batch.ntasks_per_core))
+    distribution = _cli_or_cfg("distribution", cfg.batch.distribution)
+
+    # no_requeue: CLI flag takes precedence; default True (safe default)
+    cli_no_requeue = getattr(cli_args, "no_requeue", None)
+    no_requeue = cli_no_requeue if cli_no_requeue is not None else cfg.batch.no_requeue
+
     return ResolvedBatchOptions(
         pipefile=Path(getattr(cli_args, "pipefile")),
         env_name=env_name,
@@ -321,6 +373,15 @@ def resolve_batch_options(
         outfile=getattr(cli_args, "outfile", None),
         errfile=getattr(cli_args, "errfile", None),
         extra_args=list(getattr(cli_args, "extra_args", [])),
+        walltime=walltime,
+        nodelist=nodelist,
+        chdir=chdir,
+        cpus_per_task=cpus_per_task,
+        mem_per_cpu=mem_per_cpu,
+        hint=hint,
+        ntasks_per_core=ntasks_per_core,
+        distribution=distribution,
+        no_requeue=bool(no_requeue),
     )
 
 
@@ -474,9 +535,29 @@ def format_config_overview(
         "",
         "Slurm Batch Defaults ([batch]):",
         f"  Queue:           {cfg.batch.queue}",
-        f"  Cores / Memory:  {cfg.batch.cores} cores, {cfg.batch.mem} GB",
+        f"  Cores / Memory:  {cfg.batch.cores} cores, "
+        + (f"{cfg.batch.mem_per_cpu}/CPU" if cfg.batch.mem_per_cpu else f"{cfg.batch.mem} GB"),
         f"  Node:            {cfg.batch.node}",
         f"  Mail Type:       {cfg.batch.mail_type}",
+    ])
+    if cfg.batch.walltime:
+        lines.append(f"  Walltime:        {cfg.batch.walltime}")
+    if cfg.batch.cpus_per_task:
+        lines.append(f"  CPUs/Task:       {cfg.batch.cpus_per_task}")
+    if cfg.batch.nodelist:
+        lines.append(f"  Nodelist:        {cfg.batch.nodelist}")
+    if cfg.batch.chdir:
+        lines.append(f"  Working Dir:     {cfg.batch.chdir}")
+    if cfg.batch.hint:
+        lines.append(f"  Hint:            {cfg.batch.hint}")
+    if cfg.batch.ntasks_per_core:
+        lines.append(f"  Tasks/Core:      {cfg.batch.ntasks_per_core}")
+    if cfg.batch.distribution:
+        lines.append(f"  Distribution:    {cfg.batch.distribution}")
+    if not cfg.batch.no_requeue:
+        lines.append(f"  Requeue:         True")
+
+    lines.extend([
         "",
         "Pipeline Run Defaults ([run]):",
         f"  Recipe:          {cfg.run.recipe}",

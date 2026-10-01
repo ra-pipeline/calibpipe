@@ -232,10 +232,19 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 #### Tier 4: Slurm Batch Defaults (`[batch]`) (Optional)
 Configures baseline defaults for `calibpipe batch` when CLI flags are not provided:
 - `queue`: Slurm partition / queue name (default: `plwg`).
-- `cores`: Number of CPU cores allocated per Slurm job (default: `8`).
-- `mem`: RAM allocated in GB per job (default: `248`).
-- `node`: Slurm node count string (default: `"1"`).
-- `mail_type`: Slurm email notification policy (default: `ALL`).
+- `cores`: Number of tasks / CPU cores allocated per Slurm job `--ntasks` (default: `8`).
+- `mem`: Total RAM in GB per job `--mem` (default: `248`; mutually exclusive with `mem_per_cpu`).
+- `node`: Slurm node count string `--nodes` (default: `"1"`).
+- `mail_type`: Slurm email notification policy `--mail-type` (default: `ALL`).
+- `walltime`: Optional job runtime limit `--time` (e.g. `"24:00:00"`; omitted if unset).
+- `nodelist`: Optional target host pinning `--nodelist` (e.g. `"cvpost01"`).
+- `chdir`: Optional working directory override `--chdir`.
+- `cpus_per_task`: Optional CPUs per MPI task `--cpus-per-task` for hybrid `mpicasa` execution.
+- `mem_per_cpu`: Optional RAM per CPU `--mem-per-cpu` (e.g. `"30G"`; replaces `mem` if set).
+- `hint`: Optional scheduler placement hint `--hint` (e.g. `"nomultithread"`).
+- `ntasks_per_core`: Optional task limit per physical core `--ntasks-per-core` (e.g. `1` to disable hyperthreading).
+- `distribution`: Optional task distribution policy `--distribution` (e.g. `"cyclic:cyclic"`).
+- `no_requeue`: Prevent Slurm from requeuing jobs on node failure `--no-requeue` (default: `true`).
 
 #### Tier 5: Pipeline Run Defaults (`[run]`) (Optional)
 Configures single-run driver execution defaults for `calibpipe run`:

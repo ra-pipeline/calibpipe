@@ -98,10 +98,19 @@ heuristics_dir = "{casa_root}/pipeline"
 #
 # [batch]
 # queue = "plwg"                          # Slurm partition/queue
-# cores = 8                               # Cores per batch job
-# mem = 248                               # Memory in GB per batch job
-# node = "1"                              # Number of nodes
-# mail_type = "ALL"                       # Slurm email notification type
+# cores = 8                               # Cores per batch job (--ntasks)
+# mem = 248                               # Memory in GB per batch job (--mem; mutually exclusive with mem_per_cpu)
+# node = "1"                              # Number of nodes (--nodes)
+# mail_type = "ALL"                       # Slurm email notification type (--mail-type)
+# walltime = "24:00:00"                   # Slurm walltime limit (--time; omitted if unset)
+# nodelist = "cvpost01"                   # Pin jobs to a specific node or node list (--nodelist)
+# chdir = "/lustre/pipeline/working"      # Slurm working directory override (--chdir)
+# cpus_per_task = 4                       # CPUs per MPI task for mpicasa (--cpus-per-task)
+# mem_per_cpu = "30G"                     # Memory per CPU (--mem-per-cpu; replaces mem if set)
+# hint = "nomultithread"                  # Scheduler binding hint (--hint)
+# ntasks_per_core = 1                     # Tasks per core (1 to disable hyperthreading)
+# distribution = "cyclic:cyclic"          # Task distribution policy (--distribution)
+# no_requeue = true                       # Prevent job requeuing on node failure (--no-requeue, default: true)
 
 # ------------------------------------------------------------------------------
 # 5. Pipeline Run Defaults ([run]) (Optional)
