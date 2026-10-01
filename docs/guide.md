@@ -236,13 +236,37 @@ This allows gradual migration to the unified `calibpipe` CLI without breaking ol
 
 ## Testing
 
-Run the test suite from the project root:
+### Offline Unit Testing
+
+Run the test suite from the repository root:
 
 ```bash
 pytest tests/
+# or with uv:
+uv run --extra dev pytest tests/
 ```
 
-The suite covers configuration loading, driver behavior, and batch submission logic. Golden reference files under `tests/reference/` verify generated call sequences and `sbatch` command content.
+The test suite runs 100% offline without requiring local CASA installations, Slurm daemons, or cluster filesystems. Subprocess invocations (`sbatch`, `casa`, `pipelineMakeRequest`) are mocked, and generated execution steps and Slurm batch scripts are validated against golden reference specifications under `tests/reference/`.
+
+### Cluster Pre-Flight Verification
+
+When developing locally while targeting a remote cluster (or before submitting long-running batch jobs), use these verification techniques:
+
+1. **Verify Environment Resolution (`--print-env`):**
+   Inspect resolved variables, CASA paths, and PMR directories without modifying the current shell:
+   ```bash
+   calibpipe env --env=main --print-env
+   ```
+   If configured paths (such as `casa_root` or `pmr_home`) do not exist or are unreachable on the current host, `calibpipe` emits warning diagnostics indicating the missing paths.
+
+2. **Verify Single-Run Driver Environment:**
+   You can verify driver environment initialization for a specific MOUS without triggering pipeline staging or launching CASA:
+   ```bash
+   calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --print-env
+   ```
+
+3. **Isolated Cluster Configuration:**
+   Maintain cluster-specific paths in an unversioned `config.toml` on the remote system (copied from `config.example.toml`). Because `config.toml` is gitignored, cluster-specific filesystem paths are kept local and never committed to version control.
 
 ---
 
