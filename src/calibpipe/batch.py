@@ -88,6 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Submit to the batch2 queue")
     p.add_argument("--extra-arg", action="append", default=[], dest="extra_args",
                    help="Extra flag passed through to calibpipe driver, repeatable")
+    p.add_argument(
+        "--log2term",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="log2term",
+        help="Mirror CASA log messages to terminal/stdout in real time",
+    )
     return p
 
 
@@ -307,6 +314,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             pipejob_parts.append("--no-site-config")
         if batch_opts.env_name:
             pipejob_parts.append(f"--env={batch_opts.env_name}")
+        if getattr(args, "log2term", None) is True:
+            pipejob_parts.append("--log2term")
+        elif getattr(args, "log2term", None) is False:
+            pipejob_parts.append("--no-log2term")
         pipejob_parts.extend(batch_opts.extra_args)
         pipejob = " ".join(pipejob_parts)
 

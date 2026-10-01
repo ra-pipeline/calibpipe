@@ -351,6 +351,7 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertIn("--configfile", cmd)
         self.assertIn("--startupfile", cmd)
         self.assertIn("--nologger", cmd)
+        self.assertIn(f"--logfile {self.working}/casa-", cmd)
         piperun = self.working / "casa_piperun.py"
         self.assertIn(f"-c {piperun.resolve()}", cmd)
         self.assertTrue(piperun.is_file())
@@ -370,6 +371,7 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", cmd)
         self.assertIn(" casampi --nocrashreport", cmd)
         self.assertIn("--nologger", cmd)
+        self.assertIn(f"--logfile {self.working}/casa-", cmd)
         piperun = self.working / "casa_piperun.py"
         self.assertIn(f"-c {piperun.resolve()}", cmd)
         self.assertTrue(piperun.is_file())
@@ -519,6 +521,33 @@ class TestSymlinkShortcuts(unittest.TestCase):
 
         args_off = p.parse_args(["--mous=uid://A001/X1/X1", "--no-symlink-shortcuts"])
         self.assertFalse(args_off.symlink_shortcuts)
+
+    def test_driver_parser_log2term_flags(self):
+        p = calibPipeIF.build_parser()
+        args_default = p.parse_args(["--mous=uid://A001/X1/X1"])
+        self.assertIsNone(args_default.log2term)
+
+        args_on = p.parse_args(["--mous=uid://A001/X1/X1", "--log2term"])
+        self.assertTrue(args_on.log2term)
+
+        args_off = p.parse_args(["--mous=uid://A001/X1/X1", "--no-log2term"])
+        self.assertFalse(args_off.log2term)
+
+
+class TestLog2termExecution(CalibPipeIFCaptureCase):
+    """Test log2term CLI and configuration behavior during execution."""
+
+    def test_log2term_flag_passed_to_casa_call(self):
+        calls = self.run_and_capture(["--log2term"])
+        casa_calls = [c[1] for c in calls if c[0] == "casa"]
+        self.assertEqual(len(casa_calls), 1)
+        self.assertIn("--log2term", casa_calls[0])
+
+    def test_default_omits_log2term_from_casa_call(self):
+        calls = self.run_and_capture([])
+        casa_calls = [c[1] for c in calls if c[0] == "casa"]
+        self.assertEqual(len(casa_calls), 1)
+        self.assertNotIn("--log2term", casa_calls[0])
 
 
 if __name__ == "__main__":

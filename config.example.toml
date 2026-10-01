@@ -117,6 +117,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # casa_enable_telemetry = false           # Set to true to enable CASA telemetry
 # use_custom_rcdir = true                 # Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: true)
 # strict_paths = false                    # Fail immediately on missing tools instead of emitting warnings
+# log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
 
 # ------------------------------------------------------------------------------
 # 4. Slurm Batch Job Defaults ([batch]) (Optional)
@@ -150,4 +151,5 @@ pixi_dir = "/data/pipeline/branches/main"
 # loglevel = "debug"                      # Pipeline log level
 # useresume = false                       # Use break/resume instead of two contexts
 # symlink_shortcuts = true                # Create convenience symlinks (working, products, rawdata, weblog) in project root
+# log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
 

@@ -96,19 +96,26 @@ class RunLogger:
 def write_casa_config(
     rcdir: Path,
     site_config: dict[str, Any] | None = None,
+    log2term: bool = False,
 ) -> Path:
     """Generate isolated config.py for CASA inside rcdir.
 
     Args:
         rcdir: Custom runtime configuration directory.
         site_config: Optional [site] configuration mapping.
+        log2term: Whether to mirror CASA logs to terminal/stdout.
 
     Returns:
         Path to the generated config.py file.
     """
     site = site_config or {}
     telemetry = "True" if site.get("casa_enable_telemetry", False) else "False"
-    content = render_template("casa_config.py.in", telemetry=telemetry)
+    log2term_str = "True" if (site.get("log2term", False) or log2term) else "False"
+    content = render_template(
+        "casa_config.py.in",
+        telemetry=telemetry,
+        log2term=log2term_str,
+    )
     config_file = rcdir / "config.py"
     config_file.write_text(content, encoding="utf-8")
     return config_file
@@ -396,6 +403,16 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: from [run].symlink_shortcuts)"
         ),
     )
+    p.add_argument(
+        "--log2term",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="log2term",
+        help=(
+            "Mirror CASA log messages to terminal/stdout in real time "
+            "(default: from [run].log2term / [site].log2term)"
+        ),
+    )
     return p
 
 
@@ -608,7 +625,7 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(rcdir, site_cfg)
+        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
@@ -623,6 +640,13 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
         casarun = f"{casarun} " + " ".join(rcdir_args)
         log_message(f"created isolated CASA rcdir at {rcdir}")
+
+    if env_spec.is_pixi:
+        casa_logfile = working_path / f"casa-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        casarun = f"{casarun} --logfile {casa_logfile}"
+
+    if run_opts.log2term:
+        casarun = f"{casarun} --log2term"
 
     # Prepare working execution directory and fixes script
     working_path.mkdir(parents=True, exist_ok=True)

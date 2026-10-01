@@ -1,8 +1,14 @@
 """Auto-generated CASA configuration file for calibpipe run."""
 import os
+import time
 
 telemetry_enabled = $telemetry
 crashreporter_enabled = False
+log2term = $log2term
+
+# Ensure CASA log is written to the run's working directory
+_workdir = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) if "__file__" in globals() else os.getcwd()
+logfile = os.path.join(_workdir, f"casa-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}.log")
 
 # Disable auto-updates in cluster/batch execution
 measures_auto_update = False

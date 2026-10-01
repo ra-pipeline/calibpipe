@@ -15,8 +15,10 @@ class TestTemplates(unittest.TestCase):
         rendered = render_template("casa_config.py.in", telemetry="True")
         self.assertIn("telemetry_enabled = True", rendered)
         self.assertIn("crashreporter_enabled = False", rendered)
+        self.assertIn("log2term = False", rendered)
         self.assertIn("measures_auto_update = False", rendered)
         self.assertIn("/home/casa/data/distro", rendered)
+        self.assertIn("logfile = os.path.join(_workdir,", rendered)
 
     def test_render_casa_startup(self) -> None:
         """Verify casa_startup.py.in renders cleanly without arguments."""
@@ -29,8 +31,23 @@ class TestTemplates(unittest.TestCase):
     def test_render_slurm_job(self) -> None:
         """Verify slurm_job.sh.in renders with pipejob command."""
         cmd = "calibpipe run --mous=uid://A001/X1/X1 --env=main"
-        rendered = render_template("slurm_job.sh.in", pipejob=cmd)
+        rendered = render_template(
+            "slurm_job.sh.in",
+            pipejob=cmd,
+            queue="plwg",
+            node="1",
+            cores="8",
+            job_name="myjob",
+            mail_user="testuser",
+            mail_type="ALL",
+            outfile="my.out",
+            errfile="my.err",
+            extra_directives="",
+        )
         self.assertIn("#!/bin/sh", rendered)
+        self.assertIn("#SBATCH --partition=plwg", rendered)
+        self.assertIn("#SBATCH --output=my.out", rendered)
+        self.assertIn("#SBATCH --error=my.err", rendered)
         self.assertIn("ulimit -Sn 8192", rendered)
         self.assertIn("umask 002", rendered)
         self.assertIn(cmd, rendered)

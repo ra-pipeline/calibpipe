@@ -18,6 +18,8 @@ def render_template(template_name: str, **kwargs: Any) -> str:
         Rendered template string with variables substituted.
     """
     raw = files("calibpipe.templates").joinpath(template_name).read_text(encoding="utf-8")
-    # Convert all keyword arguments to string representation for safe substitution
-    str_kwargs = {k: str(v) for k, v in kwargs.items()}
+    defaults: dict[str, Any] = {}
+    if template_name == "casa_config.py.in":
+        defaults = {"telemetry": "False", "log2term": "False"}
+    str_kwargs = {**defaults, **{k: str(v) for k, v in kwargs.items()}}
     return Template(raw).safe_substitute(str_kwargs)
