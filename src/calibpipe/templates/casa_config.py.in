@@ -1,0 +1,19 @@
+"""Auto-generated CASA configuration file for calibpipe run."""
+import os
+
+telemetry_enabled = $telemetry
+crashreporter_enabled = False
+
+# Disable auto-updates in cluster/batch execution
+measures_auto_update = False
+data_auto_update = False
+
+# Resolve measures/rundata path if available
+for _p in [
+    os.environ.get("CASADATA", ""),
+    "/home/casa/data/distro",
+]:
+    if _p and os.path.isdir(_p):
+        measurespath = _p
+        rundata = _p
+        break

@@ -116,6 +116,8 @@ class CalibPipeIFCaptureCase(unittest.TestCase):
         self.root = self.tmp / "rootdir"
         self.logdir = self.tmp / "logdir"
         self.config = self.tmp / "config.toml"
+        self.working = self.root / PPMR_REL_DIR / SOUS_DIR / GOUS_DIR / MOUS_DIR / "working"
+        self.rawdata = self.root / PPMR_REL_DIR / SOUS_DIR / GOUS_DIR / MOUS_DIR / "rawdata"
         _write_config(self.config, self.root, self.logdir)
         _build_ppmr_tree(self.root)
 
@@ -141,8 +143,11 @@ class CalibPipeIFCaptureCase(unittest.TestCase):
             calls.append(("copy", "shutil.copytree", src, dst))
             return real_copytree(src, dst, *a, **kw)
 
+        self.casa_cwd = None
+
         def fake_run(cmd):
             if "xvfb-run" in cmd and ("/bin/casa " in cmd or "/bin/mpicasa " in cmd):
+                self.casa_cwd = Path(os.getcwd()).resolve()
                 calls.append(("casa", cmd))
             return 0
 
@@ -154,8 +159,8 @@ class CalibPipeIFCaptureCase(unittest.TestCase):
              patch.object(calibPipeIF, "getoutput", side_effect=fake_getoutput), \
              patch.object(calibPipeIF.shutil, "copy", side_effect=fake_copy), \
              patch.object(calibPipeIF.shutil, "copytree", side_effect=fake_copytree), \
-             patch.object(calibPipeIF.log, "run", side_effect=fake_run), \
-             patch.object(calibPipeIF.log, "runquiet", side_effect=fake_run), \
+             patch.object(calibPipeIF.RunLogger, "run", side_effect=fake_run), \
+             patch.object(calibPipeIF.RunLogger, "runquiet", side_effect=fake_run), \
              patch.dict(calibPipeIF.os.environ, {}, clear=False), \
              redirect_stdout(io.StringIO()):
             calibPipeIF.main()
@@ -193,6 +198,72 @@ class TestNoFlagDirSkipsCopies(CalibPipeIFCaptureCase):
             "with no --flag dir there's nothing old to copy",
         )
         self.assert_matches_reference("without_flag_dir", calls)
+
+
+class TestCustomRcdir(CalibPipeIFCaptureCase):
+    def test_custom_rcdir_creates_startup_and_config(self):
+        calls = self.run_and_capture([])
+        casa_calls = [c[1] for c in calls if c[0] == "casa"]
+        self.assertEqual(len(casa_calls), 1)
+        self.assertIn("--cachedir", casa_calls[0])
+        self.assertIn("--startupfile", casa_calls[0])
+        self.assertIn("--configfile", casa_calls[0])
+
+        startup_file = self.working / ".casa" / "startup.py"
+        config_file = self.working / ".casa" / "config.py"
+        self.assertTrue(startup_file.is_file())
+        self.assertTrue(config_file.is_file())
+
+        startup_content = startup_file.read_text()
+        self.assertIn("import pipeline.infrastructure.executeppr as eppr", startup_content)
+        self.assertIn("pipeline.initcli()", startup_content)
+
+        config_content = config_file.read_text()
+        self.assertIn("telemetry_enabled = False", config_content)
+        self.assertIn("crashreporter_enabled = False", config_content)
+
+    def test_no_custom_rcdir_omits_rcdir_args(self):
+        calls = self.run_and_capture(["--no-custom-rcdir"])
+        casa_calls = [c[1] for c in calls if c[0] == "casa"]
+        self.assertEqual(len(casa_calls), 1)
+        self.assertNotIn("--cachedir", casa_calls[0])
+        self.assertNotIn("--rcdir", casa_calls[0])
+
+    def test_get_casa_rcdir_args_legacy_fallback(self):
+        legacy_dir = self.tmp / "legacy_casa"
+        legacy_dir.mkdir()
+        rcdir = self.working / ".casa"
+        args = calibPipeIF.get_casa_rcdir_args(legacy_dir, rcdir)
+        self.assertEqual(args, ["--rcdir", str(rcdir)])
+
+
+class TestWorkingDirExecution(CalibPipeIFCaptureCase):
+    def test_working_fixes_file_created_and_cwd_switched(self):
+        fixes_file = self.working / "sacmPL-fixes.casa.py.txt"
+        self.assertFalse(fixes_file.exists())
+        orig_cwd = Path(os.getcwd()).resolve()
+        self.run_and_capture([])
+        self.assertTrue(fixes_file.exists())
+        self.assertEqual(self.casa_cwd, self.working.resolve())
+        self.assertEqual(Path(os.getcwd()).resolve(), orig_cwd)
+
+    def test_rawdata_fixes_copied_to_working(self):
+        rawdata_fixes = self.rawdata / "sacmPL-fixes.casa.py.txt"
+        rawdata_fixes.write_text("# custom fix from rawdata\n")
+        fixes_file = self.working / "sacmPL-fixes.casa.py.txt"
+        self.run_and_capture([])
+        self.assertTrue(fixes_file.exists())
+        self.assertEqual(fixes_file.read_text(), "# custom fix from rawdata\n")
+
+
+class TestRunLoggerContextManager(unittest.TestCase):
+    def test_run_logger_context_manager_closes_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "test_driver"
+            with calibPipeIF.RunLogger(str(log_path)) as l:
+                l.log("hello world")
+                self.assertFalse(l.fd.closed)
+            self.assertTrue(l.fd.closed)
 
 
 if __name__ == "__main__":

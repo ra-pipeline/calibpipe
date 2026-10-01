@@ -15,7 +15,9 @@ from calibpipe.config import (
     find_config_path,
     format_shell_exports,
     load_config,
+    resolve_batch_options,
     resolve_env,
+    resolve_run_options,
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -125,6 +127,97 @@ class TestEnvironmentBuilding(unittest.TestCase):
             }
             warnings = check_paths(env, strict=True)
             self.assertEqual(warnings, [])
+
+
+class TestTypedModels(unittest.TestCase):
+    def test_calibpipe_config_typed_and_dict_access(self):
+        cfg = load_config(CONFIG)
+        self.assertEqual(cfg.default_env, "main")
+        self.assertEqual(cfg["default_env"], "main")
+        self.assertTrue(cfg.site.use_custom_rcdir)
+        self.assertTrue(cfg["site"]["use_custom_rcdir"])
+        self.assertEqual(cfg.batch.queue, "plwg")
+        self.assertEqual(cfg.run.recipe, "calimage")
+
+    def test_resolve_run_options_precedence(self):
+        import argparse
+        cfg = load_config(CONFIG)
+
+        # 1. Defaults when CLI flags are unset
+        empty_opts = argparse.Namespace(mous="uid://A001/X1/X1")
+        res1 = resolve_run_options(cfg, empty_opts)
+        self.assertEqual(res1.mous, "uid://A001/X1/X1")
+        self.assertEqual(res1.recipe, "calimage")
+        self.assertEqual(res1.ncores, 8)
+        self.assertTrue(res1.use_custom_rcdir)
+
+        # 2. CLI overrides
+        override_opts = argparse.Namespace(
+            mous="uid://A001/X1/X1",
+            recipe="image",
+            ncores=16,
+            custom_rcdir=False,
+            useresume=True,
+            loglevel="info",
+        )
+        res2 = resolve_run_options(cfg, override_opts)
+        self.assertEqual(res2.recipe, "image")
+        self.assertEqual(res2.ncores, 16)
+        self.assertFalse(res2.use_custom_rcdir)
+        self.assertTrue(res2.useresume)
+        self.assertEqual(res2.loglevel, "info")
+
+    def test_resolve_batch_options_precedence(self):
+        import argparse
+        cfg = load_config(CONFIG)
+
+        # 1. Defaults when CLI args are unset
+        default_args = argparse.Namespace(pipefile="test.txt", queue=None, cores=None, mem=None, node=None, mail_type=None)
+        res1 = resolve_batch_options(cfg, default_args)
+        self.assertEqual(res1.queue, "plwg")
+        self.assertEqual(res1.cores, 8)
+        self.assertEqual(res1.mem, 248)
+
+        # 2. CLI overrides
+        override_args = argparse.Namespace(
+            pipefile="test.txt",
+            queue="batch2",
+            cores=16,
+            mem=512,
+            node="2",
+            mail_type="FAIL",
+            extra_args=["--verbose"],
+        )
+        res2 = resolve_batch_options(cfg, override_args)
+        self.assertEqual(res2.queue, "batch2")
+        self.assertEqual(res2.cores, 16)
+        self.assertEqual(res2.mem, 512)
+        self.assertEqual(res2.node, "2")
+        self.assertEqual(res2.mail_type, "FAIL")
+        self.assertEqual(res2.extra_args, ["--verbose"])
+
+    def test_format_config_overview(self):
+        from calibpipe.config import format_config_overview
+        cfg = load_config(CONFIG)
+        overview = format_config_overview(cfg, env_name="main", config_path=CONFIG)
+        self.assertIn("calibpipe Configuration Overview", overview)
+        self.assertIn("Default Env:      main", overview)
+        self.assertIn("Custom RCDIR:    True", overview)
+        self.assertIn("Queue:           plwg", overview)
+
+
+class TestCliConfigSubcommand(unittest.TestCase):
+    def test_cli_config_show(self):
+        import io
+        from contextlib import redirect_stdout
+        from calibpipe import cli
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["config", "show", f"--config={CONFIG}", "--env=main"])
+        out = buf.getvalue()
+        self.assertIn("calibpipe Configuration Overview", out)
+        self.assertIn("Selected Env:     main", out)
 
 
 if __name__ == "__main__":

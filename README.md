@@ -82,7 +82,7 @@ pipx install /path/to/calibpipe
 **Config Resolution Order:**
 Searches `--config=<path>` $\to$ `$CALIBPIPE_CONFIG` $\to$ `./config.toml` $\to$ `~/.config/calibpipe/config.toml`.
 
-For the complete 3-tier schema (`[paths]`, `[envs.<name>]`, `[site]`), variable interpolation, and architecture flowcharts, see [User Guide: Configuration](docs/guide.md#configuration).
+For the complete schema (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`, `[run]`), variable interpolation, and architecture flowcharts, see [User Guide: Configuration](docs/guide.md#configuration).
 
 ---
 
@@ -135,7 +135,15 @@ calibpipe env --env=main --print-env
 ```
 
 Use `scripts/calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
-
+ 
+### 4. Inspect Configuration
+ 
+Inspect active settings, paths, and environment defaults resolved from `config.toml`:
+ 
+```bash
+calibpipe config show --env=main
+```
+ 
 For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows).
 
 ---

@@ -1,0 +1,4 @@
+#!/bin/sh
+ulimit -Sn 8192
+umask 002
+$pipejob

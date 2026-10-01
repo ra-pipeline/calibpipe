@@ -112,7 +112,9 @@ config.toml
 ├── default_env = "main"          <-- Default target environment
 ├── [paths]                       <-- Tier 1: Working directories & pipeline datasets
 ├── [envs.<name>]                 <-- Tier 2: Selectable CASA + Pipeline runtime targets
-└── [site]                        <-- Tier 3: Observatory tooling & cluster overrides (Optional)
+├── [site]                        <-- Tier 3: Observatory tooling & cluster overrides (Optional)
+├── [batch]                       <-- Tier 4: Slurm cluster batch submission defaults (Optional)
+└── [run]                         <-- Tier 5: Pipeline single-run driver defaults (Optional)
 ```
 
 #### Tier 1: Workspace & Product Paths (`[paths]`)
@@ -142,6 +144,23 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 - `flux_service_url_backup`: Secondary ALMA flux service backup URL.
 - `submit_host`: If set, `calibpipe batch` strictly refuses to submit Slurm jobs unless run on this specific hostname.
 - `strict_paths`: If set to `true`, path validation aborts with an error instead of issuing warnings.
+- `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py` and `startup.py`) inside the run tree, ensuring pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`.
+
+#### Tier 4: Slurm Batch Defaults (`[batch]`) (Optional)
+Configures baseline defaults for `calibpipe batch` when CLI flags are not provided:
+- `queue`: Slurm partition / queue name (default: `plwg`).
+- `cores`: Number of CPU cores allocated per Slurm job (default: `8`).
+- `mem`: RAM allocated in GB per job (default: `248`).
+- `node`: Slurm node count string (default: `"1"`).
+- `mail_type`: Slurm email notification policy (default: `ALL`).
+
+#### Tier 5: Pipeline Run Defaults (`[run]`) (Optional)
+Configures single-run driver execution defaults for `calibpipe run`:
+- `recipe`: Default pipeline reduction recipe (default: `calimage`).
+- `ncores`: Default CPU core count passed to `mpicasa` (default: `8`).
+- `loglevel`: Default pipeline log level (default: `debug`).
+- `useresume`: Use breakpoint / resume execution instead of two sequential CASA contexts (default: `false`).
+- `use_custom_rcdir`: Override site-level isolated CASA runtime setting per run (default: `true`).
 
 ---
 
@@ -219,6 +238,20 @@ source scripts/calibpipe_env.sh --env=main
 ```
 
 Use `scripts/calibpipe_env.sh` when you want the resolved CASA and pipeline variables loaded into your current shell session and prefer the older `source ...` workflow. It must be sourced rather than executed, and it exists mainly as a compatibility wrapper around `calibpipe env`.
+
+### 4. Inspect Resolved Configuration
+
+Inspect active settings, paths, and environment defaults resolved from `config.toml` without executing anything:
+
+```bash
+calibpipe config show --env=main
+```
+
+Or inspect an alternate configuration file:
+
+```bash
+calibpipe config show --config=/path/to/custom_config.toml --env=dev
+```
 
 ---
 

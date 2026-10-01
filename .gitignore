@@ -24,3 +24,6 @@ batch*.err
 batch*.out
 *.log
 *.run
+
+# Editor / IDE
+*.code-workspace

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Sequence
 
 from calibpipe import config as envconfig
+from calibpipe.templates import render_template
 
 # Fallback path to calibPipeIF executable (can be overridden or patched)
 _candidate = Path(__file__).resolve().parent.parent.parent / "scripts" / "calibPipeIF.py"
@@ -36,14 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("pipefile", help="File with one '<mous_uid> [recipe]' per line")
     p.add_argument("--config", help="Path to TOML config (default: resolved config.toml)")
     p.add_argument("--env", help="[envs.<name>] to use; default: config's default_env")
-    p.add_argument("-c", "--cores", type=int, default=8, dest="cores", help="Cores per job (default: 8)")
-    p.add_argument("-m", "--mem", type=int, default=248, dest="mem", help="GB memory per job (default: 248)")
-    p.add_argument("-M", "--mail-type", default="ALL", dest="mail_type", help="Slurm --mail-type (default: ALL)")
-    p.add_argument("-n", "--node", default="1", dest="node", help="Slurm -N nodes (default: 1)")
+    p.add_argument("-c", "--cores", type=int, default=None, dest="cores", help="Cores per job (default: from [batch].cores or 8)")
+    p.add_argument("-m", "--mem", type=int, default=None, dest="mem", help="GB memory per job (default: from [batch].mem or 248)")
+    p.add_argument("-M", "--mail-type", default=None, dest="mail_type", help="Slurm --mail-type (default: from [batch].mail_type or ALL)")
+    p.add_argument("-n", "--node", default=None, dest="node", help="Slurm -N nodes (default: from [batch].node or 1)")
     p.add_argument("-o", "--outfile", dest="outfile", help="Slurm stdout file (default: batch.<job>.out)")
     p.add_argument("-e", "--errfile", dest="errfile", help="Slurm stderr file (default: batch.<job>.err)")
     queue = p.add_mutually_exclusive_group()
-    queue.add_argument("-p", dest="queue", action="store_const", const="plwg", default="plwg",
+    queue.add_argument("-p", dest="queue", action="store_const", const="plwg", default=None,
                         help="Submit to the plwg queue (default)")
     queue.add_argument("-b", dest="queue", action="store_const", const="batch2",
                         help="Submit to the batch2 queue")
@@ -92,11 +93,7 @@ def build_sbatch_script(pipejob: str) -> str:
     Returns:
         Shell script contents.
     """
-    return f"""#!/bin/sh
-ulimit -Sn 8192
-umask 002
-{pipejob}
-"""
+    return render_template("slurm_job.sh.in", pipejob=pipejob)
 
 
 def job_name(pipejob: str) -> str:
@@ -134,14 +131,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"ERROR: {e}")
         sys.exit(1)
 
+    batch_opts = envconfig.resolve_batch_options(cfg, args)
     check_submit_host(cfg)
 
-    pipefile = Path(args.pipefile)
+    pipefile = batch_opts.pipefile
     if not pipefile.is_file():
         print(f"{pipefile} does not exist, exiting")
         sys.exit(1)
 
-    mem = f"{args.mem}G"
+    mem = f"{batch_opts.mem}G"
 
     with open(pipefile, encoding="utf-8") as fd:
         lines = fd.readlines()
@@ -162,15 +160,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         ]
         if args.config:
             pipejob_parts.append(f"--config={args.config}")
-        if args.env:
-            pipejob_parts.append(f"--env={args.env}")
-        pipejob_parts.extend(args.extra_args)
+        if batch_opts.env_name:
+            pipejob_parts.append(f"--env={batch_opts.env_name}")
+        pipejob_parts.extend(batch_opts.extra_args)
         pipejob = " ".join(pipejob_parts)
 
         name = job_name(pipejob)
         print(f"job name = {name}")
-        outfile = args.outfile or f"batch.{name}.out"
-        errfile = args.errfile or f"batch.{name}.err"
+        outfile = batch_opts.outfile or f"batch.{name}.out"
+        errfile = batch_opts.errfile or f"batch.{name}.err"
 
         user = os.environ.get("USER", "")
         with tempfile.NamedTemporaryFile(
@@ -182,13 +180,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         try:
             cmd = [
                 "sbatch",
-                "-p", args.queue,
-                "-N", args.node,
-                "-n", str(args.cores),
+                "-p", batch_opts.queue,
+                "-N", batch_opts.node,
+                "-n", str(batch_opts.cores),
                 "--export=ALL",
                 f"--job-name={name}",
                 f"--mail-user={user}",
-                f"--mail-type={args.mail_type}",
+                f"--mail-type={batch_opts.mail_type}",
                 f"--mem={mem}",
                 "-o", outfile,
                 "-e", errfile,

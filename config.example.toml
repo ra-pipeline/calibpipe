@@ -77,8 +77,8 @@ heuristics_dir = "{casa_root}/pipeline"
 # ------------------------------------------------------------------------------
 # 3. Site & Cluster Overrides ([site]) (Optional)
 # ------------------------------------------------------------------------------
-# Built-in defaults match NAASC cluster tooling.
-# Uncomment and adjust these settings only if your cluster host or tooling paths differ.
+# Built-in defaults are generic fallbacks (/opt/pipetools/latest, etc.).
+# Configure this section to match your site or observatory cluster tooling paths.
 #
 # [site]
 # submit_host = "submit-node-1"           # Refuses to submit Slurm batches unless run on this host
@@ -89,3 +89,28 @@ heuristics_dir = "{casa_root}/pipeline"
 # flux_service_url = "https://almascience.org/sc/flux"
 # flux_service_url_backup = "https://asa.alma.cl/sc/flux"
 # casa_enable_telemetry = false           # Set to true to enable CASA telemetry
+# use_custom_rcdir = true                 # Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: true)
+
+# ------------------------------------------------------------------------------
+# 4. Slurm Batch Job Defaults ([batch]) (Optional)
+# ------------------------------------------------------------------------------
+# Defaults when submitting jobs via 'calibpipe batch':
+#
+# [batch]
+# queue = "plwg"                          # Slurm partition/queue
+# cores = 8                               # Cores per batch job
+# mem = 248                               # Memory in GB per batch job
+# node = "1"                              # Number of nodes
+# mail_type = "ALL"                       # Slurm email notification type
+
+# ------------------------------------------------------------------------------
+# 5. Pipeline Run Defaults ([run]) (Optional)
+# ------------------------------------------------------------------------------
+# Defaults when executing 'calibpipe run':
+#
+# [run]
+# recipe = "calimage"                     # Pipeline recipe (cal, calimage, image, etc.)
+# ncores = 8                              # Number of cores for CASA/mpicasa
+# loglevel = "debug"                      # Pipeline log level
+# useresume = false                       # Use break/resume instead of two contexts
+

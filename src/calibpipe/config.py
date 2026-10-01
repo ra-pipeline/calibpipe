@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import shlex
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,18 +19,109 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 
-# Generic site defaults.
-# These can be overridden in personal config.toml under the [site] table.
-SITE_DEFAULTS: dict[str, Any] = {
-    "java_home": os.environ.get("JAVA_HOME", "/usr/lib/jvm/default-java"),
-    "pmr_home": "/opt/pipetools/latest",
-    "acsdata": "/opt/acsdata",
-    "datapacker_home": "/opt/datapacker/current",
-    "flux_service_url": "https://almascience.org/sc/flux",
-    "flux_service_url_backup": "https://asa.alma.cl/sc/flux",
-    "casa_enable_telemetry": False,
-    "submit_host": None,  # runbatch / batch guard; None = no restriction
-}
+@dataclass
+class PathsConfig:
+    """Working and output directory paths for pipeline processing."""
+
+    scipipe_rootdir: str = ""
+    scipipe_logdir: str = ""
+    pickle_dir: str | None = None
+    obscaldir: str | None = None
+    aUdir: str | None = None
+    validation_dir: str | None = None
+    heuristics_root: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PathsConfig:
+        return cls(
+            scipipe_rootdir=str(data.get("scipipe_rootdir", "")),
+            scipipe_logdir=str(data.get("scipipe_logdir", "")),
+            pickle_dir=data.get("pickle_dir"),
+            obscaldir=data.get("obscaldir"),
+            aUdir=data.get("aUdir"),
+            validation_dir=data.get("validation_dir"),
+            heuristics_root=data.get("heuristics_root"),
+        )
+
+
+@dataclass
+class SiteConfig:
+    """Site, cluster, and external tooling configuration overrides."""
+
+    submit_host: str | None = None
+    java_home: str = field(
+        default_factory=lambda: os.environ.get("JAVA_HOME", "/usr/lib/jvm/default-java")
+    )
+    pmr_home: str = "/opt/pipetools/latest"
+    acsdata: str = "/opt/acsdata"
+    datapacker_home: str = "/opt/datapacker/current"
+    flux_service_url: str = "https://almascience.org/sc/flux"
+    flux_service_url_backup: str = "https://asa.alma.cl/sc/flux"
+    casa_enable_telemetry: bool = False
+    use_custom_rcdir: bool = True
+    strict_paths: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SiteConfig:
+        default_inst = cls()
+        return cls(
+            submit_host=data.get("submit_host", default_inst.submit_host),
+            java_home=data.get("java_home", default_inst.java_home),
+            pmr_home=data.get("pmr_home", default_inst.pmr_home),
+            acsdata=data.get("acsdata", default_inst.acsdata),
+            datapacker_home=data.get("datapacker_home", default_inst.datapacker_home),
+            flux_service_url=data.get("flux_service_url", default_inst.flux_service_url),
+            flux_service_url_backup=data.get("flux_service_url_backup", default_inst.flux_service_url_backup),
+            casa_enable_telemetry=bool(data.get("casa_enable_telemetry", default_inst.casa_enable_telemetry)),
+            use_custom_rcdir=bool(data.get("use_custom_rcdir", default_inst.use_custom_rcdir)),
+            strict_paths=bool(data.get("strict_paths", default_inst.strict_paths)),
+        )
+
+
+@dataclass
+class BatchConfig:
+    """Slurm batch cluster resource submission defaults."""
+
+    queue: str = "plwg"
+    cores: int = 8
+    mem: int = 248
+    node: str = "1"
+    mail_type: str = "ALL"
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
+        default_inst = cls()
+        return cls(
+            queue=str(data.get("queue", default_inst.queue)),
+            cores=int(data.get("cores", default_inst.cores)),
+            mem=int(data.get("mem", default_inst.mem)),
+            node=str(data.get("node", default_inst.node)),
+            mail_type=str(data.get("mail_type", default_inst.mail_type)),
+        )
+
+
+@dataclass
+class RunConfig:
+    """Driver defaults for single-run execution."""
+
+    recipe: str = "calimage"
+    ncores: int = 8
+    loglevel: str = "debug"
+    useresume: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RunConfig:
+        default_inst = cls()
+        return cls(
+            recipe=str(data.get("recipe", default_inst.recipe)),
+            ncores=int(data.get("ncores", default_inst.ncores)),
+            loglevel=str(data.get("loglevel", default_inst.loglevel)),
+            useresume=bool(data.get("useresume", default_inst.useresume)),
+        )
+
+
+# Backward-compatible SITE_DEFAULTS dict populated from SiteConfig
+SITE_DEFAULTS: dict[str, Any] = asdict(SiteConfig())
 
 
 class ConfigError(Exception):
@@ -51,6 +142,186 @@ class EnvSpec:
         """Default the branch name to the environment name when omitted."""
         if not self.branch:
             self.branch = self.name
+
+
+class CalibpipeConfig(dict):
+    """Strongly-typed, single source of truth configuration object for calibpipe.
+
+    Provides typed attribute access (e.g. `cfg.site.use_custom_rcdir`, `cfg.paths.scipipe_rootdir`)
+    while maintaining full dict-mapping compatibility (e.g. `cfg['site']`, `cfg.get('paths')`).
+    """
+
+    def __init__(
+        self,
+        default_env: str = "main",
+        paths: PathsConfig | None = None,
+        envs: dict[str, EnvSpec] | None = None,
+        site: SiteConfig | None = None,
+        batch: BatchConfig | None = None,
+        run: RunConfig | None = None,
+        raw_dict: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(raw_dict or {})
+        self.default_env = default_env
+        self.paths = paths or PathsConfig()
+        self.envs = envs or {}
+        self.site = site or SiteConfig()
+        self.batch = batch or BatchConfig()
+        self.run = run or RunConfig()
+
+        # Synchronize dictionary keys for backwards compatibility
+        self["default_env"] = self.default_env
+        self["paths"] = asdict(self.paths)
+        self["envs"] = {k: asdict(v) if is_dataclass(v) else v for k, v in self.envs.items()}
+        self["site"] = asdict(self.site)
+        self["batch"] = asdict(self.batch)
+        self["run"] = asdict(self.run)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CalibpipeConfig:
+        """Construct a strongly-typed CalibpipeConfig from a parsed TOML dictionary."""
+        default_env = str(data.get("default_env", "main"))
+        paths = PathsConfig.from_dict(data.get("paths", {}))
+        site = SiteConfig.from_dict(data.get("site", {}))
+        batch = BatchConfig.from_dict(data.get("batch", {}))
+        run = RunConfig.from_dict(data.get("run", {}))
+
+        envs: dict[str, EnvSpec] = {}
+        for env_name, env_data in data.get("envs", {}).items():
+            if isinstance(env_data, dict):
+                envs[env_name] = EnvSpec(
+                    name=env_name,
+                    casa_root=env_data.get("casa_root", ""),
+                    branch=env_data.get("branch", env_name),
+                    heuristics_dir=env_data.get("heuristics_dir"),
+                )
+
+        return cls(
+            default_env=default_env,
+            paths=paths,
+            envs=envs,
+            site=site,
+            batch=batch,
+            run=run,
+            raw_dict=data,
+        )
+
+
+@dataclass
+class ResolvedRunOptions:
+    """Fully resolved execution options for a single calibpipe run."""
+
+    mous: str
+    env_name: str
+    recipe: str
+    ncores: int
+    loglevel: str
+    useresume: bool
+    use_custom_rcdir: bool
+    flag_dir: str | None = None
+    ppr: str | None = None
+    subdir: str | None = None
+    onlysemipass: str = ""
+    verbose: bool = False
+
+
+def resolve_run_options(
+    config: CalibpipeConfig | dict[str, Any],
+    cli_opts: Any,
+) -> ResolvedRunOptions:
+    """Resolve runtime options by cascading CLI flags over config.toml over defaults.
+
+    Precedence: CLI flag > config.toml ([run] / [site]) > built-in defaults.
+    """
+    if isinstance(config, CalibpipeConfig):
+        cfg = config
+    else:
+        cfg = CalibpipeConfig.from_dict(config)
+
+    # Custom rcdir: CLI flag > [site].use_custom_rcdir > default
+    if getattr(cli_opts, "custom_rcdir", None) is not None:
+        use_custom_rcdir = bool(cli_opts.custom_rcdir)
+    else:
+        use_custom_rcdir = cfg.site.use_custom_rcdir
+
+    recipe = getattr(cli_opts, "recipe", None) or cfg.run.recipe
+    ncores = getattr(cli_opts, "ncores", None)
+    if ncores is None:
+        ncores = cfg.run.ncores
+    loglevel = getattr(cli_opts, "loglevel", None) or cfg.run.loglevel
+    useresume = getattr(cli_opts, "useresume", False) or cfg.run.useresume
+    env_name = getattr(cli_opts, "env", None) or cfg.default_env
+
+    return ResolvedRunOptions(
+        mous=getattr(cli_opts, "mous", ""),
+        env_name=env_name,
+        recipe=recipe,
+        ncores=int(ncores),
+        loglevel=loglevel,
+        useresume=bool(useresume),
+        use_custom_rcdir=use_custom_rcdir,
+        flag_dir=getattr(cli_opts, "flag", None),
+        ppr=getattr(cli_opts, "ppr", None),
+        subdir=getattr(cli_opts, "subdir", None),
+        onlysemipass=getattr(cli_opts, "onlysemipass", ""),
+        verbose=bool(getattr(cli_opts, "verbose", False)),
+    )
+
+
+@dataclass
+class ResolvedBatchOptions:
+    """Fully resolved options for a Slurm batch submission."""
+
+    pipefile: Path
+    env_name: str
+    queue: str
+    cores: int
+    mem: int
+    node: str
+    mail_type: str
+    outfile: str | None = None
+    errfile: str | None = None
+    extra_args: list[str] = field(default_factory=list)
+
+
+def resolve_batch_options(
+    config: CalibpipeConfig | dict[str, Any],
+    cli_args: Any,
+) -> ResolvedBatchOptions:
+    """Resolve batch options by cascading CLI flags over config.toml [batch] over defaults."""
+    if isinstance(config, CalibpipeConfig):
+        cfg = config
+    else:
+        cfg = CalibpipeConfig.from_dict(config)
+
+    env_name = getattr(cli_args, "env", None) or cfg.default_env
+
+    cli_queue = getattr(cli_args, "queue", None)
+    queue = cli_queue if cli_queue else cfg.batch.queue
+
+    cores = getattr(cli_args, "cores", None)
+    if cores is None:
+        cores = cfg.batch.cores
+
+    mem = getattr(cli_args, "mem", None)
+    if mem is None:
+        mem = cfg.batch.mem
+
+    node = getattr(cli_args, "node", None) or cfg.batch.node
+    mail_type = getattr(cli_args, "mail_type", None) or cfg.batch.mail_type
+
+    return ResolvedBatchOptions(
+        pipefile=Path(getattr(cli_args, "pipefile")),
+        env_name=env_name,
+        queue=queue,
+        cores=int(cores),
+        mem=int(mem),
+        node=str(node),
+        mail_type=str(mail_type),
+        outfile=getattr(cli_args, "outfile", None),
+        errfile=getattr(cli_args, "errfile", None),
+        extra_args=list(getattr(cli_args, "extra_args", [])),
+    )
 
 
 def find_config_path(cli_arg: str | Path | None = None) -> Path:
@@ -110,14 +381,14 @@ def find_config_path(cli_arg: str | Path | None = None) -> Path:
     )
 
 
-def load_config(path: str | Path) -> dict[str, Any]:
-    """Parse a TOML configuration file.
+def load_config(path: str | Path) -> CalibpipeConfig:
+    """Parse a TOML configuration file into a typed CalibpipeConfig object.
 
     Args:
         path: Path to the TOML file.
 
     Returns:
-        Parsed configuration mapping.
+        Parsed configuration mapping with typed attributes and backward-compatible dict access.
 
     Raises:
         ConfigError: If the file does not exist or cannot be parsed.
@@ -127,9 +398,94 @@ def load_config(path: str | Path) -> dict[str, Any]:
         raise ConfigError(f"Config file does not exist: {config_path}")
     try:
         with open(config_path, "rb") as fd:
-            return tomllib.load(fd)
+            data = tomllib.load(fd)
+        return CalibpipeConfig.from_dict(data)
     except Exception as e:
+        if isinstance(e, ConfigError):
+            raise
         raise ConfigError(f"Failed to parse TOML config {config_path}: {e}") from e
+
+
+def format_config_overview(
+    config: CalibpipeConfig | dict[str, Any],
+    env_name: str | None = None,
+    config_path: str | Path | None = None,
+) -> str:
+    """Format a human-readable summary of the resolved configuration.
+
+    Args:
+        config: Loaded configuration object or dictionary.
+        env_name: Environment name to display details for.
+        config_path: Path to the loaded configuration file.
+
+    Returns:
+        Formatted multi-line summary.
+    """
+    if isinstance(config, CalibpipeConfig):
+        cfg = config
+    else:
+        cfg = CalibpipeConfig.from_dict(config)
+
+    selected_env = env_name or cfg.default_env
+    env_spec = cfg.envs.get(selected_env)
+
+    lines = [
+        "=" * 80,
+        "calibpipe Configuration Overview",
+        "=" * 80,
+    ]
+    if config_path:
+        lines.append(f"Config File:      {config_path}")
+    lines.extend([
+        f"Default Env:      {cfg.default_env}",
+        f"Selected Env:     {selected_env}",
+    ])
+
+    if env_spec:
+        lines.extend([
+            f"  CASA Root:      {env_spec.casa_root}",
+            f"  Branch:         {env_spec.branch}",
+            f"  Heuristics:     {env_spec.heuristics_dir or '(bundled / default)'}",
+        ])
+    else:
+        lines.append(f"  [envs.{selected_env}] NOT DEFINED in config")
+
+    lines.extend([
+        "",
+        "Paths:",
+        f"  scipipe_rootdir: {cfg.paths.scipipe_rootdir or '(not set)'}",
+        f"  scipipe_logdir:  {cfg.paths.scipipe_logdir or '(not set)'}",
+    ])
+    if cfg.paths.pickle_dir:
+        lines.append(f"  pickle_dir:      {cfg.paths.pickle_dir}")
+    if cfg.paths.obscaldir:
+        lines.append(f"  obscaldir:       {cfg.paths.obscaldir}")
+
+    lines.extend([
+        "",
+        "Site & Cluster Integration ([site]):",
+        f"  Submit Host:     {cfg.site.submit_host or '(none - any host allowed)'}",
+        f"  Java Home:       {cfg.site.java_home}",
+        f"  PMR Home:        {cfg.site.pmr_home}",
+        f"  Datapacker:      {cfg.site.datapacker_home}",
+        f"  ACS Data:        {cfg.site.acsdata}",
+        f"  Custom RCDIR:    {cfg.site.use_custom_rcdir}",
+        f"  Telemetry:       {cfg.site.casa_enable_telemetry}",
+        "",
+        "Slurm Batch Defaults ([batch]):",
+        f"  Queue:           {cfg.batch.queue}",
+        f"  Cores / Memory:  {cfg.batch.cores} cores, {cfg.batch.mem} GB",
+        f"  Node:            {cfg.batch.node}",
+        f"  Mail Type:       {cfg.batch.mail_type}",
+        "",
+        "Pipeline Run Defaults ([run]):",
+        f"  Recipe:          {cfg.run.recipe}",
+        f"  Cores:           {cfg.run.ncores}",
+        f"  Log Level:       {cfg.run.loglevel}",
+        f"  Use Resume:      {cfg.run.useresume}",
+        "=" * 80,
+    ])
+    return "\n".join(lines)
 
 
 def resolve_env(config: dict[str, Any], env_name: str | None = None) -> EnvSpec:
