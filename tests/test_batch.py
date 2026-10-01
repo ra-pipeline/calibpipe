@@ -193,7 +193,7 @@ class TestScriptRecord(RunbatchCaptureCase):
         try:
             expected_name = f"batch.X3_X3_{FAKE_DATE}.sbatch"
             content = (Path(tmpdir) / expected_name).read_text()
-            self.assertIn("#SBATCH -p plwg", content)
+            self.assertIn("#SBATCH --partition=plwg", content)
             self.assertIn("#SBATCH --mem=248G", content)
             self.assertIn(f"#SBATCH --job-name=X3_X3_{FAKE_DATE}", content)
             self.assertIn("#SBATCH --mail-user=testuser", content)

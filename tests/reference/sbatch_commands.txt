@@ -3,14 +3,14 @@
 sbatch <SBATCH_SCRIPT>
 -----SCRIPT-----
 #!/bin/sh
-#SBATCH -p plwg
+#SBATCH --partition=plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --job-name=X1_X1_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X1_X1_20260101-000000.out
-#SBATCH -e batch.X1_X1_20260101-000000.err
+#SBATCH --output=batch.X1_X1_20260101-000000.out
+#SBATCH --error=batch.X1_X1_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=248G
@@ -23,14 +23,14 @@ umask 002
 sbatch <SBATCH_SCRIPT>
 -----SCRIPT-----
 #!/bin/sh
-#SBATCH -p plwg
+#SBATCH --partition=plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --job-name=X2_X2_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X2_X2_20260101-000000.out
-#SBATCH -e batch.X2_X2_20260101-000000.err
+#SBATCH --output=batch.X2_X2_20260101-000000.out
+#SBATCH --error=batch.X2_X2_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=248G
@@ -43,14 +43,14 @@ umask 002
 sbatch <SBATCH_SCRIPT>
 -----SCRIPT-----
 #!/bin/sh
-#SBATCH -p batch2
+#SBATCH --partition=batch2
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
 #SBATCH --job-name=X3_X3_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X3_X3_20260101-000000.out
-#SBATCH -e batch.X3_X3_20260101-000000.err
+#SBATCH --output=batch.X3_X3_20260101-000000.out
+#SBATCH --error=batch.X3_X3_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=32G
@@ -63,14 +63,14 @@ umask 002
 sbatch <SBATCH_SCRIPT>
 -----SCRIPT-----
 #!/bin/sh
-#SBATCH -p plwg
+#SBATCH --partition=plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --job-name=X3_X3_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X3_X3_20260101-000000.out
-#SBATCH -e batch.X3_X3_20260101-000000.err
+#SBATCH --output=batch.X3_X3_20260101-000000.out
+#SBATCH --error=batch.X3_X3_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=248G
@@ -83,14 +83,14 @@ umask 002
 sbatch <SBATCH_SCRIPT>
 -----SCRIPT-----
 #!/bin/sh
-#SBATCH -p plwg
+#SBATCH --partition=plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
 #SBATCH --job-name=X3_X3_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=FAIL
-#SBATCH -o my.out
-#SBATCH -e my.err
+#SBATCH --output=my.out
+#SBATCH --error=my.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=248G

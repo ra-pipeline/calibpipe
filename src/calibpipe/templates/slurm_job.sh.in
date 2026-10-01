@@ -1,12 +1,12 @@
 #!/bin/sh
-#SBATCH -p $queue
+#SBATCH --partition=$queue
 #SBATCH --nodes=$node
 #SBATCH --ntasks=$cores
 #SBATCH --job-name=$job_name
 #SBATCH --mail-user=$mail_user
 #SBATCH --mail-type=$mail_type
-#SBATCH -o $outfile
-#SBATCH -e $errfile
+#SBATCH --output=$outfile
+#SBATCH --error=$errfile
 #SBATCH --export=ALL
 $extra_directives
 ulimit -Sn 8192
