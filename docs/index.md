@@ -4,8 +4,7 @@
 
 The package keeps site-specific execution details in TOML configuration rather than hard-coded shell fragments, while preserving compatibility with older operational entry points (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
 
-> [!WARNING]
-> **Observatory Infrastructure & Cluster Dependency**
+> [!WARNING] Observatory Infrastructure & Cluster Dependency
 >
 > `calibpipe` is an operational driver for the ALMA Science Pipeline designed to run on observatory HPC clusters (e.g. NAASC) or specialized pipeline workstations. Running `calibpipe` on a standard personal workstation without valid ALMA pipeline builds, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR) will **not work out-of-the-box**.
 >

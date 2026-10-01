@@ -67,8 +67,7 @@ pipx install /path/to/calibpipe
 
 ---
 
-> [!WARNING]
-> **Observatory Infrastructure & Cluster Dependency**
+> [!WARNING] Observatory Infrastructure & Cluster Dependency
 >
 > `calibpipe` is an execution driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC cluster) and specialized pipeline workstations. Running `calibpipe` with arbitrary custom configurations on a standard personal workstation will **not work out-of-the-box** unless you have access to valid ALMA pipeline installations, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR).
 >
