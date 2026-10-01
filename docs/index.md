@@ -1,12 +1,12 @@
 # calibpipe
 
-`calibpipe` is a lightweight driver and Slurm batch wrapper for ALMA Science Pipeline runs. It is designed for operators and developers who need a repeatable command-line workflow for selecting a configured CASA environment, launching a single MOUS reduction, or submitting a batch of jobs.
+`calibpipe` is a lightweight driver and Slurm batch wrapper for ALMA Science Pipeline runs. It is designed for validation, testing, and development workflows needing a repeatable command-line interface for selecting a configured CASA environment, launching a single MOUS reduction, or submitting a batch of jobs.
 
-The package keeps site-specific execution details in TOML configuration rather than hard-coded shell fragments, while preserving compatibility with older operational script entry points in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
+The package keeps site-specific execution details in TOML configuration rather than hard-coded shell fragments, while preserving compatibility with older script entry points in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
 
-> [!WARNING] Observatory Infrastructure & Cluster Dependency
+> [!WARNING] Cluster & Pipeline Tooling Dependencies
 >
-> `calibpipe` is an operational driver for the ALMA Science Pipeline designed to run on observatory HPC clusters (e.g. NAASC) or specialized pipeline workstations. Running `calibpipe` on a standard personal workstation without valid ALMA pipeline builds, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR) will **not work out-of-the-box**.
+> `calibpipe` is not an operational pipeline driver, but a lightweight driver used for validation and testing without larger production machinery entangled. While it decouples executions from heavy production workflow infrastructure, running `calibpipe` still requires access to the underlying pipeline tooling: CASA installations with the ALMA pipeline, ALMA datapacker, `pipelineMakeRequest` (PMR), and Slurm for batch execution.
 >
 > On shared observatory clusters, site administrators can deploy a central site configuration (`/etc/calibpipe/config.toml`, `$CALIBPIPE_SITE_CONFIG`, or `config.site.toml`), allowing users to run immediately or overlay personal settings.
 
