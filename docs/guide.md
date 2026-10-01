@@ -24,29 +24,33 @@ The project is organized as follows:
 ```text
 calibpipe/
 ├── README.md
+├── config.example.toml
 ├── docs/
 │   ├── index.md
 │   ├── guide.md
-│   └── api.md
+│   └── api/
+├── scripts/
+│   ├── calibPipeIF.py
+│   ├── calibpipe_env.sh
+│   └── runbatch.py
 ├── src/
 │   └── calibpipe/
 │       ├── cli.py
 │       ├── config.py
 │       ├── driver.py
 │       ├── batch.py
-│       ├── steps/
-│       └── legacy/
+│       └── steps/
 └── tests/
 ```
 
 Key implementation modules:
 
+- `scripts/` contains backward-compatible runner shims (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
 - `src/calibpipe/cli.py` provides the unified command-line interface.
 - `src/calibpipe/config.py` loads TOML configuration and builds the runtime environment.
 - `src/calibpipe/driver.py` orchestrates a single pipeline run.
 - `src/calibpipe/batch.py` generates and submits Slurm jobs.
 - `src/calibpipe/steps/` houses modular execution phases (staging, PMR, PPR, CASA runner).
-- `src/calibpipe/legacy/` contains compatibility wrappers.
 
 ---
 
@@ -67,8 +71,7 @@ pipx install /path/to/calibpipe
 
 ---
 
-> [!WARNING]
-> **Observatory Infrastructure & Cluster Dependency**
+> [!WARNING] Observatory Infrastructure & Cluster Dependency
 >
 > `calibpipe` is an execution driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC cluster) and specialized pipeline workstations. Running `calibpipe` with arbitrary custom configurations on a standard personal workstation will **not work out-of-the-box** unless you have access to valid ALMA pipeline installations, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR).
 >
@@ -175,10 +178,10 @@ calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
 
 This resolves the selected environment, stages the run inputs, and launches the underlying pipeline execution.
 
-The legacy wrapper still works:
+The legacy script wrapper still works:
 
 ```bash
-./calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
+./scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
 ```
 
 ### 2. Submit a Batch to Slurm
@@ -195,10 +198,10 @@ uid://A001/X128a/Xb9 calimage
 uid://A002/Xcff05c/Xd calimage
 ```
 
-The legacy wrapper also remains available:
+The legacy script wrapper also remains available:
 
 ```bash
-./runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
+./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
 ```
 
 ### 3. Resolve a Shell Environment
@@ -212,22 +215,22 @@ This prints shell exports that can be evaluated directly in `bash` or `zsh`.
 The compatibility wrapper is:
 
 ```bash
-source calibpipe_env.sh --env=main
+source scripts/calibpipe_env.sh --env=main
 ```
 
-Use `calibpipe_env.sh` when you want the resolved CASA and pipeline variables loaded into your current shell session and prefer the older `source ...` workflow. It must be sourced rather than executed, and it exists mainly as a compatibility wrapper around `calibpipe env`.
+Use `scripts/calibpipe_env.sh` when you want the resolved CASA and pipeline variables loaded into your current shell session and prefer the older `source ...` workflow. It must be sourced rather than executed, and it exists mainly as a compatibility wrapper around `calibpipe env`.
 
 ---
 
 ## Backward Compatibility
 
-`calibpipe` preserves legacy entry points so existing user scripts do not need to change immediately.
+`calibpipe` preserves legacy runner shims in `scripts/` so existing user scripts and scheduled workflows do not need to change immediately:
 
-- `calibPipeIF.py` forwards to `calibpipe run`
-- `runbatch.py` forwards to `calibpipe batch`
-- `calibpipe_env.sh` forwards to `calibpipe env`
+- `scripts/calibPipeIF.py` forwards to `calibpipe run` / `calibpipe.driver`
+- `scripts/runbatch.py` forwards to `calibpipe batch` / `calibpipe.batch`
+- `scripts/calibpipe_env.sh` forwards to `calibpipe env` / `calibpipe.cli env`
 
-This allows gradual migration to the unified CLI without breaking older job wrappers.
+This allows gradual migration to the unified `calibpipe` CLI without breaking older job wrappers or polluting the global `$PATH`.
 
 ---
 

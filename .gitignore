@@ -19,7 +19,8 @@ htmlcov/
 /config.toml
 /config-*.toml
 
-# Slurm batch logs
+# Slurm batch logs & job files
 batch*.err
 batch*.out
 *.log
+*.run

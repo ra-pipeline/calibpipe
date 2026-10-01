@@ -17,9 +17,7 @@ Detailed package documentation is available in [docs/guide.md](docs/guide.md).
 
 - **Decoupled Architecture:** Pure Python 3 ($\ge 3.10$) standard library runtime with zero heavy dependencies.
 - **Location & Version Agnostic:** Never hardcodes personal paths. All environments, CASA builds, and pipeline checkouts live in a gitignored `config.toml`.
-- **Unified Modern CLI:** Provides `calibpipe run`, `calibpipe batch`, and `calibpipe env` subcommands.
-- **Pure-Python Shell Environment Resolver:** Replaces ~300 lines of brittle Bash TOML parsing with direct shell export generation.
-- **100% Backward Compatible:** Provides executable shims for legacy `calibPipeIF.py`, `runbatch.py`, and `calibpipe_env.sh`.
+- **100% Backward Compatible:** Preserves legacy runner shims in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
 
 ---
 
@@ -99,8 +97,8 @@ calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
 # Or direct shortcut
 calibpipe --mous=uid://A001/X128a/Xb9 --env=main
 
-# Legacy interface (backward-compatible)
-./calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
+# Legacy interface (backward-compatible script shim)
+./scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
 ```
 
 ### 2. Batch Execution on Slurm
@@ -109,8 +107,8 @@ calibpipe --mous=uid://A001/X128a/Xb9 --env=main
 # Using unified CLI
 calibpipe batch quick.run --env=main -c 8 -m 248 -p plwg
 
-# Legacy interface (backward-compatible)
-./runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
+# Legacy interface (backward-compatible script shim)
+./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
 ```
 
 `quick.run` format:
@@ -130,13 +128,13 @@ Set the ALMA pipeline environment variables directly in your current shell sessi
 eval "$(calibpipe env --env=main)"
 
 # Or source the helper script:
-source calibpipe_env.sh --env=main
+source scripts/calibpipe_env.sh --env=main
 
 # Inspect resolved variables:
 calibpipe env --env=main --print-env
 ```
 
-Use `calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
+Use `scripts/calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
 
 For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows).
 

@@ -3,6 +3,11 @@ site_name = "calibpipe"
 docs_dir = "docs"
 site_dir = "site"
 watch = ["src"]
+extra_css = ["stylesheets/extra.css"]
+
+[project.theme.font]
+text = "Inter"
+code = "Roboto Mono"
 
 nav = [
     { "Home" = "index.md" },
@@ -17,6 +22,8 @@ nav = [
 ]
 
 [project.plugins.search]
+
+[project.plugins.gh-admonitions]
 
 [project.plugins.mkdocstrings]
 default_handler = "python"

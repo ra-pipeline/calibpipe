@@ -19,8 +19,10 @@ from typing import Sequence
 from calibpipe import config as envconfig
 
 # Fallback path to calibPipeIF executable (can be overridden or patched)
-CALIBPIPEIF = Path(__file__).resolve().parent / "legacy" / "calibPipeIF.py"
-if not CALIBPIPEIF.exists():
+_candidate = Path(__file__).resolve().parent.parent.parent / "scripts" / "calibPipeIF.py"
+if _candidate.is_file():
+    CALIBPIPEIF = _candidate
+else:
     CALIBPIPEIF = Path(shutil.which("calibpipe") or "calibpipe")
 
 
