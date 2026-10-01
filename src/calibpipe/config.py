@@ -150,6 +150,7 @@ class RunConfig:
     ncores: int = 8
     loglevel: str = "debug"
     useresume: bool = False
+    symlink_shortcuts: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
@@ -159,6 +160,9 @@ class RunConfig:
             ncores=int(data.get("ncores", default_inst.ncores)),
             loglevel=str(data.get("loglevel", default_inst.loglevel)),
             useresume=bool(data.get("useresume", default_inst.useresume)),
+            symlink_shortcuts=bool(
+                data.get("symlink_shortcuts", default_inst.symlink_shortcuts)
+            ),
         )
 
 
@@ -295,6 +299,7 @@ class ResolvedRunOptions:
     loglevel: str
     useresume: bool
     use_custom_rcdir: bool
+    symlink_shortcuts: bool = True
     flag_dir: str | None = None
     ppr: str | None = None
     subdir: str | None = None
@@ -321,6 +326,11 @@ def resolve_run_options(
     else:
         use_custom_rcdir = cfg.site.use_custom_rcdir
 
+    if getattr(cli_opts, "symlink_shortcuts", None) is not None:
+        symlink_shortcuts = bool(cli_opts.symlink_shortcuts)
+    else:
+        symlink_shortcuts = cfg.run.symlink_shortcuts
+
     recipe = getattr(cli_opts, "recipe", None) or cfg.run.recipe
     ncores = getattr(cli_opts, "ncores", None)
     if ncores is None:
@@ -337,6 +347,7 @@ def resolve_run_options(
         loglevel=loglevel,
         useresume=bool(useresume),
         use_custom_rcdir=use_custom_rcdir,
+        symlink_shortcuts=symlink_shortcuts,
         flag_dir=getattr(cli_opts, "flag", None),
         ppr=getattr(cli_opts, "ppr", None),
         subdir=getattr(cli_opts, "subdir", None),
@@ -1155,7 +1166,10 @@ def check_paths(
             (
                 "pixi_dir",
                 pixi_dir,
-                "Please configure [envs.<name>].pixi_dir in config.toml to point to a valid Pixi environment directory.",
+                (
+                    "Please configure [envs.<name>].pixi_dir in config.toml "
+                    "to point to a valid Pixi environment directory."
+                ),
             )
         )
         pixi_bin = site.get("pixi_bin") or shutil.which("pixi")
@@ -1189,7 +1203,10 @@ def check_paths(
             (
                 "pmr_home",
                 env.get("ACSROOT", ""),
-                "Please configure [site].pmr_home in config.toml (or copy from notes/config.internal.example.toml for NAASC cluster).",
+                (
+                    "Please configure [site].pmr_home in config.toml "
+                    "(or copy from notes/config.internal.example.toml for NAASC cluster)."
+                ),
             ),
             (
                 "datapacker_home",

@@ -50,7 +50,7 @@ Key implementation modules:
 - `src/calibpipe/config.py` loads TOML configuration and builds the runtime environment.
 - `src/calibpipe/driver.py` orchestrates a single pipeline run.
 - `src/calibpipe/batch.py` generates and submits Slurm jobs.
-- `src/calibpipe/steps/` houses modular execution phases (staging, PMR, PPR, CASA runner).
+- `src/calibpipe/steps/` houses modular execution phases (such as input staging).
 
 ---
 
@@ -207,7 +207,7 @@ flowchart TD
 
 - **`[paths]` & `[site]`:** Keys are merged recursively. User-specified values override site values, while all unmentioned site settings (`obscaldir`, `pmr_home`, `acsdata`, etc.) are seamlessly inherited.
 - **`[batch]`:** Slurm partition and resource defaults are inherited from the site configuration. A user only needs to specify what they wish to customize (e.g. `mail_type = "FAIL"`).
-- **`[envs]` (Additive & Overriding):** Environment tables are additive. If the site defines `[envs.main]` and `[envs.modular]`, and a user config defines `[envs.rx_pixi]`, **all three** environments are available to the user. If an environment name collides, the user's table overlays the site's definition.
+- **`[envs]` (Additive & Overriding):** Environment tables are additive. If the site defines `[envs.main]` and `[envs.modular]`, and a user config defines `[envs.custom_pixi]`, **all three** environments are available to the user. If an environment name collides, the user's table overlays the site's definition.
 
 #### Running in Isolated Mode (`--no-site-config`)
 
@@ -226,7 +226,7 @@ export CALIBPIPE_NO_SITE_CONFIG=1
 
 ### 2. Configuration Hierarchy & Structure
 
-The TOML configuration is organized into three distinct tiers:
+The TOML configuration is organized into five distinct tiers:
 
 ```
 config.toml
@@ -261,7 +261,7 @@ Each `[envs.<name>]` table represents a selectable runtime target (e.g. `[envs.m
   - `pixi_env`: (Optional) Target Pixi environment name (default: `"default"`). In MPI mode, `calibpipe` sets `CASA_NPROCS` to the requested core count.
 - **Common Options:**
   - `branch`: (Optional) Pipeline branch identifier (defaults to `<name>`).
-  - `heuristics_dir`: (Optional) Path to pipeline heuristics checkout. Supports template substitutions `{casa_root}`, `{pixi_dir}`, and `{branch}` (e.g. `{pixi_dir}/pipeline`). If omitted in Pixi mode, defaults to `{pixi_dir}/pipeline`.
+  - `heuristics_dir`: (Optional) Path to pipeline heuristics checkout. Supports template substitutions `{casa_root}`, `{pixi_dir}`, and `{branch}` (e.g. `{pixi_dir}/pipeline`). If omitted, defaults to `{heuristics_root}/{branch}` (or `{pixi_dir}` in Pixi mode).
   - *Arbitrary extra keys:* Any additional key-value pairs in this table are exported as environment variables for that specific target.
 
 #### Tier 3: Site & Cluster Overrides (`[site]`) (Optional)
@@ -275,6 +275,7 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 - `java_home`: JVM runtime path (default: `$JAVA_HOME` or `/usr/lib/jvm/default-java`).
 - `flux_service_url`: Primary ALMA flux service URL.
 - `flux_service_url_backup`: Secondary ALMA flux service backup URL.
+- `casa_enable_telemetry`: If `true`, enables CASA telemetry (default: `false`).
 - `submit_host`: If set, `calibpipe batch` strictly refuses to submit Slurm jobs unless run on this specific hostname.
 - `strict_paths`: If set to `true`, path validation aborts with an error instead of issuing warnings.
 - `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py` and `startup.py`) inside the run tree, ensuring pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`.
@@ -306,7 +307,8 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `ncores`: Default CPU core count passed to `mpicasa` (default: `8`).
 - `loglevel`: Default pipeline log level (default: `debug`).
 - `useresume`: Use breakpoint / resume execution instead of two sequential CASA contexts (default: `false`).
-- `use_custom_rcdir`: Override site-level isolated CASA runtime setting per run (default: `true`).
+- `symlink_shortcuts`: Automatically create convenience symlinks (`working`, `products`, `rawdata`) in the project run root (default: `true`; override via `--symlink-shortcuts` / `--no-symlink-shortcuts`).
+*(Note: Isolated CASA runtime directory generation is configured under `[site].use_custom_rcdir` and can be overridden via `--custom-rcdir` / `--no-custom-rcdir`).*
 
 ---
 
@@ -324,8 +326,8 @@ flowchart TD
 ```
 
 1. **Host Environment:** Reads baseline `os.environ` (inherits `USER`, `HOME`, base `PATH`).
-2. **Site Defaults & Overrides:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`.
-3. **Paths Resolution:** Resolves and creates `SCIPIPE_ROOTDIR`, `SCIPIPE_LOGDIR`, `PICKLE_DIR`, `OBSCALDIR`, `AUDIR`, `VALIDATION_DIR`.
+2. **Site Defaults & Overrides:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`, and `CASA_ENABLE_TELEMETRY`.
+3. **Paths Resolution:** Resolves and creates `SCIPIPE_ROOTDIR` and `SCIPIPE_LOGDIR` (interpolating `{user}` and optional `--subdir`). Other path settings (such as `obscaldir` and `aUdir`) are passed to driver options and CLI flags.
 4. **Environment Target Resolution:** Sets `CASA_ROOT` (or `PIXI_DIR`), prepends executable paths and `PMR/bin` to `PATH`, and sets `SCIPIPE_HEURISTICS`.
 5. **Path Validation:** `check_paths()` checks disk accessibility for `CASA_ROOT` (or `pixi_dir`), `pmr_home`, `datapacker_home`, `acsdata`, and `java_home`. If any path is missing, actionable guidance is printed to `sys.stderr`.
 
@@ -352,8 +354,10 @@ The legacy script wrapper still works:
 ### 2. Submit a Batch to Slurm
 
 ```bash
-calibpipe batch quick.run --env=main -c 8 -m 248 -p plwg
+calibpipe batch quick.run --env=main -c 8 -m 248 -p
 ```
+
+The `-p` flag selects the `plwg` queue (use `-b` for `batch2`, or omit to use `[batch].queue` from configuration).
 
 The `quick.run` file contains one MOUS per line, with an optional recipe column:
 
@@ -366,7 +370,7 @@ uid://A002/Xcff05c/Xd calimage
 The legacy script wrapper also remains available:
 
 ```bash
-./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
+./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p
 ```
 
 #### Multi-Job Concurrency and HPC Safety
@@ -531,6 +535,7 @@ The Zensical configuration lives in `zensical.toml`. API pages are generated thr
 ## Related Files
 
 - `README.md` (repository root): top-level package overview and quick start
+- [Execution Internals](internals.md): deep dive on project ID resolution, PMR staging, and OUS structure
 - `config.example.toml`: unified configuration template (for site admins and individual users)
 - `quick.run`: sample batch input format
 - [API Reference](api/index.md): generated API reference

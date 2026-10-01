@@ -120,10 +120,10 @@ calibpipe --mous=uid://A001/X128a/Xb9 --env=main
 
 ```bash
 # Using unified CLI
-calibpipe batch quick.run --env=main -c 8 -m 248 -p plwg
+calibpipe batch quick.run --env=main -c 8 -m 248 -p
 
 # Legacy interface (backward-compatible script shim)
-./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
+./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p
 ```
 
 `quick.run` format:
@@ -159,7 +159,7 @@ Inspect active settings, paths, and environment defaults resolved from `config.t
 calibpipe config show --env=main
 ```
 
-For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows).
+For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows). For staging lifecycle, PMR resolution, and directory layout details, see [Execution Internals](docs/internals.md).
 
 ---
 

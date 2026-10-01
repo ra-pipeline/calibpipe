@@ -60,7 +60,7 @@ default_env = "main"
 casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 ```
 
-For the complete multi-layer cascading architecture (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`), variable interpolation, and precedence rules, see the [Configuration Guide](guide.md#configuration).
+For the complete multi-layer cascading architecture (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`, `[run]`), variable interpolation, and precedence rules, see the [Configuration Guide](guide.md#configuration).
 
 ### 3. Run a Reduction
 
@@ -76,6 +76,7 @@ For Slurm batch execution, interactive shell sourcing, and legacy wrapper mappin
 
 ## Documentation Map
 
-- **[User Guide](guide.md):** Complete manual covering architecture, the 3-tier configuration schema, Slurm batching, shell environment setup, testing, and local doc previewing.
+- **[User Guide](guide.md):** Complete manual covering architecture, the 5-tier configuration schema, Slurm batching, shell environment setup, testing, and local doc previewing.
+- **[Execution Internals](internals.md):** In-depth technical details on project ID resolution, `pipelineMakeRequest` (PMR) staging, OUS directory layout, and FAQ.
 - **[API Reference](api/index.md):** Auto-generated module reference and docstrings for `cli`, `config`, `driver`, `batch`, and execution steps.
 - **[Configuration Template](https://github.com/nrao/calibpipe/blob/main/config.example.toml):** Fully annotated generic configuration template.

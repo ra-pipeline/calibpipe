@@ -6,7 +6,7 @@
 
 | Module | Description |
 | :--- | :--- |
-| [`calibpipe.cli`](cli.md) | Unified command-line entry point and subcommand routing for `run`, `batch`, and `env`. |
+| [`calibpipe.cli`](cli.md) | Unified command-line entry point and subcommand routing for `run`, `batch`, `env`, and `config`. |
 | [`calibpipe.config`](config.md) | TOML configuration loader, environment resolution, and path reachability validation. |
 | [`calibpipe.driver`](driver.md) | Single-run pipeline orchestrator, log management, and CASA subprocess execution. |
 | [`calibpipe.batch`](batch.md) | Slurm batch submission generator, pipefile parser, and submit-host guards. |

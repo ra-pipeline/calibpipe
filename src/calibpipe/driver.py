@@ -10,7 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -173,6 +173,130 @@ def get_casa_rcdir_args(casaroot: str | Path, rcdir: Path) -> list[str]:
     return ["--rcdir", str(rcdir)]
 
 
+def link_weblog(
+    ppmr_dir: str | Path,
+    working_dir: str | Path,
+    log_message: Callable[[str], None] | None = None,
+) -> Path | None:
+    """Create a convenience symlink at project root to the latest pipeline weblog HTML directory.
+
+    Scans working_dir (and products/) for pipeline-*/html directories and creates:
+    - ppmr_dir/weblog -> relative path to .../pipeline-*/html
+
+    Args:
+        ppmr_dir: Project root directory.
+        working_dir: Pipeline working directory.
+        log_message: Optional logging callback.
+
+    Returns:
+        Path to the created symlink, or None if no weblog directory was found.
+    """
+    root = Path(ppmr_dir).resolve()
+    work = Path(working_dir).resolve()
+    html_dirs = sorted(
+        work.glob("pipeline-*/html"),
+        key=lambda p: (p.stat().st_mtime if p.exists() else 0),
+    )
+    if not html_dirs:
+        products_dir = work.parent / "products"
+        if products_dir.is_dir():
+            html_dirs = sorted(
+                products_dir.glob("pipeline-*/html"),
+                key=lambda p: (p.stat().st_mtime if p.exists() else 0),
+            )
+    if not html_dirs:
+        return None
+
+    latest_weblog = html_dirs[-1]
+    link_path = root / "weblog"
+    if link_path.exists() and not link_path.is_symlink():
+        return None
+
+    try:
+        rel_target = os.path.relpath(latest_weblog, root)
+        if link_path.is_symlink():
+            if os.readlink(link_path) == rel_target:
+                return link_path
+            link_path.unlink()
+        link_path.symlink_to(rel_target)
+        if log_message:
+            log_message(f"created weblog shortcut {link_path} -> {rel_target}")
+        return link_path
+    except OSError as e:
+        if log_message:
+            log_message(f"warning: could not create weblog symlink {link_path}: {e}")
+        return None
+
+
+def create_project_symlinks(
+    ppmr_dir: str | Path,
+    working_dir: str | Path,
+    log_message: Callable[[str], None] | None = None,
+) -> list[Path]:
+    """Create convenience symlinks in the project root pointing to OUS subdirectories.
+
+    Links created in ppmr_dir (if working_dir is nested):
+    - ppmr_dir/working -> relative path to working
+    - ppmr_dir/products -> relative path to products
+    - ppmr_dir/rawdata -> relative path to rawdata
+    - ppmr_dir/weblog -> relative path to latest pipeline-*/html (if present)
+
+    Args:
+        ppmr_dir: Project root directory (e.g. root/<project_code>_<timestamp>).
+        working_dir: Deeply nested pipeline working directory.
+        log_message: Optional logging callback.
+
+    Returns:
+        List of created symlink paths.
+    """
+    root = Path(ppmr_dir).resolve()
+    work = Path(working_dir).resolve()
+    created: list[Path] = []
+
+    # If working directory is directly inside or equal to root, no nesting to shortcut
+    if work == root or work.parent == root:
+        return created
+
+    try:
+        work.relative_to(root)
+    except ValueError:
+        return created
+
+    ous_dir = work.parent
+    targets = {
+        "working": work,
+        "products": ous_dir / "products",
+        "rawdata": ous_dir / "rawdata",
+    }
+
+    for name, target in targets.items():
+        link_path = root / name
+        # If destination exists as a real file/directory (not symlink), do not overwrite
+        if link_path.exists() and not link_path.is_symlink():
+            continue
+        try:
+            rel_target = os.path.relpath(target, root)
+            if link_path.is_symlink():
+                if os.readlink(link_path) == rel_target:
+                    created.append(link_path)
+                    continue
+                link_path.unlink()
+            link_path.symlink_to(rel_target)
+            created.append(link_path)
+            if log_message:
+                log_message(f"created convenience symlink {link_path} -> {rel_target}")
+        except OSError as e:
+            if log_message:
+                log_message(f"warning: could not create symlink {link_path}: {e}")
+
+    # Also link weblog if already generated
+    wl = link_weblog(ppmr_dir, working_dir, log_message)
+    if wl and wl not in created:
+        created.append(wl)
+
+    return created
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the parser for the `calibpipe run` workflow.
 
@@ -261,6 +385,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         dest="custom_rcdir",
         help="Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: from [site].use_custom_rcdir)",
+    )
+    p.add_argument(
+        "--symlink-shortcuts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="symlink_shortcuts",
+        help=(
+            "Create convenience symlinks (working, products, rawdata, weblog) in project root "
+            "(default: from [run].symlink_shortcuts)"
+        ),
     )
     return p
 
@@ -453,6 +587,10 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     dir_working = dir_working_output.split("\n")[0]
     ppmr_fulldir = dir_working.split("working")[0] + "/"
 
+    # Create convenience symlinks in project root (working, products, rawdata)
+    if run_opts.symlink_shortcuts:
+        create_project_symlinks(ppmr_dir, dir_working, log_message)
+
     # File staging from --flag
     if flag_and_go:
         stage_flags_and_wvr(flag_and_go_dir, ppmr_fulldir, log_message)
@@ -565,6 +703,8 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         else:
             retcode = mylog.runquiet(cmd)
     finally:
+        if run_opts.symlink_shortcuts:
+            link_weblog(ppmr_dir, working_path, log_message)
         os.chdir(orig_cwd)
         mylog.close()
 

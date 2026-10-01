@@ -410,5 +410,116 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
             self.assertNotIn("VIRTUAL_ENV", self.casa_environ)
 
 
+class TestSymlinkShortcuts(unittest.TestCase):
+    """Test convenience symlink generation for project root."""
+
+    def test_create_project_symlinks_relative(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ppmr_dir = root / "2016.2.00105.S_run1"
+            working = ppmr_dir / "SOUS_uid___1" / "GOUS_uid___2" / "MOUS_uid___3" / "working"
+            working.mkdir(parents=True)
+            products = working.parent / "products"
+            products.mkdir()
+            rawdata = working.parent / "rawdata"
+            rawdata.mkdir()
+
+            links = calibPipeIF.create_project_symlinks(ppmr_dir, working)
+            self.assertEqual(len(links), 3)
+
+            link_working = ppmr_dir / "working"
+            link_products = ppmr_dir / "products"
+            link_rawdata = ppmr_dir / "rawdata"
+
+            self.assertTrue(link_working.is_symlink())
+            self.assertTrue(link_products.is_symlink())
+            self.assertTrue(link_rawdata.is_symlink())
+
+            # Verify target resolution
+            self.assertEqual(link_working.resolve(), working.resolve())
+            self.assertEqual(link_products.resolve(), products.resolve())
+            self.assertEqual(link_rawdata.resolve(), rawdata.resolve())
+
+            # Verify symlinks are relative, not absolute
+            target_str = os.readlink(link_working)
+            self.assertFalse(os.path.isabs(target_str))
+            self.assertEqual(
+                target_str,
+                os.path.join("SOUS_uid___1", "GOUS_uid___2", "MOUS_uid___3", "working"),
+            )
+
+            # Re-running is idempotent and does not error
+            links2 = calibPipeIF.create_project_symlinks(ppmr_dir, working)
+            self.assertEqual(len(links2), 3)
+
+    def test_create_project_symlinks_flat_noop(self):
+        with tempfile.TemporaryDirectory() as td:
+            ppmr_dir = Path(td)
+            working = ppmr_dir / "working"
+            working.mkdir()
+
+            links = calibPipeIF.create_project_symlinks(ppmr_dir, working)
+            self.assertEqual(links, [])
+
+    def test_link_weblog_picks_latest_and_relative(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ppmr_dir = root / "2016.2.00105.S_run1"
+            working = ppmr_dir / "SOUS_uid___1" / "GOUS_uid___2" / "MOUS_uid___3" / "working"
+            working.mkdir(parents=True)
+
+            # Initially no weblog
+            self.assertIsNone(calibPipeIF.link_weblog(ppmr_dir, working))
+
+            # First weblog generated
+            wl1 = working / "pipeline-20261001T100000" / "html"
+            wl1.mkdir(parents=True)
+            os.utime(wl1, (1000, 1000))
+
+            link = calibPipeIF.link_weblog(ppmr_dir, working)
+            self.assertIsNotNone(link)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), wl1.resolve())
+            target_str = os.readlink(link)
+            self.assertFalse(os.path.isabs(target_str))
+            self.assertIn("pipeline-20261001T100000", target_str)
+
+            # Second (newer) weblog generated
+            wl2 = working / "pipeline-20261001T120000" / "html"
+            wl2.mkdir(parents=True)
+            os.utime(wl2, (2000, 2000))
+
+            link2 = calibPipeIF.link_weblog(ppmr_dir, working)
+            self.assertIsNotNone(link2)
+            self.assertEqual(link2.resolve(), wl2.resolve())
+            self.assertIn("pipeline-20261001T120000", os.readlink(link2))
+
+    def test_link_weblog_finds_in_products_if_not_in_working(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ppmr_dir = root / "2016.2.00105.S_run1"
+            working = ppmr_dir / "SOUS_uid___1" / "GOUS_uid___2" / "MOUS_uid___3" / "working"
+            working.mkdir(parents=True)
+            products = working.parent / "products"
+            wl_prod = products / "pipeline-20261001T150000" / "html"
+            wl_prod.mkdir(parents=True)
+
+            link = calibPipeIF.link_weblog(ppmr_dir, working)
+            self.assertIsNotNone(link)
+            self.assertEqual(link.resolve(), wl_prod.resolve())
+            self.assertIn("products", os.readlink(link))
+
+    def test_driver_parser_symlink_shortcuts_flags(self):
+        p = calibPipeIF.build_parser()
+        args_default = p.parse_args(["--mous=uid://A001/X1/X1"])
+        self.assertIsNone(args_default.symlink_shortcuts)
+
+        args_on = p.parse_args(["--mous=uid://A001/X1/X1", "--symlink-shortcuts"])
+        self.assertTrue(args_on.symlink_shortcuts)
+
+        args_off = p.parse_args(["--mous=uid://A001/X1/X1", "--no-symlink-shortcuts"])
+        self.assertFalse(args_off.symlink_shortcuts)
+
+
 if __name__ == "__main__":
     unittest.main()
