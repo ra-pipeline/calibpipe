@@ -15,9 +15,11 @@ site/
 .coverage
 htmlcov/
 
-# Local personal configs (never commit your own)
+# Local personal configs & scratch directories (never commit your own)
 /config.toml
 /config-*.toml
+/config.site.toml
+local/
 
 # Slurm batch logs & job files
 batch*.err

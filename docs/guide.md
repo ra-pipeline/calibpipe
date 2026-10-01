@@ -99,12 +99,14 @@ calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
 
 ### 3. Alternative Installation Methods
 
-* **Standard Editable Install via `pip`:**
+- **Standard Editable Install via `pip`:**
+
   ```bash
   pip install -e .
   ```
 
-* **Isolated Install via `pipx`:**
+- **Isolated Install via `pipx`:**
+
   ```bash
   pipx install /path/to/calibpipe
   ```
@@ -164,25 +166,61 @@ uv cache clean    # wipes the entire cache (forces fresh downloads on next use)
 
 ## Configuration
 
-`calibpipe` relies on a structured TOML configuration file to separate code from site-specific paths and CASA installations. Start from `config.example.toml` in the repository root and copy it to `config.toml`.
+`calibpipe` uses a structured TOML configuration model designed for both standalone developer workstations and multi-user observatory HPC clusters (e.g., NAASC cluster).
 
-### 1. File Discovery Precedence
+### 1. Cascading Configuration Architecture
 
-When any `calibpipe` command or script runs, the configuration file is resolved in the following strict order of precedence (first found wins):
-
-1. **CLI Argument:** `--config=<path>`
-2. **Environment Variable:** `$CALIBPIPE_CONFIG`
-3. **Current Working Directory:** `./config.toml`
-4. **User Config Directory:** `~/.config/calibpipe/config.toml`
+Rather than requiring users to duplicate cluster-wide tooling and CASA paths into private configuration files, `calibpipe` discovers and **deep-merges** configuration across a multi-layer hierarchy:
 
 ```mermaid
-flowchart LR
-    A["1. --config CLI flag"] -->|if unset| B["2. $CALIBPIPE_CONFIG env var"]
-    B -->|if unset| C["3. ./config.toml (cwd)"]
-    C -->|if unset| D["4. ~/.config/calibpipe/config.toml"]
+flowchart TD
+    Site["1. Site / Cluster Config<br/><i>/etc/calibpipe/config.toml</i><br/>or <i>$CALIBPIPE_SITE_CONFIG</i><br/>or <i>&lt;repo_root&gt;/config.site.toml</i>"]
+    User["2. User Config<br/><i>~/.config/calibpipe/config.toml</i><br/><i>~/.calibpipe/config.toml</i>"]
+    CWD["3. Workspace / CWD Config<br/><i>./config.toml</i>"]
+    CLI["4. CLI / Env Override<br/><i>--config=&lt;path&gt;</i> or <i>$CALIBPIPE_CONFIG</i>"]
+    Merged["Resolved CalibpipeConfig<br/>(Deep-Merged Hierarchy)"]
+
+    Site -->|Base Defaults &amp; Tools| Merged
+    User -->|Personal Overrides| Merged
+    CWD -->|Directory Overrides| Merged
+    CLI -->|Highest Priority| Merged
 ```
 
-If none of these paths exist, `calibpipe` raises an actionable `ConfigError`.
+#### Discovery Precedence (Lowest to Highest Priority)
+
+1. **Site / System Configuration (Base Defaults):**
+   - `$CALIBPIPE_SITE_CONFIG` environment variable (if set, must exist)
+   - `/etc/calibpipe/config.toml` (standard Linux system configuration)
+   - `config.site.toml` in repository or package root
+   - *Maintained by cluster admins*: provides shared cluster tools (`pmr_home`, `datapacker_home`, `java_home`, `acsdata`), cluster Slurm queues (`[batch]`), and canonical production CASA installations (`[envs.main]`, `[envs.modular]`).
+2. **User Configuration (`~/.config/calibpipe/config.toml` & `~/.calibpipe/config.toml`):**
+   - XDG location: `~/.config/calibpipe/config.toml` (or `$XDG_CONFIG_HOME/calibpipe/config.toml`)
+   - Home dot-directory: `~/.calibpipe/config.toml`
+   - *User-specific overrides*: personal scratch paths (`scipipe_rootdir = "/lustre/.../{user}"`), personal Slurm email, or developer feature environments (`[envs.my_branch]`). If both user files exist, `~/.calibpipe/config.toml` overlays on top of XDG settings.
+3. **Workspace Configuration (`./config.toml` or `./.calibpipe.toml`):**
+   - Project- or directory-specific settings when running from a dedicated workspace.
+4. **Explicit CLI / Runtime Override (`--config=<path>` or `$CALIBPIPE_CONFIG`):**
+   - Highest-priority overlay for custom or ad hoc runs.
+   - Layers on top of the site configuration unless isolated mode is requested.
+
+#### Deep-Merging Rules
+
+- **`[paths]` & `[site]`:** Keys are merged recursively. User-specified values override site values, while all unmentioned site settings (`obscaldir`, `pmr_home`, `acsdata`, etc.) are seamlessly inherited.
+- **`[batch]`:** Slurm partition and resource defaults are inherited from the site configuration. A user only needs to specify what they wish to customize (e.g. `mail_type = "FAIL"`).
+- **`[envs]` (Additive & Overriding):** Environment tables are additive. If the site defines `[envs.main]` and `[envs.modular]`, and a user config defines `[envs.rx_pixi]`, **all three** environments are available to the user. If an environment name collides, the user's table overlays the site's definition.
+
+#### Running in Isolated Mode (`--no-site-config`)
+
+For isolated test suites or benchmarking runs where site defaults should be ignored completely:
+
+```bash
+# Via CLI flag
+calibpipe run --mous=uid://A001/X1/X1 --config=isolated.toml --no-site-config
+calibpipe batch myjob.txt --config=isolated.toml --no-site-config
+
+# Or via environment variable
+export CALIBPIPE_NO_SITE_CONFIG=1
+```
 
 ---
 
@@ -201,7 +239,9 @@ config.toml
 ```
 
 #### Tier 1: Workspace & Product Paths (`[paths]`)
+
 Configures directories where runs, logs, and reference databases reside:
+
 - `scipipe_rootdir`: Root directory where execution folders and data products are staged. Supports `{user}` interpolation.
 - `scipipe_logdir`: Root directory for driver and subprocess execution logs. Supports `{user}` interpolation.
 - `pickle_dir`: (Optional) Directory for post-run pickle logs. Supports `{user}` interpolation.
@@ -211,7 +251,9 @@ Configures directories where runs, logs, and reference databases reside:
 - `heuristics_root`: (Optional) Base directory for multi-branch pipeline checkouts (`{heuristics_root}/{branch}`).
 
 #### Tier 2: Runtime Targets (`[envs.<name>]`)
+
 Each `[envs.<name>]` table represents a selectable runtime target (e.g. `[envs.main]`, `[envs.dev]`, `[envs.modular]`):
+
 - **Monolithic CASA Installation:**
   - `casa_root`: Root path to the monolithic CASA installation containing `bin/casa` and `bin/mpicasa`.
 - **Modular Pixi Environment:**
@@ -223,7 +265,9 @@ Each `[envs.<name>]` table represents a selectable runtime target (e.g. `[envs.m
   - *Arbitrary extra keys:* Any additional key-value pairs in this table are exported as environment variables for that specific target.
 
 #### Tier 3: Site & Cluster Overrides (`[site]`) (Optional)
+
 Overrides the package's built-in defaults for observatory-specific infrastructure:
+
 - `pixi_bin`: (Optional) Explicit path to the `pixi` executable (defaults to finding `pixi` on `$PATH`).
 - `pmr_home`: Installation root for `pipelineMakeRequest` (default: `/opt/pipetools/latest`).
 - `datapacker_home`: ALMA datapacker installation root (default: `/opt/datapacker/current`).
@@ -236,7 +280,9 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 - `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py` and `startup.py`) inside the run tree, ensuring pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`.
 
 #### Tier 4: Slurm Batch Defaults (`[batch]`) (Optional)
+
 Configures baseline defaults for `calibpipe batch` when CLI flags are not provided:
+
 - `queue`: Slurm partition / queue name (default: `plwg`).
 - `cores`: Number of tasks / CPU cores allocated per Slurm job `--ntasks` (default: `8`).
 - `mem`: Total RAM in GB per job `--mem` (default: `248`; mutually exclusive with `mem_per_cpu`).
@@ -253,7 +299,9 @@ Configures baseline defaults for `calibpipe batch` when CLI flags are not provid
 - `no_requeue`: Prevent Slurm from requeuing jobs on node failure `--no-requeue` (default: `true`).
 
 #### Tier 5: Pipeline Run Defaults (`[run]`) (Optional)
+
 Configures single-run driver execution defaults for `calibpipe run`:
+
 - `recipe`: Default pipeline reduction recipe (default: `calimage`).
 - `ncores`: Default CPU core count passed to `mpicasa` (default: `8`).
 - `loglevel`: Default pipeline log level (default: `debug`).
@@ -330,10 +378,10 @@ safeguards to guarantee conflict-free concurrent execution:
 
 When running under a modular Pixi environment (`--env=<pixi_env>`):
 
-* **Immutable Lockfile Enforcement:** `calibpipe` executes Pixi with `pixi run --frozen`. This guarantees Pixi
+- **Immutable Lockfile Enforcement:** `calibpipe` executes Pixi with `pixi run --frozen`. This guarantees Pixi
   treats `pixi.lock` as strictly read-only and never attempts to re-solve dependencies or update the lockfile
   concurrently across worker nodes.
-* **Script-Based Execution (`casa_piperun.py`):** Rather than passing complex, multi-statement inline Python
+- **Script-Based Execution (`casa_piperun.py`):** Rather than passing complex, multi-statement inline Python
   strings through nested shell layers (which can strip quotes and cause syntax errors in CASA), `calibpipe` writes
   a clean `casa_piperun.py` script directly into each MOUS's `working/` directory and executes it via
   `-c /path/to/working/casa_piperun.py`. Using an absolute path ensures CASA recognizes it as a script file
@@ -352,18 +400,18 @@ Monolithic and modular CASA default to writing user configuration, cache, and te
 collide or corrupt databases.
 
 `calibpipe` automatically isolates CASA state per MOUS:
-* Creates a dedicated `.casa/` directory inside `<mous_path>/working/.casa/`.
-* Renders private, customized `config.py` and `startup.py` scripts.
-* Passes `--cachedir`, `--configfile`, and `--startupfile` pointing directly into that job's working directory.
-* Jobs never touch or contend for a shared `~/.casa/` directory.
+- Creates a dedicated `.casa/` directory inside `<mous_path>/working/.casa/`.
+- Renders private, customized `config.py` and `startup.py` scripts.
+- Passes `--cachedir`, `--configfile`, and `--startupfile` pointing directly into that job's working directory.
+- Jobs never touch or contend for a shared `~/.casa/` directory.
 
 ##### 3. Slurm Submission Safety
 
-* **Unique Job Records:** Each job in a batch receives a unique timestamped name (`batch.<mous>_<timestr>`) with
+- **Unique Job Records:** Each job in a batch receives a unique timestamped name (`batch.<mous>_<timestr>`) with
   dedicated `.out`, `.err`, and `.sbatch` files.
-* **Submission Staggering:** `calibpipe batch` pauses for 1 second between consecutive submissions to ensure unique
+- **Submission Staggering:** `calibpipe batch` pauses for 1 second between consecutive submissions to ensure unique
   timestamp resolution and prevent submission bursts.
-* **Isolated Working Directories:** Each MOUS executes exclusively within its own
+- **Isolated Working Directories:** Each MOUS executes exclusively within its own
   `<rootdir>/<project_run>/SOUS_.../GOUS_.../MOUS_.../working/` hierarchy.
 
 ### 3. Resolve a Shell Environment
@@ -384,16 +432,31 @@ Use `scripts/calibpipe_env.sh` when you want the resolved CASA and pipeline vari
 
 ### 4. Inspect Resolved Configuration
 
-Inspect active settings, paths, and environment defaults resolved from `config.toml` without executing anything:
+Inspect active settings, paths, and environment defaults resolved across configuration layers without executing anything:
 
 ```bash
 calibpipe config show --env=main
 ```
 
-Or inspect an alternate configuration file:
+When multiple configuration files are detected, `calibpipe` displays the loaded hierarchy in order:
+
+```text
+================================================================================
+calibpipe Configuration Overview
+================================================================================
+Configuration Layers (lowest to highest priority):
+  [1] /etc/calibpipe/config.toml
+  [2] /home/user/.config/calibpipe/config.toml
+Default Env:      main
+Selected Env:     main
+...
+```
+
+Or inspect an alternate configuration file or isolated run:
 
 ```bash
 calibpipe config show --config=/path/to/custom_config.toml --env=dev
+calibpipe config show --config=/path/to/custom_config.toml --no-site-config
 ```
 
 ---
@@ -430,19 +493,22 @@ When developing locally while targeting a remote cluster (or before submitting l
 
 1. **Verify Environment Resolution (`--print-env`):**
    Inspect resolved variables, CASA paths, and PMR directories without modifying the current shell:
+
    ```bash
    calibpipe env --env=main --print-env
    ```
+
    If configured paths (such as `casa_root` or `pmr_home`) do not exist or are unreachable on the current host, `calibpipe` emits warning diagnostics indicating the missing paths.
 
 2. **Verify Single-Run Driver Environment:**
    You can verify driver environment initialization for a specific MOUS without triggering pipeline staging or launching CASA:
+
    ```bash
    calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --print-env
    ```
 
-3. **Isolated Cluster Configuration:**
-   Maintain cluster-specific paths in an unversioned `config.toml` on the remote system (copied from `config.example.toml`). Because `config.toml` is gitignored, cluster-specific filesystem paths are kept local and never committed to version control.
+3. **Site & User Configuration Separation:**
+   On shared observatory clusters, cluster administrators maintain site infrastructure in `config.site.toml`, `/etc/calibpipe/config.toml`, or via `$CALIBPIPE_SITE_CONFIG`. Individual users keep only personal scratch paths or custom branch checkouts in `~/.config/calibpipe/config.toml`, inheriting all cluster tooling automatically.
 
 ---
 
@@ -465,6 +531,6 @@ The Zensical configuration lives in `zensical.toml`. API pages are generated thr
 ## Related Files
 
 - `README.md` (repository root): top-level package overview and quick start
-- `config.example.toml`: example configuration template
+- `config.example.toml`: unified configuration template (for site admins and individual users)
 - `quick.run`: sample batch input format
 - [API Reference](api/index.md): generated API reference

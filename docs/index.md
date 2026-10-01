@@ -8,7 +8,7 @@ The package keeps site-specific execution details in TOML configuration rather t
 >
 > `calibpipe` is an operational driver for the ALMA Science Pipeline designed to run on observatory HPC clusters (e.g. NAASC) or specialized pipeline workstations. Running `calibpipe` on a standard personal workstation without valid ALMA pipeline builds, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR) will **not work out-of-the-box**.
 >
-> Operators on observatory clusters should configure `config.toml` using site-specific cluster paths (see `notes/config.internal.example.toml`).
+> On shared observatory clusters, site administrators can deploy a central site configuration (`/etc/calibpipe/config.toml`, `$CALIBPIPE_SITE_CONFIG`, or `config.site.toml`), allowing users to run immediately or overlay personal settings.
 
 ---
 
@@ -26,6 +26,7 @@ The package keeps site-specific execution details in TOML configuration rather t
 ### 1. Installation & Environment Setup
 
 Using `uv` (recommended):
+
 ```bash
 # Sync local virtual environment with dev and docs tools:
 uv sync --extra dev --extra docs
@@ -35,18 +36,23 @@ uv tool install --editable .
 ```
 
 Alternative pip / pipx methods:
+
 ```bash
 pip install -e .     # or: pipx install .
 ```
 
 ### 2. Configuration
 
-Create your personal `config.toml` from the template (this file is gitignored and will never be committed):
+On shared clusters, site defaults (`[site]`, cluster `[batch]`, and canonical `[envs]`) are automatically discovered and inherited.
+
+To configure personal overrides, copy `config.example.toml` to `~/.config/calibpipe/config.toml` (or `./config.toml`):
+
 ```bash
-cp config.example.toml config.toml
+cp config.example.toml ~/.config/calibpipe/config.toml
 ```
 
-Edit `config.toml` to specify your CASA builds and pipeline checkouts:
+Edit your configuration to specify custom scratch paths or custom pipeline checkouts:
+
 ```toml
 default_env = "main"
 
@@ -54,11 +60,12 @@ default_env = "main"
 casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 ```
 
-For the complete 3-tier schema (`[paths]`, `[envs.<name>]`, `[site]`), variable interpolation, and environment precedence diagrams, see the [Configuration Guide](guide.md#configuration).
+For the complete multi-layer cascading architecture (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`), variable interpolation, and precedence rules, see the [Configuration Guide](guide.md#configuration).
 
 ### 3. Run a Reduction
 
 Execute a single MOUS reduction with the configured environment:
+
 ```bash
 calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
 ```

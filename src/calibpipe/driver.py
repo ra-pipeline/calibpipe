@@ -194,6 +194,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--valid", action="store_true", help="Use validation start directory"
     )
     p.add_argument("--config", help="Path to TOML config file")
+    p.add_argument(
+        "--no-site-config",
+        action="store_true",
+        default=False,
+        help="Do not load site-level configuration",
+    )
     p.add_argument("--env", help="[envs.<name>] table to use from config")
     p.add_argument("--subdir", help="Extra subdirectory appended to SCIPIPE_ROOTDIR")
     p.add_argument(
@@ -305,8 +311,10 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
 
     # Load configuration
     try:
-        cfg_path = envconfig.find_config_path(opts.config)
-        cfg = envconfig.load_config(cfg_path)
+        cfg = envconfig.load_merged_config(
+            cli_arg=opts.config,
+            include_site=not getattr(opts, "no_site_config", False),
+        )
     except envconfig.ConfigError as e:
         print(f"Configuration error: {e}")
         sys.exit(1)

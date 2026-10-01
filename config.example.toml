@@ -1,18 +1,30 @@
 # ==============================================================================
-# calibpipe Configuration Template (Generic)
+# calibpipe Configuration Template (Unified)
 # ==============================================================================
-# Quick Start:
-#   1. Copy this file to 'config.toml' in your working directory (or ~/.config/calibpipe/):
-#        cp config.example.toml config.toml
-#   2. Edit 'casa_root' under [envs.main] to point to your local CASA installation.
-#   3. Run a reduction:
-#        calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
+# This template documents all available configuration sections for calibpipe.
 #
-# Config File Search Order:
-#   1. Explicit CLI argument:    --config=<path>
-#   2. Environment variable:     $CALIBPIPE_CONFIG
-#   3. Current working dir:      ./config.toml
-#   4. User config directory:    ~/.config/calibpipe/config.toml
+# Depending on your role, copy this template to:
+#
+# A) Site / Cluster Administrator (Shared Infrastructure Defaults):
+#      cp config.example.toml /etc/calibpipe/config.toml
+#      (or config.site.toml in repo root, or export CALIBPIPE_SITE_CONFIG=/path)
+#    Configure [site] tools, [batch] Slurm defaults, and standard [envs.*]
+#    so all cluster users inherit them automatically.
+#
+# B) Individual User / Data Reducer (Personal Overrides):
+#      cp config.example.toml ~/.config/calibpipe/config.toml
+#      (or ~/.calibpipe/config.toml, or ./config.toml in your workspace)
+#    On a cluster with site configuration, you only need to keep the settings
+#    you want to override (e.g. personal scratch directory or custom environments).
+#
+# Cascading Merge Order (Lowest to Highest Priority):
+#   1. Site config:        /etc/calibpipe/config.toml, $CALIBPIPE_SITE_CONFIG, or config.site.toml
+#   2. User config:        ~/.config/calibpipe/config.toml and/or ~/.calibpipe/config.toml
+#   3. Workspace config:   ./config.toml (or .calibpipe.toml in current directory)
+#   4. Explicit override:  --config=<path> or $CALIBPIPE_CONFIG
+#
+# To run completely isolated without site configuration, pass --no-site-config
+# or set CALIBPIPE_NO_SITE_CONFIG=1.
 # ==============================================================================
 
 # Default environment selected when --env is not specified on the command line.
@@ -104,6 +116,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # flux_service_url_backup = "https://asa.alma.cl/sc/flux"
 # casa_enable_telemetry = false           # Set to true to enable CASA telemetry
 # use_custom_rcdir = true                 # Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: true)
+# strict_paths = false                    # Fail immediately on missing tools instead of emitting warnings
 
 # ------------------------------------------------------------------------------
 # 4. Slurm Batch Job Defaults ([batch]) (Optional)

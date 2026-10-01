@@ -36,6 +36,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("pipefile", help="File with one '<mous_uid> [recipe]' per line")
     p.add_argument("--config", help="Path to TOML config (default: resolved config.toml)")
+    p.add_argument(
+        "--no-site-config",
+        action="store_true",
+        default=False,
+        help="Do not load site-level configuration",
+    )
     p.add_argument("--env", help="[envs.<name>] to use; default: config's default_env")
     p.add_argument("-c", "--cores", type=int, default=None, dest="cores",
                    help="Tasks/cores per job (--ntasks) (default: from [batch].cores or 8)")
@@ -262,8 +268,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
 
     try:
-        config_path = envconfig.find_config_path(args.config)
-        cfg = envconfig.load_config(config_path)
+        cfg = envconfig.load_merged_config(
+            cli_arg=args.config,
+            include_site=not getattr(args, "no_site_config", False),
+        )
     except envconfig.ConfigError as e:
         print(f"ERROR: {e}")
         sys.exit(1)
@@ -295,6 +303,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         ]
         if args.config:
             pipejob_parts.append(f"--config={args.config}")
+        if getattr(args, "no_site_config", False):
+            pipejob_parts.append("--no-site-config")
         if batch_opts.env_name:
             pipejob_parts.append(f"--env={batch_opts.env_name}")
         pipejob_parts.extend(batch_opts.extra_args)
