@@ -11,6 +11,7 @@ from calibpipe.config import (
     ConfigError,
     EnvSpec,
     build_environment,
+    check_paths,
     find_config_path,
     format_shell_exports,
     load_config,
@@ -93,6 +94,37 @@ class TestEnvironmentBuilding(unittest.TestCase):
 
         plain = format_shell_exports(env, export=False, only_keys=["CASA_ROOT"])
         self.assertEqual(plain, "CASA_ROOT=/opt/casa")
+
+    def test_check_paths_warns_on_missing(self):
+        env = {
+            "CASA_ROOT": "/nonexistent/casa/path",
+            "ACSROOT": "/nonexistent/pmr/path",
+        }
+        warnings = check_paths(env, strict=False)
+        self.assertTrue(len(warnings) >= 2)
+        self.assertTrue(any("CASA_ROOT" in w for w in warnings))
+        self.assertTrue(any("pmr_home" in w for w in warnings))
+
+    def test_check_paths_strict_raises(self):
+        env = {
+            "CASA_ROOT": "/nonexistent/casa/path",
+        }
+        with self.assertRaises(ConfigError) as cm:
+            check_paths(env, strict=True)
+        self.assertIn("CASA_ROOT", str(cm.exception))
+
+    def test_check_paths_all_exist(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            env = {
+                "CASA_ROOT": td,
+                "ACSROOT": td,
+                "DATAPACKER_HOME": td,
+                "ACSDATA": td,
+                "JAVA_HOME": td,
+            }
+            warnings = check_paths(env, strict=True)
+            self.assertEqual(warnings, [])
 
 
 if __name__ == "__main__":

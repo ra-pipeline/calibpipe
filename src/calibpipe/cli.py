@@ -11,25 +11,30 @@ from calibpipe import batch, config as envconfig, driver
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build root CLI parser with subcommands."""
+    """Build the top-level CLI parser.
+
+    Returns:
+        Configured argument parser with `run`, `batch`, and `env`
+        subcommands.
+    """
     parser = argparse.ArgumentParser(
         prog="calibpipe",
-        description="calibpipe: Lightweight driver and Slurm batch runner for CASA + ALMA Science Pipeline.",
+        description="calibpipe: Lightweight driver and Slurm batch runner for ALMA Science Pipeline.",
     )
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {calibpipe.__version__}")
 
     subparsers = parser.add_subparsers(dest="subcommand", help="Available subcommands")
 
     # 'run' subcommand
-    run_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "run",
-        help="Run a single CASA + ALMA pipeline execution (replaces calibPipeIF.py)",
+        help="Run a single ALMA pipeline execution (replaces calibPipeIF.py)",
         parents=[driver.build_parser()],
         conflict_handler="resolve",
     )
 
     # 'batch' subcommand
-    batch_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "batch",
         help="Submit a batch of pipeline runs to Slurm (replaces runbatch.py)",
         parents=[batch.build_parser()],
@@ -54,7 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Main CLI entrypoint."""
+    """Run the unified calibpipe command-line interface.
+
+    Args:
+        argv: Optional argument sequence. When omitted, arguments are read
+            from `sys.argv`.
+    """
     args_list = list(sys.argv[1:] if argv is None else argv)
 
     # If invoked with no arguments, print help and exit
@@ -69,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         args_list.insert(0, "run")
 
     parser = build_parser()
-    args, unknown = parser.parse_known_args(args_list)
+    args = parser.parse_args(args_list)
 
     if args.subcommand == "run":
         # Pass remaining arguments to driver

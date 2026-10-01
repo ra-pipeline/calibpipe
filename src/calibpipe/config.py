@@ -19,13 +19,13 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 
-# Site-wide defaults, matching NAASC cluster infrastructure.
-# Can be overridden in personal config.toml under the [site] table.
+# Generic site defaults.
+# These can be overridden in personal config.toml under the [site] table.
 SITE_DEFAULTS: dict[str, Any] = {
-    "java_home": "/usr/lib/jvm/java-21-openjdk-21.0.6.0.7-1.el8.x86_64",
-    "pmr_home": "/home/pipetools/latest/build",
-    "acsdata": "/home/pipedrive/acsdata",
-    "datapacker_home": "/home/pipedrive/datapacker/current",
+    "java_home": os.environ.get("JAVA_HOME", "/usr/lib/jvm/default-java"),
+    "pmr_home": "/opt/pipetools/latest",
+    "acsdata": "/opt/acsdata",
+    "datapacker_home": "/opt/datapacker/current",
     "flux_service_url": "https://almascience.org/sc/flux",
     "flux_service_url_backup": "https://asa.alma.cl/sc/flux",
     "casa_enable_telemetry": False,
@@ -48,6 +48,7 @@ class EnvSpec:
     extra_vars: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """Default the branch name to the environment name when omitted."""
         if not self.branch:
             self.branch = self.name
 
@@ -61,6 +62,16 @@ def find_config_path(cli_arg: str | Path | None = None) -> Path:
     3. config.toml in current working directory
     4. ~/.config/calibpipe/config.toml
     5. config.toml in project root (when running from source)
+
+    Args:
+        cli_arg: Explicit config path passed on the command line.
+
+    Returns:
+        Resolved path to the configuration file.
+
+    Raises:
+        ConfigError: If an explicit or environment-provided path does not
+            exist, or no usable config file can be found.
     """
     if cli_arg:
         path = Path(cli_arg).expanduser().resolve()
@@ -100,7 +111,17 @@ def find_config_path(cli_arg: str | Path | None = None) -> Path:
 
 
 def load_config(path: str | Path) -> dict[str, Any]:
-    """Parse and return TOML configuration dictionary."""
+    """Parse a TOML configuration file.
+
+    Args:
+        path: Path to the TOML file.
+
+    Returns:
+        Parsed configuration mapping.
+
+    Raises:
+        ConfigError: If the file does not exist or cannot be parsed.
+    """
     config_path = Path(path).expanduser().resolve()
     if not config_path.is_file():
         raise ConfigError(f"Config file does not exist: {config_path}")
@@ -112,7 +133,19 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def resolve_env(config: dict[str, Any], env_name: str | None = None) -> EnvSpec:
-    """Look up an [envs.<name>] table, defaulting to the config's default_env."""
+    """Resolve a named CASA environment from the loaded config.
+
+    Args:
+        config: Parsed TOML configuration dictionary.
+        env_name: Explicit environment name. If omitted, `default_env` is used.
+
+    Returns:
+        Resolved environment specification.
+
+    Raises:
+        ConfigError: If the config has no environments, the named environment
+            is missing, or required keys are absent.
+    """
     envs = config.get("envs", {})
     if not envs:
         raise ConfigError("Config file has no [envs.*] tables defined.")
@@ -140,8 +173,20 @@ def build_environment(
     config: dict[str, Any],
     env_spec: EnvSpec | dict[str, Any],
     subdir: str | None = None,
+    validate_paths: bool = True,
 ) -> dict[str, str]:
-    """Build the complete environment dictionary for a CASA/pipeline run."""
+    """Build the process environment for a CASA + pipeline run.
+
+    Args:
+        config: Parsed TOML configuration dictionary.
+        env_spec: Resolved environment spec or equivalent dictionary.
+        subdir: Optional extra path component appended to `SCIPIPE_ROOTDIR`.
+        validate_paths: If True, checks that key paths exist on disk and warns
+            (or raises ConfigError if strict_paths is enabled) if unreachable.
+
+    Returns:
+        Environment mapping ready to inject into subprocesses.
+    """
     if isinstance(env_spec, dict):
         name = env_spec.get("name", "unknown")
         spec = EnvSpec(
@@ -216,7 +261,76 @@ def build_environment(
 
     env["MATPLOTLIBRC"] = str(Path.home() / ".casa" / "matplotlib")
 
+    if validate_paths and not os.environ.get("CALIBPIPE_SKIP_PATH_CHECK"):
+        strict = bool(site.get("strict_paths", False))
+        check_paths(env, site_config=config.get("site", {}), strict=strict)
+
     return env
+
+
+def check_paths(
+    env: dict[str, str],
+    site_config: dict[str, Any] | None = None,
+    strict: bool = False,
+) -> list[str]:
+    """Verify that key executable and support directories exist on disk.
+
+    If any path is unreachable, issues an actionable warning (or raises ConfigError
+    if strict=True), advising the user how to configure it in config.toml.
+
+    Args:
+        env: Resolved environment mapping from build_environment.
+        site_config: Optional [site] table from config.toml.
+        strict: If True, raises ConfigError on the first unreachable path instead of warning.
+
+    Returns:
+        List of warning messages for unreachable paths.
+
+    Raises:
+        ConfigError: If strict is True and any checked path does not exist.
+    """
+    site = site_config or {}
+    checks: list[tuple[str, str, str]] = [
+        (
+            "CASA_ROOT",
+            env.get("CASA_ROOT", ""),
+            "Please configure [envs.<name>].casa_root in config.toml to point to a valid CASA installation.",
+        ),
+        (
+            "pmr_home",
+            env.get("ACSROOT", ""),
+            "Please configure [site].pmr_home in config.toml (or copy from notes/config.internal.example.toml for NAASC cluster).",
+        ),
+        (
+            "datapacker_home",
+            env.get("DATAPACKER_HOME", ""),
+            "Please configure [site].datapacker_home in config.toml.",
+        ),
+        (
+            "acsdata",
+            env.get("ACSDATA", ""),
+            "Please configure [site].acsdata in config.toml.",
+        ),
+        (
+            "java_home",
+            env.get("JAVA_HOME", ""),
+            "Please configure [site].java_home or set $JAVA_HOME in your environment.",
+        ),
+    ]
+
+    warnings: list[str] = []
+    for label, path_str, hint in checks:
+        if not path_str:
+            continue
+        p = Path(path_str).expanduser()
+        if not p.exists():
+            msg = f"Path for '{label}' does not exist or is not reachable: {path_str}\n  -> {hint}"
+            warnings.append(msg)
+            if strict:
+                raise ConfigError(msg)
+            print(f"WARNING: [calibpipe] {msg}", file=sys.stderr)
+
+    return warnings
 
 
 def format_shell_exports(
@@ -228,6 +342,14 @@ def format_shell_exports(
 
     If export=True, produces `export KEY='val'`.
     If export=False, produces `KEY=val` for plain inspection.
+
+    Args:
+        env: Environment mapping.
+        export: Whether to emit `export` statements.
+        only_keys: Optional ordered subset of keys to print.
+
+    Returns:
+        Newline-delimited shell statements.
     """
     keys = only_keys or [
         "CASA_ROOT",
