@@ -221,7 +221,7 @@ def job_name(pipejob: str) -> str:
         pipejob: Fully assembled `calibpipe` execution command.
 
     Returns:
-        Stable job name containing the MOUS identifier and current date.
+        Stable job name containing the MOUS identifier and current timestamp.
     """
     mous = ""
     for tok in pipejob.split():
@@ -229,8 +229,27 @@ def job_name(pipejob: str) -> str:
             mous = tok.split("=", 1)[-1][11:]
             mous = mous.strip("/").replace("/", "_")
             break
-    date = time.strftime("%Y-%m-%d")
-    return f"{mous}_{date}"
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    return f"{mous}_{timestr}"
+
+
+def print_queue(user: str) -> None:
+    """Print the user's active Slurm queue matching pcasa.py format.
+
+    Args:
+        user: Username whose jobs to query with squeue.
+    """
+    squeue_exe = shutil.which("squeue")
+    if not squeue_exe or not user:
+        return
+    squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z"
+    cmd = [squeue_exe, f"--format={squeue_format}", "-u", user]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        if res.returncode == 0 and res.stdout.strip():
+            print("\n" + res.stdout.strip())
+    except OSError:
+        pass
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -260,6 +279,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     with open(pipefile, encoding="utf-8") as fd:
         lines = fd.readlines()
 
+    submitted = 0
     for line in lines:
         line = line.strip()
         if not line or line.startswith("#"):
@@ -334,12 +354,18 @@ def main(argv: Sequence[str] | None = None) -> None:
             cmd = ['sbatch', sbatch_path]
             print('    ' + ' '.join(cmd))
             subprocess.run(cmd, check=True)
+            submitted += 1
         finally:
             if os.path.exists(sbatch_path):
                 os.unlink(sbatch_path)
 
         print('Waiting 5 seconds to minimize directory naming collision risk')
         time.sleep(5)
+
+    if submitted > 0:
+        current_user = os.environ.get('USER', '')
+        if current_user:
+            print_queue(current_user)
 
 
 if __name__ == "__main__":

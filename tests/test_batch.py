@@ -27,7 +27,7 @@ PIPEFILE_ONE_LINE = FIXTURES / "pipefile_one_line.txt"
 
 FAKE_CALIBPIPEIF = Path("/fake/checkout/scripts/calibPipeIF.py")
 FAKE_USER = "testuser"
-FAKE_DATE = "2026-01-01"
+FAKE_DATE = "20260101-000000"
 
 
 def _load_reference():
@@ -66,7 +66,9 @@ class RunbatchCaptureCase(unittest.TestCase):
         """
         calls = []
 
-        def fake_run(cmd, check=True):
+        def fake_run(cmd, check=True, **kwargs):
+            if cmd[0] != "sbatch":
+                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="fake queue output")
             sbatch_path = cmd[-1]
             script_content = Path(sbatch_path).read_text()
             normalized_cmd = " ".join(_normalize(part, sbatch_path) for part in cmd)
@@ -272,6 +274,22 @@ class TestSlurmDirectives(RunbatchCaptureCase):
                 "--mem-per-cpu=30G",
             ])
         self.assertEqual(cm.exception.code, 2)
+
+    def test_print_queue_executes_squeue_with_pcasa_format(self):
+        with patch.object(runbatch.shutil, "which", return_value="/usr/bin/squeue"), \
+             patch.object(runbatch.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="  12345 plwg rxue R ..."
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                runbatch.print_queue("rxue")
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            self.assertEqual(cmd_args[0], "/usr/bin/squeue")
+            self.assertIn("--format=%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z", cmd_args[1])
+            self.assertIn("rxue", cmd_args)
+            self.assertIn("12345 plwg rxue R", buf.getvalue())
 
 
 if __name__ == "__main__":

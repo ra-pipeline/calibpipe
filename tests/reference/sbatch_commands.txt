@@ -6,11 +6,11 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH -p plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
-#SBATCH --job-name=X1_X1_2026-01-01
+#SBATCH --job-name=X1_X1_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X1_X1_2026-01-01.out
-#SBATCH -e batch.X1_X1_2026-01-01.err
+#SBATCH -o batch.X1_X1_20260101-000000.out
+#SBATCH -e batch.X1_X1_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=248G
@@ -26,11 +26,11 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH -p plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
-#SBATCH --job-name=X2_X2_2026-01-01
+#SBATCH --job-name=X2_X2_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X2_X2_2026-01-01.out
-#SBATCH -e batch.X2_X2_2026-01-01.err
+#SBATCH -o batch.X2_X2_20260101-000000.out
+#SBATCH -e batch.X2_X2_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=248G
@@ -46,11 +46,11 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH -p batch2
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
-#SBATCH --job-name=X3_X3_2026-01-01
+#SBATCH --job-name=X3_X3_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X3_X3_2026-01-01.out
-#SBATCH -e batch.X3_X3_2026-01-01.err
+#SBATCH -o batch.X3_X3_20260101-000000.out
+#SBATCH -e batch.X3_X3_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=32G
@@ -66,11 +66,11 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH -p plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
-#SBATCH --job-name=X3_X3_2026-01-01
+#SBATCH --job-name=X3_X3_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=ALL
-#SBATCH -o batch.X3_X3_2026-01-01.out
-#SBATCH -e batch.X3_X3_2026-01-01.err
+#SBATCH -o batch.X3_X3_20260101-000000.out
+#SBATCH -e batch.X3_X3_20260101-000000.err
 #SBATCH --export=ALL
 #SBATCH --no-requeue
 #SBATCH --mem=248G
@@ -86,7 +86,7 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH -p plwg
 #SBATCH --nodes=1
 #SBATCH --ntasks=8
-#SBATCH --job-name=X3_X3_2026-01-01
+#SBATCH --job-name=X3_X3_20260101-000000
 #SBATCH --mail-user=testuser
 #SBATCH --mail-type=FAIL
 #SBATCH -o my.out
@@ -98,4 +98,3 @@ ulimit -Sn 8192
 umask 002
 <CALIBPIPEIF> --staticobscal --mous=uid___A001_X3_X3 --recipe=calimage --config=<CONFIG> --env=main
 =====END custom_outfile_errfile_mail_type=====
-
