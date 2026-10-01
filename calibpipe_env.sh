@@ -1,5 +1,5 @@
 #!/bin/sh
-# calibpipe_env.sh -- source this to set the CASA + ALMA-pipeline environment:
+# calibpipe_env.sh -- source this to set the ALMA-pipeline environment:
 #
 #   source calibpipe_env.sh --env=main
 #

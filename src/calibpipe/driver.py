@@ -1,4 +1,4 @@
-"""calibpipe driver: Orchestrates execution of CASA + ALMA Science Pipeline runs.
+"""calibpipe driver: Orchestrates execution of ALMA Science Pipeline runs.
 
 Decomposes and modernizes the legacy calibPipeIF.py script.
 """
@@ -6,16 +6,13 @@ Decomposes and modernizes the legacy calibPipeIF.py script.
 from __future__ import annotations
 
 import argparse
-import fnmatch
-import glob
 import os
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Sequence
-from xml.dom.minidom import parse
+from typing import Sequence
 
 from calibpipe import config as envconfig
 from calibpipe.steps.staging import find_dirs, find_files, stage_flags_and_wvr
@@ -39,12 +36,14 @@ class log:
     """Logger tracking command execution and formatted outputs."""
 
     def __init__(self, filename: str, print_flag: bool = False) -> None:
+        """Open a timestamped log file for a pipeline run."""
         now = datetime.now().isoformat().replace(":", "-")
         self.filename = filename
         self.print_flag = print_flag
-        self.fd = open(f"{filename}.{now}.log", "w")
+        self.fd = open(f"{filename}.{now}.log", "w", encoding="utf-8")
 
     def log(self, text: str) -> None:
+        """Write timestamped text to the log file and optional stdout."""
         now = datetime.now().isoformat()
         for line in str(text).split("\n"):
             self.fd.write(f"{now}: {line}\n")
@@ -53,6 +52,7 @@ class log:
             self.fd.flush()
 
     def run(self, command: str) -> int:
+        """Run a shell command and stream combined output into the log."""
         self.log(f"running '{command}':\n\n")
         p = subprocess.Popen(
             command,
@@ -73,6 +73,7 @@ class log:
         return p.returncode
 
     def runquiet(self, command: str) -> int:
+        """Run a shell command without streaming stdout line by line."""
         self.log(f"running '{command}' quietly.")
         retcode = subprocess.call(command, shell=True)
         if retcode > 0:
@@ -80,11 +81,16 @@ class log:
         return retcode
 
     def close(self) -> None:
+        """Close the underlying log file handle."""
         self.fd.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser for calibpipe run."""
+    """Build the parser for the `calibpipe run` workflow.
+
+    Returns:
+        Configured argument parser for single-run execution.
+    """
     p = argparse.ArgumentParser(
         description="Assists in the execution of the interferometric pipeline.",
         add_help=True,
@@ -121,7 +127,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(custom_argv: Sequence[str] | None = None) -> None:
-    """Main execution orchestrator for calibpipe run."""
+    """Execute a single pipeline run from command-line arguments.
+
+    Args:
+        custom_argv: Optional argument sequence. When omitted, the legacy
+            module-level `argv` wrapper is used for compatibility.
+    """
     args_list = custom_argv if custom_argv is not None else argv[1:]
     parser = build_parser()
     if not args_list:
@@ -192,17 +203,12 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     # Build CASA invocation command prefix
     casaroot = env["CASA_ROOT"]
     casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry --nogui --agg"
-    casarun_serial = f"{casaroot}/bin/casa --nocrashreport --notelemetry --nogui"
     if opts.ncores > 1:
         casarun = f"{casaroot}/bin/mpicasa -n {opts.ncores}  {casarun}"
 
     # Check for pre-existing ASDMs
     oldasdms = []
-    oldpprfile = ""
     if flag_and_go:
-        oldpprfiles = find_files("PPR*xml", flag_and_go_dir)
-        if oldpprfiles:
-            oldpprfile = oldpprfiles[0]
         oldasdmxmls = find_files("ASDM.xml", flag_and_go_dir)
         for oa in oldasdmxmls:
             oldasdms.append(os.path.dirname(oa))
@@ -231,8 +237,8 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     # Logger initialization
     log_name = f"{ppmr_dir}/calibPipeIF.{ppmr_rel_dir}.{mous_uid.replace('/', '_').replace(':', '_')}"
     mylog = log(log_name, print_flag=True)
-    l = mylog.log
-    l(f"just finished running pipelineMakeRequest with this output:\n{cmdoutput}")
+    log_message = mylog.log
+    log_message(f"just finished running pipelineMakeRequest with this output:\n{cmdoutput}")
 
     # Determine working directory structure
     dir_working_output = getoutput(f"ls -d1 {ppmr_dir}/SOUS_uid___*/GOUS_uid___*/MOUS_uid___*/working/")
@@ -243,7 +249,7 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
 
     # File staging from --flag
     if flag_and_go:
-        stage_flags_and_wvr(flag_and_go_dir, ppmr_fulldir, l)
+        stage_flags_and_wvr(flag_and_go_dir, ppmr_fulldir, log_message)
 
     # Locate PPR XML
     working_path = Path(ppmr_fulldir.replace("//", "/")) / "working"
@@ -275,6 +281,8 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         retcode = mylog.runquiet(cmd)
 
     mylog.close()
+    if retcode != 0:
+        sys.exit(retcode)
 
 
 if __name__ == "__main__":

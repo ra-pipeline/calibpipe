@@ -1,0 +1,20 @@
+[project]
+site_name = "calibpipe"
+docs_dir = "docs"
+site_dir = "site"
+watch = ["src"]
+
+nav = [
+    { "Home" = "index.md" },
+    { "User Guide" = "guide.md" },
+    { "API Reference" = "api.md" },
+]
+
+[project.plugins.search]
+
+[project.plugins.mkdocstrings]
+default_handler = "python"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+options = { docstring_style = "google", show_source = true, show_root_heading = true, show_root_toc_entry = true, summary = true, separate_signature = true, show_signature_annotations = true, group_by_category = true, show_category_heading = true }

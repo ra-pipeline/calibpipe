@@ -1,6 +1,8 @@
 # calibpipe
 
-**calibpipe** is a lightweight, standalone Python package for driving single and batch CASA + ALMA Science Pipeline executions on local workstations or HPC Slurm clusters (e.g., NAASC cluster).
+Detailed package documentation is available in [docs/guide.md](docs/guide.md).
+
+**calibpipe** is a lightweight, standalone Python package for driving single and batch ALMA Science Pipeline executions on local workstations or HPC Slurm clusters (e.g., NAASC cluster).
 
 ---
 
@@ -17,14 +19,30 @@
 ## Installation
 
 ### Standard Editable / Local Install
+
 ```bash
-cd /path/to/calibpip
+cd /path/to/calibpipe
 pip install -e .
 ```
 
-### Isolated Install via `pipx` (Recommended for Cluster Users)
+### Development Setup with `uv`
+
 ```bash
-pipx install /path/to/calibpip
+cd /path/to/calibpipe
+uv sync --extra dev --extra docs
+```
+
+Run commands inside the managed environment with `uv run`, for example:
+
+```bash
+uv run --extra dev pytest tests/
+uv run --extra docs zensical serve
+```
+
+### Isolated Install via `pipx` (Recommended for Cluster Users)
+
+```bash
+pipx install /path/to/calibpipe
 ```
 
 ---
@@ -32,28 +50,32 @@ pipx install /path/to/calibpip
 ## Configuration
 
 1. Copy `config.example.toml` to `config.toml` in your working directory (or `~/.config/calibpipe/config.toml`):
+
    ```bash
    cp config.example.toml config.toml
    ```
+
 2. Edit `config.toml` to define your CASA builds and pipeline checkouts:
+
    ```toml
    default_env = "main"
 
    [paths]
-   scipipe_rootdir = "/lustre/naasc/sciops/comm/{user}/pipeline/root"
-   scipipe_logdir  = "/lustre/naasc/sciops/comm/{user}/pipeline/logs"
-   pickle_dir      = "/lustre/naasc/sciops/comm/{user}/pipeline/pickles"
-   obscaldir       = "/lustre/naasc/sciops/comm/rindebet/pipeline/obscal2021"
+   scipipe_rootdir = "/data/pipeline/root/{user}"
+   scipipe_logdir  = "/data/pipeline/logs/{user}"
+   pickle_dir      = "/data/pipeline/pickles/{user}"
+   obscaldir       = "/data/pipeline/obscal2021"
 
    [envs.main]
-   casa_root = "/stor/naasc/sciops/comm/dkunneri/pipeline/CASA_PL/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12.el8"
+   casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 
    [envs.pl2025]
-   casa_root = "/lustre/naasc/sciops/comm/rindebet/casa/casa-6.6.6-17-pipeline-2025.1.0.35-py3.10.el8"
+   casa_root = "/opt/casa/casa-6.6.6-17-pipeline-2025.1.0.35-py3.10"
    heuristics_dir = "{casa_root}/pipeline"
    ```
 
 **Config Resolution Order:**
+
 1. `--config=<path>` CLI flag
 2. `$CALIBPIPE_CONFIG` environment variable
 3. `./config.toml` in the current working directory
@@ -64,6 +86,7 @@ pipx install /path/to/calibpip
 ## Usage
 
 ### 1. Run a Single MOUS
+
 ```bash
 # Using unified CLI
 calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
@@ -76,6 +99,7 @@ calibpipe --mous=uid://A001/X128a/Xb9 --env=main
 ```
 
 ### 2. Batch Execution on Slurm
+
 ```bash
 # Using unified CLI
 calibpipe batch quick.run --env=main -c 8 -m 248 -p plwg
@@ -85,6 +109,7 @@ calibpipe batch quick.run --env=main -c 8 -m 248 -p plwg
 ```
 
 `quick.run` format:
+
 ```text
 # <mous_uid> [recipe]
 uid://A001/X128a/Xb9  calimage
@@ -92,6 +117,7 @@ uid://A002/Xcff05c/Xd calimage
 ```
 
 ### 3. Interactive Shell Setup
+
 Set the CASA and pipeline environment variables directly in your current shell session (`bash` or `zsh`):
 
 ```bash
@@ -105,13 +131,18 @@ source calibpipe_env.sh --env=main
 calibpipe env --env=main --print-env
 ```
 
+Use `calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
+
 ---
 
 ## Testing
 
 Run the full test suite verifying against golden reference specifications:
+
 ```bash
 python3 -m unittest discover -s tests -v
 # or
 pytest tests/
+# or with uv
+uv run --extra dev pytest tests/
 ```

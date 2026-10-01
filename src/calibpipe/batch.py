@@ -25,7 +25,11 @@ if not CALIBPIPEIF.exists():
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the argument parser for batch submission."""
+    """Build the parser for Slurm batch submission.
+
+    Returns:
+        Configured argument parser for `calibpipe batch`.
+    """
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("pipefile", help="File with one '<mous_uid> [recipe]' per line")
     p.add_argument("--config", help="Path to TOML config (default: resolved config.toml)")
@@ -47,7 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse command line arguments."""
+    """Parse command-line arguments for batch submission.
+
+    Args:
+        args: Optional argument sequence.
+
+    Returns:
+        Parsed namespace.
+    """
     parser = build_parser()
     if args is None and len(sys.argv) == 1:
         parser.print_help()
@@ -56,7 +67,11 @@ def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def check_submit_host(config: dict) -> None:
-    """Verify current host matches required submit host if configured."""
+    """Enforce an optional submit-host restriction from configuration.
+
+    Args:
+        config: Parsed TOML configuration dictionary.
+    """
     submit_host = config.get("site", {}).get("submit_host")
     if not submit_host:
         return
@@ -67,7 +82,14 @@ def check_submit_host(config: dict) -> None:
 
 
 def build_sbatch_script(pipejob: str) -> str:
-    """Generate shell script contents for sbatch submission."""
+    """Create the temporary shell script body submitted to Slurm.
+
+    Args:
+        pipejob: Fully assembled `calibpipe` execution command.
+
+    Returns:
+        Shell script contents.
+    """
     return f"""#!/bin/sh
 ulimit -Sn 8192
 umask 002
@@ -76,7 +98,14 @@ umask 002
 
 
 def job_name(pipejob: str) -> str:
-    """Derive standard Slurm job name from pipejob command."""
+    """Derive the standard Slurm job name from a command line.
+
+    Args:
+        pipejob: Fully assembled `calibpipe` execution command.
+
+    Returns:
+        Stable job name containing the MOUS identifier and current date.
+    """
     mous = ""
     for tok in pipejob.split():
         if "mous" in tok:
@@ -88,7 +117,12 @@ def job_name(pipejob: str) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Main entrypoint for Slurm batch submission."""
+    """Submit one or more pipeline jobs to Slurm.
+
+    Args:
+        argv: Optional argument sequence. When omitted, values are read from
+            `sys.argv`.
+    """
     args = parse_args(argv)
 
     try:
@@ -107,7 +141,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     mem = f"{args.mem}G"
 
-    with open(pipefile) as fd:
+    with open(pipefile, encoding="utf-8") as fd:
         lines = fd.readlines()
 
     for line in lines:
