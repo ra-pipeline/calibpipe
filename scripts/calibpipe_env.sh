@@ -1,7 +1,7 @@
 #!/bin/sh
 # calibpipe_env.sh -- source this to set the ALMA-pipeline environment:
 #
-#   source calibpipe_env.sh --env=main
+#   source scripts/calibpipe_env.sh --env=main
 #
 # Works from bash or zsh. Must be sourced (`source ...` / `. ...`), not executed.
 
@@ -25,9 +25,22 @@ fi
 if command -v calibpipe >/dev/null 2>&1; then
     __calibpipe_cmd="calibpipe env"
 else
-    # Fallback to python in current directory
-    __calibpipe_dir=$(cd "$(dirname "${BASH_SOURCE:-$0}")" >/dev/null 2>&1 && pwd)
-    __calibpipe_cmd="PYTHONPATH=\"$__calibpipe_dir/src:\$PYTHONPATH\" python3 -m calibpipe.cli env"
+    # Fallback to python in checkout: locate src directory relative to this script
+    __calibpipe_script_dir=$(cd "$(dirname "${BASH_SOURCE:-$0}")" >/dev/null 2>&1 && pwd)
+    if [ -d "$__calibpipe_script_dir/src" ]; then
+        __calibpipe_src="$__calibpipe_script_dir/src"
+    elif [ -d "$__calibpipe_script_dir/../src" ]; then
+        __calibpipe_src="$(cd "$__calibpipe_script_dir/.." >/dev/null 2>&1 && pwd)/src"
+    else
+        __calibpipe_src=""
+    fi
+
+    if [ -n "$__calibpipe_src" ]; then
+        __calibpipe_cmd="PYTHONPATH=\"$__calibpipe_src:\$PYTHONPATH\" python3 -m calibpipe.cli env"
+    else
+        __calibpipe_cmd="python3 -m calibpipe.cli env"
+    fi
+    unset __calibpipe_script_dir __calibpipe_src
 fi
 
 __calibpipe_out=$(eval "$__calibpipe_cmd \"\$@\"")

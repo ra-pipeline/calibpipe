@@ -41,9 +41,6 @@ docs = [
 
 [project.scripts]
 calibpipe = "calibpipe.cli:main"
-calibPipe = "calibpipe.cli:main"
-calibpipe-batch = "calibpipe.batch:main"
-calibpipe-run = "calibpipe.driver:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

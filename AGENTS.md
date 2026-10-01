@@ -33,12 +33,9 @@ uv run --extra docs zensical build
 
 - Respect `pyproject.toml` as the packaging authority.
 - The package currently targets Python `>=3.10`; do not introduce syntax that requires a newer minimum runtime.
-- Preserve the existing console scripts and backward-compatible wrappers:
-  - `calibpipe`
-  - `calibPipe`
-  - `calibpipe-batch`
-  - `calibpipe-run`
-  - top-level wrapper scripts such as `calibPipeIF.py`, `runbatch.py`, and `calibpipe_env.sh`
+- Preserve the canonical console script and backward-compatible runner shims:
+  - `calibpipe` (unified CLI in `[project.scripts]`)
+  - backward-compatible runner scripts in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, and `scripts/calibpipe_env.sh`)
 
 ## 4. Python Style
 

@@ -2,7 +2,7 @@
 
 `calibpipe` is a lightweight driver and Slurm batch wrapper for ALMA Science Pipeline runs. It is designed for operators and developers who need a repeatable command-line workflow for selecting a configured CASA environment, launching a single MOUS reduction, or submitting a batch of jobs.
 
-The package keeps site-specific execution details in TOML configuration rather than hard-coded shell fragments, while preserving compatibility with older operational entry points (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
+The package keeps site-specific execution details in TOML configuration rather than hard-coded shell fragments, while preserving compatibility with older operational script entry points in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
 
 > [!WARNING] Observatory Infrastructure & Cluster Dependency
 >
@@ -16,7 +16,7 @@ The package keeps site-specific execution details in TOML configuration rather t
 
 - **Run single pipeline executions:** `calibpipe run --mous=... --env=...`
 - **Submit batches to Slurm:** `calibpipe batch pipefile.txt --env=...`
-- **Resolve interactive shell environments:** `source calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`
+- **Resolve interactive shell environments:** `source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`
 - **Preserve existing workflows:** seamlessly drop in for legacy scripts without breaking cron jobs or cluster submission scripts.
 
 ---
