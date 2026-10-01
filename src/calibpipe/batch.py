@@ -84,16 +84,52 @@ def check_submit_host(config: dict) -> None:
         sys.exit(1)
 
 
-def build_sbatch_script(pipejob: str) -> str:
-    """Create the temporary shell script body submitted to Slurm.
+def build_sbatch_script(
+    pipejob: str,
+    *,
+    queue: str,
+    node: str,
+    cores: int,
+    mem: str,
+    job_name: str,
+    mail_user: str,
+    mail_type: str,
+    outfile: str,
+    errfile: str,
+) -> str:
+    """Create the shell script body submitted to Slurm.
+
+    All Slurm resource parameters are embedded as ``#SBATCH`` directives so
+    the saved script is a self-contained record of the submission.
 
     Args:
         pipejob: Fully assembled `calibpipe` execution command.
+        queue: Slurm partition name.
+        node: Number of nodes (-N).
+        cores: Number of tasks / cores (-n).
+        mem: Memory string passed to ``--mem`` (e.g. ``"248G"``).
+        job_name: Slurm job name.
+        mail_user: Email address for Slurm notifications.
+        mail_type: Slurm mail-type value (e.g. ``"ALL"``).
+        outfile: Path for Slurm stdout log.
+        errfile: Path for Slurm stderr log.
 
     Returns:
-        Shell script contents.
+        Rendered shell script contents.
     """
-    return render_template("slurm_job.sh.in", pipejob=pipejob)
+    return render_template(
+        'slurm_job.sh.in',
+        pipejob=pipejob,
+        queue=queue,
+        node=node,
+        cores=cores,
+        mem=mem,
+        job_name=job_name,
+        mail_user=mail_user,
+        mail_type=mail_type,
+        outfile=outfile,
+        errfile=errfile,
+    )
 
 
 def job_name(pipejob: str) -> str:
@@ -170,35 +206,48 @@ def main(argv: Sequence[str] | None = None) -> None:
         outfile = batch_opts.outfile or f"batch.{name}.out"
         errfile = batch_opts.errfile or f"batch.{name}.err"
 
-        user = os.environ.get("USER", "")
+        user = os.environ.get('USER', '')
+        script_body = build_sbatch_script(
+            pipejob,
+            queue=batch_opts.queue,
+            node=batch_opts.node,
+            cores=batch_opts.cores,
+            mem=mem,
+            job_name=name,
+            mail_user=user,
+            mail_type=batch_opts.mail_type,
+            outfile=outfile,
+            errfile=errfile,
+        )
+
+        # Persist a copy alongside the .out/.err logs for record keeping.
+        # A non-fatal warning is issued if the directory does not yet exist
+        # so that the job submission itself is never blocked by a missing dir.
+        script_record = str(Path(outfile).with_suffix('.sbatch'))
+        try:
+            with open(script_record, 'w', encoding='utf-8') as f:
+                f.write(script_body)
+            print(f'    script saved → {script_record}')
+        except OSError as exc:
+            print(f'    WARNING: could not save script record {script_record}: {exc}')
+
         with tempfile.NamedTemporaryFile(
-            mode="w", prefix=f"{user}_sbatch.", delete=False
+            mode='w', prefix=f'{user}_sbatch.', suffix='.sh', delete=False
         ) as sbatch_fd:
-            sbatch_fd.write(build_sbatch_script(pipejob))
+            sbatch_fd.write(script_body)
             sbatch_path = sbatch_fd.name
 
         try:
-            cmd = [
-                "sbatch",
-                "-p", batch_opts.queue,
-                "-N", batch_opts.node,
-                "-n", str(batch_opts.cores),
-                "--export=ALL",
-                f"--job-name={name}",
-                f"--mail-user={user}",
-                f"--mail-type={batch_opts.mail_type}",
-                f"--mem={mem}",
-                "-o", outfile,
-                "-e", errfile,
-                sbatch_path,
-            ]
-            print("    " + " ".join(cmd))
+            # All resource parameters are embedded as #SBATCH directives in
+            # the script, so only the script path is needed here.
+            cmd = ['sbatch', sbatch_path]
+            print('    ' + ' '.join(cmd))
             subprocess.run(cmd, check=True)
         finally:
             if os.path.exists(sbatch_path):
                 os.unlink(sbatch_path)
 
-        print("Waiting 5 seconds to minimize directory naming collision risk")
+        print('Waiting 5 seconds to minimize directory naming collision risk')
         time.sleep(5)
 
 

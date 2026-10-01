@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import io
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -46,15 +49,6 @@ def _load_reference():
     return blocks
 
 
-def _format_block(name, command, script):
-    return (
-        f"=====BEGIN {name}=====\n"
-        f"-----COMMAND-----\n{command}\n"
-        f"-----SCRIPT-----\n{script}"
-        f"=====END {name}=====\n"
-    )
-
-
 def _normalize(text, sbatch_script_path):
     text = text.replace(sbatch_script_path, "<SBATCH_SCRIPT>")
     text = text.replace(str(FAKE_CALIBPIPEIF), "<CALIBPIPEIF>")
@@ -63,7 +57,13 @@ def _normalize(text, sbatch_script_path):
 
 
 class RunbatchCaptureCase(unittest.TestCase):
-    def run_and_capture(self, argv):
+    def _run_in_tmpdir(self, argv):
+        """Run batch.main() from a fresh tmpdir; return (calls, tmpdir_path).
+
+        The tmpdir is returned so callers can inspect files written there
+        (e.g. .sbatch record files).  The directory persists until the caller
+        cleans it up.
+        """
         calls = []
 
         def fake_run(cmd, check=True):
@@ -73,15 +73,27 @@ class RunbatchCaptureCase(unittest.TestCase):
             calls.append((normalized_cmd, _normalize(script_content, sbatch_path)))
             return subprocess.CompletedProcess(args=cmd, returncode=0)
 
-        with patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF), \
-             patch.object(runbatch.subprocess, "run", side_effect=fake_run), \
-             patch.object(runbatch.time, "strftime", return_value=FAKE_DATE), \
-             patch.object(runbatch.time, "sleep", return_value=None), \
-             patch.dict(runbatch.os.environ, {"USER": FAKE_USER}), \
-             patch.object(sys, "argv", ["runbatch.py"] + argv), \
-             redirect_stdout(io.StringIO()):
-            runbatch.main()
+        tmpdir = tempfile.mkdtemp()
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            with patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF), \
+                 patch.object(runbatch.subprocess, "run", side_effect=fake_run), \
+                 patch.object(runbatch.time, "strftime", return_value=FAKE_DATE), \
+                 patch.object(runbatch.time, "sleep", return_value=None), \
+                 patch.dict(runbatch.os.environ, {"USER": FAKE_USER}), \
+                 patch.object(sys, "argv", ["runbatch.py"] + argv), \
+                 redirect_stdout(io.StringIO()):
+                runbatch.main()
+        finally:
+            os.chdir(orig_cwd)
 
+        return calls, tmpdir
+
+    def run_and_capture(self, argv):
+        """Convenience wrapper that discards the tmpdir after capture."""
+        calls, tmpdir = self._run_in_tmpdir(argv)
+        shutil.rmtree(tmpdir, ignore_errors=True)
         return calls
 
     def assert_matches_reference(self, name, command, script):
@@ -155,6 +167,48 @@ class TestErrorPaths(RunbatchCaptureCase):
             with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
                 self.run_and_capture([str(PIPEFILE), f"--config={CONFIG_SUBMIT_HOST}"])
             self.assertEqual(cm.exception.code, 1)
+
+
+class TestScriptRecord(RunbatchCaptureCase):
+    """Verify that a .sbatch record file is written alongside each job's logs."""
+
+    def test_record_file_is_created_next_to_out_log(self):
+        calls, tmpdir = self._run_in_tmpdir([
+            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
+        ])
+        try:
+            # Default outfile is batch.<name>.out; record should be batch.<name>.sbatch
+            expected_name = f"batch.X3_X3_{FAKE_DATE}.sbatch"
+            record_path = Path(tmpdir) / expected_name
+            self.assertTrue(record_path.exists(), f"Expected record file {expected_name} in tmpdir")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_record_file_contains_sbatch_directives(self):
+        calls, tmpdir = self._run_in_tmpdir([
+            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
+        ])
+        try:
+            expected_name = f"batch.X3_X3_{FAKE_DATE}.sbatch"
+            content = (Path(tmpdir) / expected_name).read_text()
+            self.assertIn("#SBATCH -p plwg", content)
+            self.assertIn("#SBATCH --mem=248G", content)
+            self.assertIn(f"#SBATCH --job-name=X3_X3_{FAKE_DATE}", content)
+            self.assertIn("#SBATCH --mail-user=testuser", content)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_record_write_failure_does_not_abort_submission(self):
+        """If the record file can't be written, the job is still submitted."""
+        calls, tmpdir = self._run_in_tmpdir([
+            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
+            "-o", "/nonexistent/dir/batch.out", "-e", "/nonexistent/dir/batch.err",
+        ])
+        try:
+            # submission should still have happened despite the bad outfile dir
+            self.assertEqual(len(calls), 1)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":
