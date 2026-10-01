@@ -5,11 +5,11 @@ Detailed package documentation is available in [docs/guide.md](docs/guide.md).
 **calibpipe** is a lightweight, standalone Python package for driving single and batch ALMA Science Pipeline executions on local workstations or HPC Slurm clusters (e.g., NAASC cluster).
 
 > [!WARNING]
-> **Observatory Infrastructure & Cluster Dependency**
+> **Cluster & Pipeline Tooling Dependencies**
 >
-> `calibpipe` is an operational driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC) or specialized pipeline workstations. Running `calibpipe` on a standard personal machine without valid ALMA pipeline (or CASA-based pipeline) installations, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR) will **not work out-of-the-box**.
+> `calibpipe` is designed for pipeline validation, verification, and testing without the larger production machinery entangled. While it decouples executions from heavy production workflow infrastructure, running `calibpipe` still requires access to the underlying pipeline tooling: CASA installations with the ALMA pipeline, ALMA datapacker, `pipelineMakeRequest` (PMR), and Slurm for batch execution.
 >
-> Operators on observatory clusters should configure `config.toml` using site-specific cluster paths (see `notes/config.internal.example.toml`).
+> Users on cluster or workstation environments should configure `config.toml` using local or site-specific paths (see `notes/config.internal.example.toml`).
 
 ---
 

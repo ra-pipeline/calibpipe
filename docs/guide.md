@@ -1,6 +1,6 @@
 # calibpipe Documentation
 
-`calibpipe` is a lightweight helper package for launching single-run and batch ALMA Science Pipeline jobs outside the main `pipeline` Python package. It is intended for workstation and cluster workflows where operators need a stable command-line interface, reproducible environment selection, and backward-compatible wrappers around existing `calibPipeIF.py` and `runbatch.py` usage patterns.
+`calibpipe` is a lightweight helper package for launching single-run and batch ALMA Science Pipeline jobs outside the main `pipeline` Python package. It is intended for validation, testing, and development workflows where operators and developers need a stable command-line interface, reproducible environment selection, and backward-compatible wrappers around existing `calibPipeIF.py` and `runbatch.py` usage patterns.
 
 ---
 
@@ -11,9 +11,9 @@ Use `calibpipe` when you need to:
 - run a single MOUS from the command line without entering an interactive CASA session
 - submit many MOUS runs to Slurm from a pipefile
 - resolve CASA and pipeline environment variables from TOML configuration instead of ad hoc shell scripts
-- preserve compatibility with operational scripts that still call `calibPipeIF.py`, `runbatch.py`, or `calibpipe_env.sh`
+- preserve compatibility with existing scripts that still call `calibPipeIF.py`, `runbatch.py`, or `calibpipe_env.sh`
 
-`calibpipe` does not replace the main `pipeline` package. The `pipeline` repository still provides the reduction framework, heuristics, task implementations, and weblog generation. `calibpipe` is the execution-oriented wrapper that selects a configured CASA + pipeline environment and launches a run with the requested inputs.
+`calibpipe` does not replace the main `pipeline` package. The `pipeline` repository still provides the reduction framework, heuristics, task implementations, and weblog generation. `calibpipe` is the execution-oriented driver used for validation and testing without larger production machinery entangled, selecting a configured CASA + pipeline environment and launching a run with the requested inputs.
 
 ---
 
