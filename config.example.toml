@@ -149,5 +149,5 @@ pixi_dir = "/data/pipeline/branches/main"
 # ncores = 8                              # Number of cores for CASA/mpicasa
 # loglevel = "debug"                      # Pipeline log level
 # useresume = false                       # Use break/resume instead of two contexts
-# symlink_shortcuts = true                # Create convenience symlinks (working, products, rawdata) in project root
+# symlink_shortcuts = true                # Create convenience symlinks (working, products, rawdata, weblog) in project root
 

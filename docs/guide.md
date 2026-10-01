@@ -404,6 +404,7 @@ Monolithic and modular CASA default to writing user configuration, cache, and te
 collide or corrupt databases.
 
 `calibpipe` automatically isolates CASA state per MOUS:
+
 - Creates a dedicated `.casa/` directory inside `<mous_path>/working/.casa/`.
 - Renders private, customized `config.py` and `startup.py` scripts.
 - Passes `--cachedir`, `--configfile`, and `--startupfile` pointing directly into that job's working directory.
@@ -536,6 +537,7 @@ The Zensical configuration lives in `zensical.toml`. API pages are generated thr
 
 - `README.md` (repository root): top-level package overview and quick start
 - [Execution Internals](internals.md): deep dive on project ID resolution, PMR staging, and OUS structure
+- [Changelog & History](changelog.md): evolution from prototype, version-by-version release history, and pending features
 - `config.example.toml`: unified configuration template (for site admins and individual users)
 - `quick.run`: sample batch input format
 - [API Reference](api/index.md): generated API reference

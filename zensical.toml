@@ -8,6 +8,7 @@ nav = [
     { "Home" = "index.md" },
     { "User Guide" = "guide.md" },
     { "Execution Internals" = "internals.md" },
+    { "Changelog" = "changelog.md" },
     { "API Reference" = [
         { "Overview" = "api/index.md" },
         { "CLI (calibpipe.cli)" = "api/cli.md" },

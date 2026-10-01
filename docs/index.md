@@ -78,5 +78,6 @@ For Slurm batch execution, interactive shell sourcing, and legacy wrapper mappin
 
 - **[User Guide](guide.md):** Complete manual covering architecture, the 5-tier configuration schema, Slurm batching, shell environment setup, testing, and local doc previewing.
 - **[Execution Internals](internals.md):** In-depth technical details on project ID resolution, `pipelineMakeRequest` (PMR) staging, OUS directory layout, and FAQ.
+- **[Changelog & History](changelog.md):** Evolution from prototype scripts to modern library, version-by-version release notes, and pending features.
 - **[API Reference](api/index.md):** Auto-generated module reference and docstrings for `cli`, `config`, `driver`, `batch`, and execution steps.
 - **[Configuration Template](https://github.com/nrao/calibpipe/blob/main/config.example.toml):** Fully annotated generic configuration template.

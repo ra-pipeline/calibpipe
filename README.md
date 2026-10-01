@@ -159,7 +159,7 @@ Inspect active settings, paths, and environment defaults resolved from `config.t
 calibpipe config show --env=main
 ```
 
-For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows). For staging lifecycle, PMR resolution, and directory layout details, see [Execution Internals](docs/internals.md).
+For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows). For staging lifecycle, PMR resolution, and directory layout details, see [Execution Internals](docs/internals.md). For library evolution and release notes, see [Changelog](docs/changelog.md).
 
 ---
 
