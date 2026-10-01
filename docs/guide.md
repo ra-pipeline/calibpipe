@@ -67,37 +67,99 @@ pipx install /path/to/calibpipe
 
 ---
 
+> [!WARNING]
+> **Observatory Infrastructure & Cluster Dependency**
+>
+> `calibpipe` is an execution driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC cluster) and specialized pipeline workstations. Running `calibpipe` with arbitrary custom configurations on a standard personal workstation will **not work out-of-the-box** unless you have access to valid ALMA pipeline installations, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR).
+>
+> If you are working on an observatory cluster, refer to your site administrator or internal templates (e.g. `notes/config.internal.example.toml`).
+
+---
+
 ## Configuration
 
-Start from `config.example.toml` in the repository root and create a `config.toml` for your local or cluster environment.
+`calibpipe` relies on a structured TOML configuration file to separate code from site-specific paths and CASA installations. Start from `config.example.toml` in the repository root and copy it to `config.toml`.
 
-Configuration lookup order:
+### 1. File Discovery Precedence
 
-1. `--config=<path>`
-2. `$CALIBPIPE_CONFIG`
-3. `./config.toml` in the current working directory
-4. `~/.config/calibpipe/config.toml`
+When any `calibpipe` command or script runs, the configuration file is resolved in the following strict order of precedence (first found wins):
 
-Typical configuration content:
+1. **CLI Argument:** `--config=<path>`
+2. **Environment Variable:** `$CALIBPIPE_CONFIG`
+3. **Current Working Directory:** `./config.toml`
+4. **User Config Directory:** `~/.config/calibpipe/config.toml`
 
-```toml
-default_env = "main"
-
-[paths]
-scipipe_rootdir = "/path/to/pipeline/root/{user}"
-scipipe_logdir = "/path/to/pipeline/logs/{user}"
-pickle_dir = "/path/to/pipeline/pickles/{user}"
-obscaldir = "/path/to/pipeline/obscal2021"
-
-[envs.main]
-casa_root = "/path/to/casa-with-pipeline"
-
-[envs.pl2025]
-casa_root = "/path/to/alternate/casa-with-pipeline"
-heuristics_dir = "{casa_root}/pipeline"
+```mermaid
+flowchart LR
+    A["1. --config CLI flag"] -->|if unset| B["2. $CALIBPIPE_CONFIG env var"]
+    B -->|if unset| C["3. ./config.toml (cwd)"]
+    C -->|if unset| D["4. ~/.config/calibpipe/config.toml"]
 ```
 
-Each `[envs.<name>]` entry identifies a CASA + pipeline installation that `calibpipe` can launch.
+If none of these paths exist, `calibpipe` raises an actionable `ConfigError`.
+
+---
+
+### 2. Configuration Hierarchy & Structure
+
+The TOML configuration is organized into three distinct tiers:
+
+```
+config.toml
+├── default_env = "main"          <-- Default target environment
+├── [paths]                       <-- Tier 1: Working directories & pipeline datasets
+├── [envs.<name>]                 <-- Tier 2: Selectable CASA + Pipeline runtime targets
+└── [site]                        <-- Tier 3: Observatory tooling & cluster overrides (Optional)
+```
+
+#### Tier 1: Workspace & Product Paths (`[paths]`)
+Configures directories where runs, logs, and reference databases reside:
+- `scipipe_rootdir`: Root directory where execution folders and data products are staged. Supports `{user}` interpolation.
+- `scipipe_logdir`: Root directory for driver and subprocess execution logs. Supports `{user}` interpolation.
+- `pickle_dir`: (Optional) Directory for post-run pickle logs. Supports `{user}` interpolation.
+- `obscaldir`: (Optional) Path to static offline calibrator database (passed to the pipeline via `--staticobscal`).
+- `aUdir`: (Optional) Directory for auxiliary `analysisUtils` scripts.
+- `validation_dir`: (Optional) Directory containing baseline reference products.
+- `heuristics_root`: (Optional) Base directory for multi-branch pipeline checkouts (`{heuristics_root}/{branch}`).
+
+#### Tier 2: Runtime Targets (`[envs.<name>]`)
+Each `[envs.<name>]` table represents a selectable CASA installation and pipeline version (e.g. `[envs.main]`, `[envs.dev]`, `[envs.pl2025]`):
+- `casa_root`: **[Required]** Root path to the CASA installation containing `bin/casa` and `bin/mpicasa`.
+- `branch`: **[Optional]** Pipeline branch identifier (defaults to `<name>`).
+- `heuristics_dir`: **[Optional]** Path to pipeline heuristics checkout. Supports template substitutions `{casa_root}` and `{branch}` (e.g. `{casa_root}/pipeline`).
+- *Arbitrary extra keys:* Any additional key-value pairs in this table are exported as environment variables for that specific target.
+
+#### Tier 3: Site & Cluster Overrides (`[site]`) (Optional)
+Overrides the package's built-in defaults for observatory-specific infrastructure:
+- `pmr_home`: Installation root for `pipelineMakeRequest` (default: `/opt/pipetools/latest`).
+- `datapacker_home`: ALMA datapacker installation root (default: `/opt/datapacker/current`).
+- `acsdata`: ACS data directory (default: `/opt/acsdata`).
+- `java_home`: JVM runtime path (default: `$JAVA_HOME` or `/usr/lib/jvm/default-java`).
+- `flux_service_url`: Primary ALMA flux service URL.
+- `flux_service_url_backup`: Secondary ALMA flux service backup URL.
+- `submit_host`: If set, `calibpipe batch` strictly refuses to submit Slurm jobs unless run on this specific hostname.
+- `strict_paths`: If set to `true`, path validation aborts with an error instead of issuing warnings.
+
+---
+
+### 3. Environment Variable Precedence & Construction
+
+When `build_environment()` runs, environment variables are assembled and overlaid in the following order:
+
+```mermaid
+flowchart TD
+    A["1. Host Shell Environment (os.environ: USER, HOME, PATH)"] --> B["2. Built-in Defaults (SITE_DEFAULTS)"]
+    B --> C["3. [site] Overrides from config.toml"]
+    C --> D["4. [paths] Directories (interpolating {user})"]
+    D --> E["5. Target [envs.<name>] (CASA_ROOT, heuristics, PATH prepends)"]
+    E --> F["6. Path Reachability Validation (check_paths)"]
+```
+
+1. **Host Environment:** Reads baseline `os.environ` (inherits `USER`, `HOME`, base `PATH`).
+2. **Site Defaults & Overrides:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`.
+3. **Paths Resolution:** Resolves and creates `SCIPIPE_ROOTDIR`, `SCIPIPE_LOGDIR`, `PICKLE_DIR`, `OBSCALDIR`, `AUDIR`, `VALIDATION_DIR`.
+4. **Environment Target Resolution:** Sets `CASA_ROOT`, prepends `CASA_ROOT/bin` and `PMR/bin` to `PATH`, and sets `SCIPIPE_HEURISTICS`.
+5. **Path Validation:** `check_paths()` checks disk accessibility for `CASA_ROOT`, `pmr_home`, `datapacker_home`, `acsdata`, and `java_home`. If any path is missing, actionable guidance is printed to `sys.stderr`.
 
 ---
 
@@ -202,4 +264,4 @@ The Zensical configuration lives in `zensical.toml`. API pages are generated thr
 - `README.md` (repository root): top-level package overview and quick start
 - `config.example.toml`: example configuration template
 - `quick.run`: sample batch input format
-- [API Reference](api.md): generated API reference
+- [API Reference](api/index.md): generated API reference

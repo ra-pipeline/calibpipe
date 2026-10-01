@@ -7,7 +7,13 @@ watch = ["src"]
 nav = [
     { "Home" = "index.md" },
     { "User Guide" = "guide.md" },
-    { "API Reference" = "api.md" },
+    { "API Reference" = [
+        { "Overview" = "api/index.md" },
+        { "CLI (calibpipe.cli)" = "api/cli.md" },
+        { "Config (calibpipe.config)" = "api/config.md" },
+        { "Driver (calibpipe.driver)" = "api/driver.md" },
+        { "Batch (calibpipe.batch)" = "api/batch.md" },
+    ] },
 ]
 
 [project.plugins.search]
