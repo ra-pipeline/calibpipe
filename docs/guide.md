@@ -211,14 +211,20 @@ Configures directories where runs, logs, and reference databases reside:
 - `heuristics_root`: (Optional) Base directory for multi-branch pipeline checkouts (`{heuristics_root}/{branch}`).
 
 #### Tier 2: Runtime Targets (`[envs.<name>]`)
-Each `[envs.<name>]` table represents a selectable CASA installation and pipeline version (e.g. `[envs.main]`, `[envs.dev]`, `[envs.pl2025]`):
-- `casa_root`: **[Required]** Root path to the CASA installation containing `bin/casa` and `bin/mpicasa`.
-- `branch`: **[Optional]** Pipeline branch identifier (defaults to `<name>`).
-- `heuristics_dir`: **[Optional]** Path to pipeline heuristics checkout. Supports template substitutions `{casa_root}` and `{branch}` (e.g. `{casa_root}/pipeline`).
-- *Arbitrary extra keys:* Any additional key-value pairs in this table are exported as environment variables for that specific target.
+Each `[envs.<name>]` table represents a selectable runtime target (e.g. `[envs.main]`, `[envs.dev]`, `[envs.modular]`):
+- **Monolithic CASA Installation:**
+  - `casa_root`: Root path to the monolithic CASA installation containing `bin/casa` and `bin/mpicasa`.
+- **Modular Pixi Environment:**
+  - `pixi_dir`: Path to the Pixi project directory containing `pyproject.toml` or `pixi.toml`.
+  - `pixi_env`: (Optional) Target Pixi environment name (default: `"default"`). In MPI mode, `calibpipe` sets `CASA_NPROCS` to the requested core count.
+- **Common Options:**
+  - `branch`: (Optional) Pipeline branch identifier (defaults to `<name>`).
+  - `heuristics_dir`: (Optional) Path to pipeline heuristics checkout. Supports template substitutions `{casa_root}`, `{pixi_dir}`, and `{branch}` (e.g. `{pixi_dir}/pipeline`). If omitted in Pixi mode, defaults to `{pixi_dir}/pipeline`.
+  - *Arbitrary extra keys:* Any additional key-value pairs in this table are exported as environment variables for that specific target.
 
 #### Tier 3: Site & Cluster Overrides (`[site]`) (Optional)
 Overrides the package's built-in defaults for observatory-specific infrastructure:
+- `pixi_bin`: (Optional) Explicit path to the `pixi` executable (defaults to finding `pixi` on `$PATH`).
 - `pmr_home`: Installation root for `pipelineMakeRequest` (default: `/opt/pipetools/latest`).
 - `datapacker_home`: ALMA datapacker installation root (default: `/opt/datapacker/current`).
 - `acsdata`: ACS data directory (default: `/opt/acsdata`).
@@ -265,15 +271,15 @@ flowchart TD
     A["1. Host Shell Environment (os.environ: USER, HOME, PATH)"] --> B["2. Built-in Defaults (SITE_DEFAULTS)"]
     B --> C["3. [site] Overrides from config.toml"]
     C --> D["4. [paths] Directories (interpolating {user})"]
-    D --> E["5. Target [envs.<name>] (CASA_ROOT, heuristics, PATH prepends)"]
+    D --> E["5. Target [envs.<name>] (CASA_ROOT / PIXI_DIR, heuristics, PATH prepends)"]
     E --> F["6. Path Reachability Validation (check_paths)"]
 ```
 
 1. **Host Environment:** Reads baseline `os.environ` (inherits `USER`, `HOME`, base `PATH`).
 2. **Site Defaults & Overrides:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`.
 3. **Paths Resolution:** Resolves and creates `SCIPIPE_ROOTDIR`, `SCIPIPE_LOGDIR`, `PICKLE_DIR`, `OBSCALDIR`, `AUDIR`, `VALIDATION_DIR`.
-4. **Environment Target Resolution:** Sets `CASA_ROOT`, prepends `CASA_ROOT/bin` and `PMR/bin` to `PATH`, and sets `SCIPIPE_HEURISTICS`.
-5. **Path Validation:** `check_paths()` checks disk accessibility for `CASA_ROOT`, `pmr_home`, `datapacker_home`, `acsdata`, and `java_home`. If any path is missing, actionable guidance is printed to `sys.stderr`.
+4. **Environment Target Resolution:** Sets `CASA_ROOT` (or `PIXI_DIR`), prepends executable paths and `PMR/bin` to `PATH`, and sets `SCIPIPE_HEURISTICS`.
+5. **Path Validation:** `check_paths()` checks disk accessibility for `CASA_ROOT` (or `pixi_dir`), `pmr_home`, `datapacker_home`, `acsdata`, and `java_home`. If any path is missing, actionable guidance is printed to `sys.stderr`.
 
 ---
 
@@ -314,6 +320,51 @@ The legacy script wrapper also remains available:
 ```bash
 ./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p plwg
 ```
+
+#### Multi-Job Concurrency and HPC Safety
+
+When running large batches across Slurm nodes (`calibpipe batch ...`), `calibpipe` implements several
+safeguards to guarantee conflict-free concurrent execution:
+
+##### 1. Pixi Lockfile & Environment Concurrency (`--frozen`)
+
+When running under a modular Pixi environment (`--env=<pixi_env>`):
+
+* **Immutable Lockfile Enforcement:** `calibpipe` executes Pixi with `pixi run --frozen`. This guarantees Pixi
+  treats `pixi.lock` as strictly read-only and never attempts to re-solve dependencies or update the lockfile
+  concurrently across worker nodes.
+* **Script-Based Execution (`casa_piperun.py`):** Rather than passing complex, multi-statement inline Python
+  strings through nested shell layers (which can strip quotes and cause syntax errors in CASA), `calibpipe` writes
+  a clean `casa_piperun.py` script directly into each MOUS's `working/` directory and executes it via
+  `-c /path/to/working/casa_piperun.py`. Using an absolute path ensures CASA recognizes it as a script file
+  regardless of the initial working directory of the Pixi task or MPI launcher.
+
+> [!IMPORTANT] Pre-install Pixi Environments Before Large Batches
+> Always run `pixi install` once in your Pixi workspace before submitting multi-job batches. Once initialized,
+> worker nodes access shared conda/pip binaries strictly in **read-only mode** without filesystem lock
+> contention. If multiple uninitialized jobs start concurrently, they will attempt to unpack packages
+> simultaneously into `.pixi/envs/`, leading to race conditions.
+
+##### 2. Isolated CASA Runtime State (`.casa`)
+
+Monolithic and modular CASA default to writing user configuration, cache, and telemetry SQLite state into
+`~/.casa` in your home directory. In a parallel cluster environment, concurrent jobs writing to `~/.casa` can
+collide or corrupt databases.
+
+`calibpipe` automatically isolates CASA state per MOUS:
+* Creates a dedicated `.casa/` directory inside `<mous_path>/working/.casa/`.
+* Renders private, customized `config.py` and `startup.py` scripts.
+* Passes `--cachedir`, `--configfile`, and `--startupfile` pointing directly into that job's working directory.
+* Jobs never touch or contend for a shared `~/.casa/` directory.
+
+##### 3. Slurm Submission Safety
+
+* **Unique Job Records:** Each job in a batch receives a unique timestamped name (`batch.<mous>_<timestr>`) with
+  dedicated `.out`, `.err`, and `.sbatch` files.
+* **Submission Staggering:** `calibpipe batch` pauses for 1 second between consecutive submissions to ensure unique
+  timestamp resolution and prevent submission bursts.
+* **Isolated Working Directories:** Each MOUS executes exclusively within its own
+  `<rootdir>/<project_run>/SOUS_.../GOUS_.../MOUS_.../working/` hierarchy.
 
 ### 3. Resolve a Shell Environment
 

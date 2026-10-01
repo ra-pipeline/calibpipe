@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import sys
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
@@ -60,6 +61,7 @@ class SiteConfig:
     casa_enable_telemetry: bool = False
     use_custom_rcdir: bool = True
     strict_paths: bool = False
+    pixi_bin: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SiteConfig:
@@ -70,11 +72,20 @@ class SiteConfig:
             pmr_home=data.get("pmr_home", default_inst.pmr_home),
             acsdata=data.get("acsdata", default_inst.acsdata),
             datapacker_home=data.get("datapacker_home", default_inst.datapacker_home),
-            flux_service_url=data.get("flux_service_url", default_inst.flux_service_url),
-            flux_service_url_backup=data.get("flux_service_url_backup", default_inst.flux_service_url_backup),
-            casa_enable_telemetry=bool(data.get("casa_enable_telemetry", default_inst.casa_enable_telemetry)),
-            use_custom_rcdir=bool(data.get("use_custom_rcdir", default_inst.use_custom_rcdir)),
+            flux_service_url=data.get(
+                "flux_service_url", default_inst.flux_service_url
+            ),
+            flux_service_url_backup=data.get(
+                "flux_service_url_backup", default_inst.flux_service_url_backup
+            ),
+            casa_enable_telemetry=bool(
+                data.get("casa_enable_telemetry", default_inst.casa_enable_telemetry)
+            ),
+            use_custom_rcdir=bool(
+                data.get("use_custom_rcdir", default_inst.use_custom_rcdir)
+            ),
             strict_paths=bool(data.get("strict_paths", default_inst.strict_paths)),
+            pixi_bin=data.get("pixi_bin", default_inst.pixi_bin),
         )
 
 
@@ -93,15 +104,17 @@ class BatchConfig:
     node: str = "1"
     mail_type: str = "ALL"
     # Optional Slurm directives — None means the directive is omitted entirely.
-    walltime: str | None = None        # --time  (e.g. "24:00:00")
-    nodelist: str | None = None        # --nodelist  (pin to a specific node)
-    chdir: str | None = None           # --chdir  (Slurm working directory)
-    cpus_per_task: int | None = None   # --cpus-per-task  (for mpicasa: ntasks × cpus-per-task)
-    mem_per_cpu: str | None = None     # --mem-per-cpu  (mutually exclusive with mem)
-    hint: str | None = None            # --hint  (e.g. "nomultithread")
-    ntasks_per_core: int | None = None # --ntasks-per-core  (e.g. 1 to disable HT)
-    distribution: str | None = None    # --distribution  (e.g. "cyclic:cyclic")
-    no_requeue: bool = True            # --no-requeue  (prevent silent resubmission)
+    walltime: str | None = None  # --time  (e.g. "24:00:00")
+    nodelist: str | None = None  # --nodelist  (pin to a specific node)
+    chdir: str | None = None  # --chdir  (Slurm working directory)
+    cpus_per_task: int | None = (
+        None  # --cpus-per-task  (for mpicasa: ntasks × cpus-per-task)
+    )
+    mem_per_cpu: str | None = None  # --mem-per-cpu  (mutually exclusive with mem)
+    hint: str | None = None  # --hint  (e.g. "nomultithread")
+    ntasks_per_core: int | None = None  # --ntasks-per-core  (e.g. 1 to disable HT)
+    distribution: str | None = None  # --distribution  (e.g. "cyclic:cyclic")
+    no_requeue: bool = True  # --no-requeue  (prevent silent resubmission)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
@@ -115,10 +128,14 @@ class BatchConfig:
             walltime=data.get("walltime", default_inst.walltime),
             nodelist=data.get("nodelist", default_inst.nodelist),
             chdir=data.get("chdir", default_inst.chdir),
-            cpus_per_task=_int_or_none(data.get("cpus_per_task", default_inst.cpus_per_task)),
+            cpus_per_task=_int_or_none(
+                data.get("cpus_per_task", default_inst.cpus_per_task)
+            ),
             mem_per_cpu=data.get("mem_per_cpu", default_inst.mem_per_cpu),
             hint=data.get("hint", default_inst.hint),
-            ntasks_per_core=_int_or_none(data.get("ntasks_per_core", default_inst.ntasks_per_core)),
+            ntasks_per_core=_int_or_none(
+                data.get("ntasks_per_core", default_inst.ntasks_per_core)
+            ),
             distribution=data.get("distribution", default_inst.distribution),
             no_requeue=bool(data.get("no_requeue", default_inst.no_requeue)),
         )
@@ -154,18 +171,30 @@ class ConfigError(Exception):
 
 @dataclass
 class EnvSpec:
-    """Specification for a specific CASA + pipeline environment."""
+    """Specification for a specific CASA + pipeline environment (monolithic or Pixi modular)."""
 
     name: str
-    casa_root: str
+    casa_root: str = ""
     branch: str = ""
     heuristics_dir: str | None = None
+    pixi_dir: str | None = None
+    pixi_env: str = "default"
     extra_vars: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Default the branch name to the environment name when omitted."""
+        """Validate environment spec and set defaults."""
         if not self.branch:
             self.branch = self.name
+        if not self.casa_root and not self.pixi_dir:
+            raise ConfigError(
+                f"[envs.{self.name}] must specify either 'casa_root' (monolithic CASA) "
+                f"or 'pixi_dir' (Pixi modular CASA)."
+            )
+
+    @property
+    def is_pixi(self) -> bool:
+        """Return True if this environment is configured as a Pixi modular setup."""
+        return bool(self.pixi_dir)
 
 
 class CalibpipeConfig(dict):
@@ -196,7 +225,9 @@ class CalibpipeConfig(dict):
         # Synchronize dictionary keys for backwards compatibility
         self["default_env"] = self.default_env
         self["paths"] = asdict(self.paths)
-        self["envs"] = {k: asdict(v) if is_dataclass(v) else v for k, v in self.envs.items()}
+        self["envs"] = {
+            k: asdict(v) if is_dataclass(v) else v for k, v in self.envs.items()
+        }
         self["site"] = asdict(self.site)
         self["batch"] = asdict(self.batch)
         self["run"] = asdict(self.run)
@@ -218,6 +249,20 @@ class CalibpipeConfig(dict):
                     casa_root=env_data.get("casa_root", ""),
                     branch=env_data.get("branch", env_name),
                     heuristics_dir=env_data.get("heuristics_dir"),
+                    pixi_dir=env_data.get("pixi_dir"),
+                    pixi_env=env_data.get("pixi_env", "default"),
+                    extra_vars={
+                        k: str(v)
+                        for k, v in env_data.items()
+                        if k
+                        not in (
+                            "casa_root",
+                            "branch",
+                            "heuristics_dir",
+                            "pixi_dir",
+                            "pixi_env",
+                        )
+                    },
                 )
 
         return cls(
@@ -355,7 +400,9 @@ def resolve_batch_options(
     cpus_per_task = _int_or_none(_cli_or_cfg("cpus_per_task", cfg.batch.cpus_per_task))
     mem_per_cpu = _cli_or_cfg("mem_per_cpu", cfg.batch.mem_per_cpu)
     hint = _cli_or_cfg("hint", cfg.batch.hint)
-    ntasks_per_core = _int_or_none(_cli_or_cfg("ntasks_per_core", cfg.batch.ntasks_per_core))
+    ntasks_per_core = _int_or_none(
+        _cli_or_cfg("ntasks_per_core", cfg.batch.ntasks_per_core)
+    )
     distribution = _cli_or_cfg("distribution", cfg.batch.distribution)
 
     # no_requeue: CLI flag takes precedence; default True (safe default)
@@ -363,7 +410,7 @@ def resolve_batch_options(
     no_requeue = cli_no_requeue if cli_no_requeue is not None else cfg.batch.no_requeue
 
     return ResolvedBatchOptions(
-        pipefile=Path(getattr(cli_args, "pipefile")),
+        pipefile=Path(cli_args.pipefile),
         env_name=env_name,
         queue=queue,
         cores=int(cores),
@@ -497,49 +544,79 @@ def format_config_overview(
     ]
     if config_path:
         lines.append(f"Config File:      {config_path}")
-    lines.extend([
-        f"Default Env:      {cfg.default_env}",
-        f"Selected Env:     {selected_env}",
-    ])
+    lines.extend(
+        [
+            f"Default Env:      {cfg.default_env}",
+            f"Selected Env:     {selected_env}",
+        ]
+    )
 
     if env_spec:
-        lines.extend([
-            f"  CASA Root:      {env_spec.casa_root}",
-            f"  Branch:         {env_spec.branch}",
-            f"  Heuristics:     {env_spec.heuristics_dir or '(bundled / default)'}",
-        ])
+        if env_spec.is_pixi:
+            lines.extend(
+                [
+                    "  Runtime:        Modular Pixi",
+                    f"  Pixi Dir:       {env_spec.pixi_dir}",
+                    f"  Pixi Env:       {env_spec.pixi_env}",
+                    f"  Branch:         {env_spec.branch}",
+                    f"  Heuristics:     {env_spec.heuristics_dir or '(bundled / default)'}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    "  Runtime:        Monolithic CASA",
+                    f"  CASA Root:      {env_spec.casa_root}",
+                    f"  Branch:         {env_spec.branch}",
+                    f"  Heuristics:     {env_spec.heuristics_dir or '(bundled / default)'}",
+                ]
+            )
     else:
         lines.append(f"  [envs.{selected_env}] NOT DEFINED in config")
 
-    lines.extend([
-        "",
-        "Paths:",
-        f"  scipipe_rootdir: {cfg.paths.scipipe_rootdir or '(not set)'}",
-        f"  scipipe_logdir:  {cfg.paths.scipipe_logdir or '(not set)'}",
-    ])
+    lines.extend(
+        [
+            "",
+            "Paths:",
+            f"  scipipe_rootdir: {cfg.paths.scipipe_rootdir or '(not set)'}",
+            f"  scipipe_logdir:  {cfg.paths.scipipe_logdir or '(not set)'}",
+        ]
+    )
     if cfg.paths.pickle_dir:
         lines.append(f"  pickle_dir:      {cfg.paths.pickle_dir}")
     if cfg.paths.obscaldir:
         lines.append(f"  obscaldir:       {cfg.paths.obscaldir}")
 
-    lines.extend([
-        "",
-        "Site & Cluster Integration ([site]):",
-        f"  Submit Host:     {cfg.site.submit_host or '(none - any host allowed)'}",
-        f"  Java Home:       {cfg.site.java_home}",
-        f"  PMR Home:        {cfg.site.pmr_home}",
-        f"  Datapacker:      {cfg.site.datapacker_home}",
-        f"  ACS Data:        {cfg.site.acsdata}",
-        f"  Custom RCDIR:    {cfg.site.use_custom_rcdir}",
-        f"  Telemetry:       {cfg.site.casa_enable_telemetry}",
-        "",
-        "Slurm Batch Defaults ([batch]):",
-        f"  Queue:           {cfg.batch.queue}",
-        f"  Cores / Memory:  {cfg.batch.cores} cores, "
-        + (f"{cfg.batch.mem_per_cpu}/CPU" if cfg.batch.mem_per_cpu else f"{cfg.batch.mem} GB"),
-        f"  Node:            {cfg.batch.node}",
-        f"  Mail Type:       {cfg.batch.mail_type}",
-    ])
+    lines.extend(
+        [
+            "",
+            "Site & Cluster Integration ([site]):",
+            f"  Submit Host:     {cfg.site.submit_host or '(none - any host allowed)'}",
+        ]
+    )
+    if cfg.site.pixi_bin:
+        lines.append(f"  Pixi Bin:        {cfg.site.pixi_bin}")
+    lines.extend(
+        [
+            f"  Java Home:       {cfg.site.java_home}",
+            f"  PMR Home:        {cfg.site.pmr_home}",
+            f"  Datapacker:      {cfg.site.datapacker_home}",
+            f"  ACS Data:        {cfg.site.acsdata}",
+            f"  Custom RCDIR:    {cfg.site.use_custom_rcdir}",
+            f"  Telemetry:       {cfg.site.casa_enable_telemetry}",
+            "",
+            "Slurm Batch Defaults ([batch]):",
+            f"  Queue:           {cfg.batch.queue}",
+            f"  Cores / Memory:  {cfg.batch.cores} cores, "
+            + (
+                f"{cfg.batch.mem_per_cpu}/CPU"
+                if cfg.batch.mem_per_cpu
+                else f"{cfg.batch.mem} GB"
+            ),
+            f"  Node:            {cfg.batch.node}",
+            f"  Mail Type:       {cfg.batch.mail_type}",
+        ]
+    )
     if cfg.batch.walltime:
         lines.append(f"  Walltime:        {cfg.batch.walltime}")
     if cfg.batch.cpus_per_task:
@@ -555,17 +632,19 @@ def format_config_overview(
     if cfg.batch.distribution:
         lines.append(f"  Distribution:    {cfg.batch.distribution}")
     if not cfg.batch.no_requeue:
-        lines.append(f"  Requeue:         True")
+        lines.append("  Requeue:         True")
 
-    lines.extend([
-        "",
-        "Pipeline Run Defaults ([run]):",
-        f"  Recipe:          {cfg.run.recipe}",
-        f"  Cores:           {cfg.run.ncores}",
-        f"  Log Level:       {cfg.run.loglevel}",
-        f"  Use Resume:      {cfg.run.useresume}",
-        "=" * 80,
-    ])
+    lines.extend(
+        [
+            "",
+            "Pipeline Run Defaults ([run]):",
+            f"  Recipe:          {cfg.run.recipe}",
+            f"  Cores:           {cfg.run.ncores}",
+            f"  Log Level:       {cfg.run.loglevel}",
+            f"  Use Resume:      {cfg.run.useresume}",
+            "=" * 80,
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -595,14 +674,25 @@ def resolve_env(config: dict[str, Any], env_name: str | None = None) -> EnvSpec:
         raise ConfigError(f"No [envs.{name}] in config file. Available: {available}")
 
     table = dict(envs[name])
-    if "casa_root" not in table:
-        raise ConfigError(f"[envs.{name}] is missing casa_root")
+    if "casa_root" not in table and "pixi_dir" not in table:
+        raise ConfigError(
+            f"[envs.{name}] must specify either 'casa_root' (monolithic CASA) "
+            f"or 'pixi_dir' (Pixi modular CASA)."
+        )
 
     return EnvSpec(
         name=name,
-        casa_root=table["casa_root"],
+        casa_root=table.get("casa_root", ""),
         branch=table.get("branch", name),
         heuristics_dir=table.get("heuristics_dir"),
+        pixi_dir=table.get("pixi_dir"),
+        pixi_env=table.get("pixi_env", "default"),
+        extra_vars={
+            k: str(v)
+            for k, v in table.items()
+            if k
+            not in ("casa_root", "branch", "heuristics_dir", "pixi_dir", "pixi_env")
+        },
     )
 
 
@@ -628,9 +718,24 @@ def build_environment(
         name = env_spec.get("name", "unknown")
         spec = EnvSpec(
             name=name,
-            casa_root=env_spec["casa_root"],
+            casa_root=env_spec.get("casa_root", ""),
             branch=env_spec.get("branch", name),
             heuristics_dir=env_spec.get("heuristics_dir"),
+            pixi_dir=env_spec.get("pixi_dir"),
+            pixi_env=env_spec.get("pixi_env", "default"),
+            extra_vars={
+                k: str(v)
+                for k, v in env_spec.items()
+                if k
+                not in (
+                    "name",
+                    "casa_root",
+                    "branch",
+                    "heuristics_dir",
+                    "pixi_dir",
+                    "pixi_env",
+                )
+            },
         )
     else:
         spec = env_spec
@@ -639,27 +744,54 @@ def build_environment(
     site = {**SITE_DEFAULTS, **config.get("site", {})}
     user = os.environ.get("USER", "")
 
-    casa_root = spec.casa_root.rstrip("/")
     branch = spec.branch
-    casa_path = f"{casa_root}/bin"
-
     env = os.environ.copy()
-    env["CASA_ROOT"] = casa_root
-    env["CASA_PATH"] = casa_path
     env["PIPE_BRANCH"] = branch
 
-    if spec.heuristics_dir:
-        heuristics = spec.heuristics_dir.format(casa_root=casa_root, branch=branch)
-    else:
-        heuristics_root = paths.get("heuristics_root")
-        if heuristics_root:
-            heuristics = f"{heuristics_root.rstrip('/')}/{branch}"
-        else:
-            # Fallback to parent directory of checkout or current working dir
-            heuristics = str(Path(__file__).resolve().parent.parent.parent)
+    if spec.is_pixi:
+        pixi_dir = (spec.pixi_dir or "").rstrip("/")
+        env["PIXI_DIR"] = pixi_dir
+        env["PIXI_ENV"] = spec.pixi_env
+        env["CASA_ROOT"] = pixi_dir
 
-    env["SCIPIPE_HEURISTICS"] = heuristics
-    env["SCIPIPE_SCRIPTDIR"] = f"{heuristics}/pipeline/recipes"
+        if spec.heuristics_dir:
+            heuristics = spec.heuristics_dir.format(pixi_dir=pixi_dir, branch=branch)
+        else:
+            heuristics_root = paths.get("heuristics_root")
+            if heuristics_root:
+                heuristics = f"{heuristics_root.rstrip('/')}/{branch}"
+            else:
+                heuristics = pixi_dir
+
+        env["SCIPIPE_HEURISTICS"] = heuristics
+        if (Path(heuristics) / "pipeline" / "recipes").is_dir():
+            env["SCIPIPE_SCRIPTDIR"] = str(Path(heuristics) / "pipeline" / "recipes")
+        elif (Path(heuristics) / "recipes").is_dir():
+            env["SCIPIPE_SCRIPTDIR"] = str(Path(heuristics) / "recipes")
+        else:
+            env["SCIPIPE_SCRIPTDIR"] = f"{heuristics}/pipeline/recipes"
+    else:
+        casa_root = spec.casa_root.rstrip("/")
+        casa_path = f"{casa_root}/bin"
+        env["CASA_ROOT"] = casa_root
+        env["CASA_PATH"] = casa_path
+
+        if spec.heuristics_dir:
+            heuristics = spec.heuristics_dir.format(casa_root=casa_root, branch=branch)
+        else:
+            heuristics_root = paths.get("heuristics_root")
+            if heuristics_root:
+                heuristics = f"{heuristics_root.rstrip('/')}/{branch}"
+            else:
+                heuristics = str(Path(__file__).resolve().parent.parent.parent)
+
+        env["SCIPIPE_HEURISTICS"] = heuristics
+        if (Path(heuristics) / "pipeline" / "recipes").is_dir():
+            env["SCIPIPE_SCRIPTDIR"] = str(Path(heuristics) / "pipeline" / "recipes")
+        elif (Path(heuristics) / "recipes").is_dir():
+            env["SCIPIPE_SCRIPTDIR"] = str(Path(heuristics) / "recipes")
+        else:
+            env["SCIPIPE_SCRIPTDIR"] = f"{heuristics}/pipeline/recipes"
 
     for var, key, required in (
         ("SCIPIPE_ROOTDIR", "scipipe_rootdir", True),
@@ -690,13 +822,26 @@ def build_environment(
 
     pmr_bin = f"{site['pmr_home']}/bin"
     path_parts = env.get("PATH", "").split(":")
-    for prepend in (casa_path, pmr_bin):
+    prepend_paths = [pmr_bin]
+    if not spec.is_pixi:
+        prepend_paths.insert(0, f"{spec.casa_root.rstrip('/')}/bin")
+    else:
+        pixi_bin = site.get("pixi_bin")
+        if pixi_bin and Path(pixi_bin).is_file():
+            pixi_bin_dir = str(Path(pixi_bin).parent)
+            if pixi_bin_dir not in prepend_paths:
+                prepend_paths.insert(0, pixi_bin_dir)
+
+    for prepend in prepend_paths:
         if prepend in path_parts:
             path_parts.remove(prepend)
         path_parts.insert(0, prepend)
     env["PATH"] = ":".join(path_parts)
 
     env["MATPLOTLIBRC"] = str(Path.home() / ".casa" / "matplotlib")
+
+    for k, v in spec.extra_vars.items():
+        env[k] = v
 
     if validate_paths and not os.environ.get("CALIBPIPE_SKIP_PATH_CHECK"):
         strict = bool(site.get("strict_paths", False))
@@ -727,33 +872,68 @@ def check_paths(
         ConfigError: If strict is True and any checked path does not exist.
     """
     site = site_config or {}
-    checks: list[tuple[str, str, str]] = [
-        (
-            "CASA_ROOT",
-            env.get("CASA_ROOT", ""),
-            "Please configure [envs.<name>].casa_root in config.toml to point to a valid CASA installation.",
-        ),
-        (
-            "pmr_home",
-            env.get("ACSROOT", ""),
-            "Please configure [site].pmr_home in config.toml (or copy from notes/config.internal.example.toml for NAASC cluster).",
-        ),
-        (
-            "datapacker_home",
-            env.get("DATAPACKER_HOME", ""),
-            "Please configure [site].datapacker_home in config.toml.",
-        ),
-        (
-            "acsdata",
-            env.get("ACSDATA", ""),
-            "Please configure [site].acsdata in config.toml.",
-        ),
-        (
-            "java_home",
-            env.get("JAVA_HOME", ""),
-            "Please configure [site].java_home or set $JAVA_HOME in your environment.",
-        ),
-    ]
+    is_pixi = bool(env.get("PIXI_DIR"))
+
+    checks: list[tuple[str, str, str]] = []
+    if is_pixi:
+        pixi_dir = env.get("PIXI_DIR", "")
+        checks.append(
+            (
+                "pixi_dir",
+                pixi_dir,
+                "Please configure [envs.<name>].pixi_dir in config.toml to point to a valid Pixi environment directory.",
+            )
+        )
+        pixi_bin = site.get("pixi_bin") or shutil.which("pixi")
+        if pixi_bin:
+            checks.append(
+                (
+                    "pixi_bin",
+                    pixi_bin,
+                    "Configured [site].pixi_bin does not exist. Please check the path.",
+                )
+            )
+        else:
+            msg = (
+                "Executable 'pixi' not found in PATH or [site].pixi_bin.\n"
+                "  -> Please install Pixi or set [site].pixi_bin in config.toml."
+            )
+            if strict:
+                raise ConfigError(msg)
+            print(f"WARNING: [calibpipe] {msg}", file=sys.stderr)
+    else:
+        checks.append(
+            (
+                "CASA_ROOT",
+                env.get("CASA_ROOT", ""),
+                "Please configure [envs.<name>].casa_root in config.toml to point to a valid CASA installation.",
+            )
+        )
+
+    checks.extend(
+        [
+            (
+                "pmr_home",
+                env.get("ACSROOT", ""),
+                "Please configure [site].pmr_home in config.toml (or copy from notes/config.internal.example.toml for NAASC cluster).",
+            ),
+            (
+                "datapacker_home",
+                env.get("DATAPACKER_HOME", ""),
+                "Please configure [site].datapacker_home in config.toml.",
+            ),
+            (
+                "acsdata",
+                env.get("ACSDATA", ""),
+                "Please configure [site].acsdata in config.toml.",
+            ),
+            (
+                "java_home",
+                env.get("JAVA_HOME", ""),
+                "Please configure [site].java_home or set $JAVA_HOME in your environment.",
+            ),
+        ]
+    )
 
     warnings: list[str] = []
     for label, path_str, hint in checks:
@@ -792,6 +972,8 @@ def format_shell_exports(
         "CASA_ROOT",
         "CASA_PATH",
         "PIPE_BRANCH",
+        "PIXI_DIR",
+        "PIXI_ENV",
         "SCIPIPE_HEURISTICS",
         "SCIPIPE_SCRIPTDIR",
         "SCIPIPE_ROOTDIR",

@@ -279,11 +279,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     with open(pipefile, encoding="utf-8") as fd:
         lines = fd.readlines()
 
+    valid_lines = [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+
     submitted = 0
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+    for idx, line in enumerate(valid_lines, 1):
         parts = line.split()
         mousname = parts[0]
         recipe = parts[1] if len(parts) > 1 else "calimage"
@@ -359,8 +358,9 @@ def main(argv: Sequence[str] | None = None) -> None:
             if os.path.exists(sbatch_path):
                 os.unlink(sbatch_path)
 
-        print('Waiting 5 seconds to minimize directory naming collision risk')
-        time.sleep(5)
+        # Briefly pause between consecutive submissions so timestamps remain unique
+        if idx < len(valid_lines):
+            time.sleep(1)
 
     if submitted > 0:
         current_user = os.environ.get('USER', '')

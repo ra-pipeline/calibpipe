@@ -51,16 +51,22 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 # 2. Environments ([envs.<name>])
 # ------------------------------------------------------------------------------
 # Each table defines a selectable CASA + pipeline configuration.
+# Environments can be either:
+#   A) Traditional monolithic CASA installation (via 'casa_root')
+#   B) Modular CASA environment managed by Pixi (via 'pixi_dir')
+#
 # Select at runtime with: calibpipe run --env=<name> (or calibpipe batch ... --env=<name>)
 #
 # Available fields per environment:
-#   casa_root      [Required] Directory containing bin/casa and bin/mpicasa.
+#   casa_root      [Required for A] Directory containing bin/casa and bin/mpicasa.
+#   pixi_dir       [Required for B] Directory containing pyproject.toml / pixi.toml.
+#   pixi_env       [Optional for B] Target Pixi environment name (default: "default").
 #   branch         [Optional] Branch name (defaults to table name, e.g. "main").
 #   heuristics_dir [Optional] Custom pipeline checkout path. Supports template
-#                             variables '{casa_root}' and '{branch}'. If omitted,
-#                             uses bundled CASA heuristics or heuristics_root.
+#                             variables '{casa_root}', '{pixi_dir}', and '{branch}'.
+#                             If omitted in Pixi mode, defaults to {pixi_dir}/pipeline.
 
-# Default production environment
+# Default production environment (Monolithic CASA)
 [envs.main]
 casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 
@@ -74,6 +80,13 @@ heuristics_dir = "/data/pipeline/branches/dev"
 casa_root = "/opt/casa/casa-6.6.6-17-pipeline-2025.1.0.35-py3.10"
 heuristics_dir = "{casa_root}/pipeline"
 
+# Example: Modular CASA environment managed by Pixi
+[envs.modular]
+pixi_dir = "/data/pipeline/branches/main"
+# pixi_env = "default"                 # Optional environment name in pixi workspace (default: "default")
+# branch = "main"                      # Optional branch name (defaults to table name)
+# heuristics_dir = "{pixi_dir}/pipeline" # Optional custom heuristics path (defaults to {pixi_dir}/pipeline)
+
 # ------------------------------------------------------------------------------
 # 3. Site & Cluster Overrides ([site]) (Optional)
 # ------------------------------------------------------------------------------
@@ -82,6 +95,7 @@ heuristics_dir = "{casa_root}/pipeline"
 #
 # [site]
 # submit_host = "submit-node-1"           # Refuses to submit Slurm batches unless run on this host
+# pixi_bin = "/opt/pixi/bin/pixi"        # Custom Pixi executable path (defaults to 'pixi' in PATH)
 # java_home = "/usr/lib/jvm/java-21"      # Java runtime for PMR and datapacker
 # pmr_home = "/opt/pipetools/latest"      # pipelineMakeRequest installation root
 # acsdata = "/opt/pipedrive/acsdata"      # ACS data directory
