@@ -54,19 +54,102 @@ Key implementation modules:
 
 ---
 
-## Installation
+## Installation & Setup
 
-Install from the canonical top-level `calibpipe/` checkout:
+### 1. Development Environment with `uv` (Recommended)
+
+`calibpipe` uses [`uv`](https://docs.astral.sh/uv/) as its primary package and environment manager.
+
+From the repository root, sync the virtual environment with development and documentation extras:
 
 ```bash
 cd /path/to/calibpipe
-pip install -e .
+uv sync --extra dev --extra docs
 ```
 
-For an isolated user install (recommended on shared clusters):
+You can then run any `calibpipe` command directly inside the managed environment using `uv run`:
 
 ```bash
-pipx install /path/to/calibpipe
+# Inspect resolved configuration
+uv run calibpipe config show --env=main
+
+# Run a single MOUS reduction
+uv run calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
+
+# Submit batch jobs to Slurm
+uv run calibpipe batch quick.run --env=main
+
+# Run tests
+uv run --extra dev pytest tests/
+```
+
+### 2. Isolated Tool Installation via `uv tool` (Recommended on Clusters)
+
+To make `calibpipe` directly accessible in your `$PATH` across the cluster without needing `uv run` or manual venv activation:
+
+```bash
+uv tool install --editable /path/to/calibpipe
+```
+
+Because `--editable` is passed, the CLI stays synchronized with your checkout. You can then invoke commands directly from any working directory:
+
+```bash
+calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
+```
+
+### 3. Alternative Installation Methods
+
+* **Standard Editable Install via `pip`:**
+  ```bash
+  pip install -e .
+  ```
+
+* **Isolated Install via `pipx`:**
+  ```bash
+  pipx install /path/to/calibpipe
+  ```
+
+### Tip: Relocating the `uv` Cache Off NFS Home Directories
+
+On HPC clusters where `$HOME` is NFS-backed, the default `uv` cache directory (`~/.cache/uv`) can cause two problems:
+
+1. **Disk quota exhaustion** — the cache grows unbounded (no automatic eviction) and counts against your home directory quota.
+2. **Cross-filesystem hardlink failures** — `uv` installs packages by hardlinking files from its cache into virtual environments. Hardlinks cannot cross filesystem boundaries. When the cache is on NFS and the venv lives on a local scratch filesystem (or vice versa), `uv` falls back to full file copies, producing warnings like `Failed to hardlink files; falling back to full copy`.
+
+#### Solution: Redirect the Cache to Local Scratch
+
+Set `UV_CACHE_DIR` to a path on a fast local or parallel filesystem:
+
+```bash
+# Add to ~/.bashrc (or your site's shell profile)
+export UV_CACHE_DIR="/scratch/$USER/.cache/uv"
+```
+
+Verify the active cache location at any time:
+
+```bash
+uv cache dir
+```
+
+#### Fix the Link-Mode Separately (if needed)
+
+If your venv and the cache still reside on different filesystems (e.g. project workspace on NFS, cache on local scratch), set the install link mode to `copy` to suppress the cross-device fallback warning:
+
+```bash
+export UV_LINK_MODE=copy          # via environment variable
+# or per-invocation:
+uv sync --link-mode=copy
+```
+
+> [!NOTE] `copy` mode is slower and uses more disk space per venv than hardlinks, because each venv receives its own copy of every package file. Placing `UV_CACHE_DIR` on the same filesystem as your project avoids this trade-off entirely.
+
+#### Cache Maintenance
+
+`uv` does not automatically limit cache size. Prune stale entries periodically:
+
+```bash
+uv cache prune    # removes unused/outdated entries (safe, non-destructive)
+uv cache clean    # wipes the entire cache (forces fresh downloads on next use)
 ```
 
 ---

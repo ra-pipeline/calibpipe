@@ -23,32 +23,43 @@ Detailed package documentation is available in [docs/guide.md](docs/guide.md).
 
 ## Installation
 
-### Standard Editable / Local Install
-
-```bash
-cd /path/to/calibpipe
-pip install -e .
-```
-
-### Development Setup with `uv`
+### Development Setup with `uv` (Recommended)
 
 ```bash
 cd /path/to/calibpipe
 uv sync --extra dev --extra docs
 ```
 
-Run commands inside the managed environment with `uv run`, for example:
+Run commands directly inside the managed environment with `uv run`:
 
 ```bash
+uv run calibpipe config show --env=main
+uv run calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
 uv run --extra dev pytest tests/
 uv run --extra docs zensical serve
 ```
 
-### Isolated Install via `pipx` (Recommended for Cluster Users)
+### Isolated CLI Tool Install via `uv tool` (Recommended on Clusters)
+
+Install directly to your user tool directory (`~/.local/bin/calibpipe`) with live edits linked:
 
 ```bash
-pipx install /path/to/calibpipe
+uv tool install --editable /path/to/calibpipe
 ```
+
+> [!NOTE] **Cluster users — NFS home directories:** The default `uv` cache (`~/.cache/uv`) counts against your home directory quota and can trigger cross-filesystem hardlink errors. Redirect it to a local scratch filesystem by adding `export UV_CACHE_DIR="/scratch/$USER/.cache/uv"` to your shell profile. Run `uv cache prune` periodically to remove stale entries. See [docs/guide.md](docs/guide.md) for full details.
+
+### Alternative Installation Methods
+
+* **Standard Editable / Local Install:**
+  ```bash
+  pip install -e .
+  ```
+
+* **Isolated Install via `pipx`:**
+  ```bash
+  pipx install /path/to/calibpipe
+  ```
 
 ---
 
