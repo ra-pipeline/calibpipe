@@ -351,6 +351,7 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertIn("--configfile", cmd)
         self.assertIn("--startupfile", cmd)
         self.assertIn("--nologger", cmd)
+        self.assertIn(f"--logfile {self.working}/casa-", cmd)
         piperun = self.working / "casa_piperun.py"
         self.assertIn(f"-c {piperun.resolve()}", cmd)
         self.assertTrue(piperun.is_file())
@@ -370,6 +371,7 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", cmd)
         self.assertIn(" casampi --nocrashreport", cmd)
         self.assertIn("--nologger", cmd)
+        self.assertIn(f"--logfile {self.working}/casa-", cmd)
         piperun = self.working / "casa_piperun.py"
         self.assertIn(f"-c {piperun.resolve()}", cmd)
         self.assertTrue(piperun.is_file())

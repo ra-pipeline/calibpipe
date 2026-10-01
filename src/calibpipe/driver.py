@@ -624,6 +624,10 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         casarun = f"{casarun} " + " ".join(rcdir_args)
         log_message(f"created isolated CASA rcdir at {rcdir}")
 
+    if env_spec.is_pixi:
+        casa_logfile = working_path / f"casa-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        casarun = f"{casarun} --logfile {casa_logfile}"
+
     # Prepare working execution directory and fixes script
     working_path.mkdir(parents=True, exist_ok=True)
     if recipe not in ["image", "image_selfcal"]:

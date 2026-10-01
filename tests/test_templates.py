@@ -17,6 +17,7 @@ class TestTemplates(unittest.TestCase):
         self.assertIn("crashreporter_enabled = False", rendered)
         self.assertIn("measures_auto_update = False", rendered)
         self.assertIn("/home/casa/data/distro", rendered)
+        self.assertIn("logfile = os.path.join(_workdir,", rendered)
 
     def test_render_casa_startup(self) -> None:
         """Verify casa_startup.py.in renders cleanly without arguments."""
