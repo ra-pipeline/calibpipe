@@ -4,6 +4,13 @@ Detailed package documentation is available in [docs/guide.md](docs/guide.md).
 
 **calibpipe** is a lightweight, standalone Python package for driving single and batch ALMA Science Pipeline executions on local workstations or HPC Slurm clusters (e.g., NAASC cluster).
 
+> [!WARNING]
+> **Observatory Infrastructure & Cluster Dependency**
+>
+> `calibpipe` is an operational driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC) or specialized pipeline workstations. Running `calibpipe` on a standard personal machine without valid ALMA pipeline (or CASA-based pipeline) installations, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR) will **not work out-of-the-box**.
+>
+> Operators on observatory clusters should configure `config.toml` using site-specific cluster paths (see `notes/config.internal.example.toml`).
+
 ---
 
 ## Features
@@ -75,11 +82,9 @@ pipx install /path/to/calibpipe
    ```
 
 **Config Resolution Order:**
+Searches `--config=<path>` $\to$ `$CALIBPIPE_CONFIG` $\to$ `./config.toml` $\to$ `~/.config/calibpipe/config.toml`.
 
-1. `--config=<path>` CLI flag
-2. `$CALIBPIPE_CONFIG` environment variable
-3. `./config.toml` in the current working directory
-4. `~/.config/calibpipe/config.toml`
+For the complete 3-tier schema (`[paths]`, `[envs.<name>]`, `[site]`), variable interpolation, and architecture flowcharts, see [User Guide: Configuration](docs/guide.md#configuration).
 
 ---
 
@@ -118,7 +123,7 @@ uid://A002/Xcff05c/Xd calimage
 
 ### 3. Interactive Shell Setup
 
-Set the CASA and pipeline environment variables directly in your current shell session (`bash` or `zsh`):
+Set the ALMA pipeline environment variables directly in your current shell session (`bash` or `zsh`):
 
 ```bash
 # Modern direct eval:
@@ -132,6 +137,8 @@ calibpipe env --env=main --print-env
 ```
 
 Use `calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
+
+For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, see [User Guide: Workflows](docs/guide.md#command-line-workflows).
 
 ---
 

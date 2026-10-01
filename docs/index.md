@@ -4,6 +4,13 @@
 
 The package keeps site-specific execution details in TOML configuration rather than hard-coded shell fragments, while preserving compatibility with older operational entry points (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
 
+> [!WARNING]
+> **Observatory Infrastructure & Cluster Dependency**
+>
+> `calibpipe` is an operational driver for the ALMA Science Pipeline designed to run on observatory HPC clusters (e.g. NAASC) or specialized pipeline workstations. Running `calibpipe` on a standard personal workstation without valid ALMA pipeline builds, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR) will **not work out-of-the-box**.
+>
+> Operators on observatory clusters should configure `config.toml` using site-specific cluster paths (see `notes/config.internal.example.toml`).
+
 ---
 
 ## What You Can Do with calibpipe
@@ -43,6 +50,8 @@ default_env = "main"
 casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 ```
 
+For the complete 3-tier schema (`[paths]`, `[envs.<name>]`, `[site]`), variable interpolation, and environment precedence diagrams, see the [Configuration Guide](guide.md#configuration).
+
 ### 3. Run a Reduction
 
 Execute a single MOUS reduction with the configured environment:
@@ -50,37 +59,12 @@ Execute a single MOUS reduction with the configured environment:
 calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
 ```
 
-### 4. Submit a Batch to Slurm
-
-Submit multiple MOUS reductions from a batch file (`quick.run`) to the cluster:
-```bash
-calibpipe batch quick.run --env=main -c 8 -m 248 -p plwg
-```
-
-### 5. Interactive Shell Setup
-
-Export the resolved CASA and pipeline environment directly into your current shell session (`bash` or `zsh`):
-```bash
-source calibpipe_env.sh --env=main
-```
+For Slurm batch execution, interactive shell sourcing, and legacy wrapper mappings, see [Command-Line Workflows](guide.md#command-line-workflows).
 
 ---
 
 ## Documentation Map
 
-- **[User Guide](guide.md):** Detailed guide on installation, TOML configuration schema, command-line workflows, and testing.
-- **[API Reference](api.md):** Auto-generated module reference and docstrings for `cli`, `config`, `driver`, `batch`, and execution steps.
-
----
-
-## Building the Documentation
-
-To view or build this documentation site locally:
-
-```bash
-# Start local live-reloading preview server
-uv run --extra docs zensical serve
-
-# Or build static HTML to site/
-uv run --extra docs zensical build
-```
+- **[User Guide](guide.md):** Complete manual covering architecture, the 3-tier configuration schema, Slurm batching, shell environment setup, testing, and local doc previewing.
+- **[API Reference](api/index.md):** Auto-generated module reference and docstrings for `cli`, `config`, `driver`, `batch`, and execution steps.
+- **[Configuration Template](https://github.com/nrao/calibpipe/blob/main/config.example.toml):** Fully annotated generic configuration template.

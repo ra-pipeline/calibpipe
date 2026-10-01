@@ -65,9 +65,10 @@ The preferred typing style is modern, but this repository still supports Python 
   - `README.md`
   - `docs/guide.md`
   - `docs/index.md`
-  - `docs/api.md`
+  - `docs/api/index.md` (and `docs/api/*.md`)
 - Prefer documenting setup and docs workflows with `uv` examples first.
 - API reference pages should use `mkdocstrings` directives instead of hand-maintained signature dumps.
+- **Terminology:** Always refer to the pipeline as the **ALMA pipeline** (or ALMA Science Pipeline), never as "CASA pipeline". CASA is the underlying data processing dependency; the pipeline itself is the ALMA or CASA-based pipeline.
 
 ## 6. Validation Expectations
 
