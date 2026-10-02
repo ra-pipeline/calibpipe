@@ -1,0 +1,233 @@
+/* Subtle compact styling for comfortable content density */
+
+/* Moderately expanded content width (default 61rem -> 68rem) */
+.md-grid {
+  max-width: 68rem;
+}
+
+/* Base typography: slightly refined font size and relaxed line height */
+.md-typeset {
+  font-size: 0.735rem;
+  line-height: 1.7;
+}
+
+/* Headings with balanced margins */
+.md-typeset h1 {
+  margin: 0 0 1.0em;
+  font-size: 1.8em;
+  line-height: 1.3;
+}
+
+.md-typeset h2 {
+  margin: 1.4em 0 0.55em;
+  font-size: 1.45em;
+  line-height: 1.35;
+}
+
+.md-typeset h3 {
+  margin: 1.3em 0 0.5em;
+  font-size: 1.2em;
+  line-height: 1.4;
+}
+
+.md-typeset h4 {
+  margin: 1.1em 0 0.4em;
+  font-size: 1.05em;
+}
+
+/* Balanced paragraph and list spacing */
+.md-typeset p,
+.md-typeset ul,
+.md-typeset ol {
+  margin-bottom: 0.85em;
+}
+
+.md-typeset li {
+  margin-bottom: 0.25em;
+}
+
+/* Tables with clean, comfortable cell padding */
+.md-typeset table:not([class]) th,
+.md-typeset table:not([class]) td {
+  padding: 0.45em 0.85em;
+}
+
+/* Callouts / admonitions with standard font and balanced margins */
+.md-typeset .admonition,
+.md-typeset details {
+  margin: 1.0em 0;
+}
+
+/* Code blocks */
+.md-typeset pre > code {
+  line-height: 1.5;
+}
+
+/* Sidebar navigation spacing */
+.md-nav__link {
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+}
+
+/* ==========================================================================
+   Mermaid Lightbox & Interactive Zoom
+   ========================================================================== */
+
+.mermaid {
+  position: relative;
+  cursor: zoom-in;
+  transition: outline 0.15s ease;
+  border-radius: 4px;
+}
+
+.mermaid:hover {
+  outline: 1.5px dashed var(--md-accent-fg-color, #448aff);
+  outline-offset: 4px;
+}
+
+.mermaid::after {
+  content: "🔍 Click to zoom";
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 0.65rem;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--md-default-bg-color, #fff);
+  color: var(--md-default-fg-color--light, #666);
+  border: 1px solid var(--md-default-fg-color--lightest, #ddd);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  font-family: var(--md-text-font-family, sans-serif);
+  z-index: 5;
+}
+
+.mermaid:hover::after {
+  opacity: 0.95;
+}
+
+/* Lightbox Modal */
+.mermaid-lightbox {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1000;
+  user-select: none;
+}
+
+.mermaid-lightbox.is-open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mermaid-lightbox-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(10, 15, 25, 0.82);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.mermaid-lightbox-toolbar {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  display: flex;
+  gap: 8px;
+  z-index: 1002;
+}
+
+.mermaid-lightbox-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.mermaid-lightbox-btn:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: scale(1.05);
+}
+
+.mermaid-lightbox-btn.ml-close {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.mermaid-lightbox-btn.ml-close:hover {
+  background: rgba(239, 68, 68, 0.5);
+}
+
+.mermaid-lightbox-hint {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.72rem;
+  color: rgba(255, 255, 255, 0.65);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 4px 12px;
+  border-radius: 20px;
+  z-index: 1002;
+  pointer-events: none;
+  letter-spacing: 0.02em;
+}
+
+.mermaid-lightbox-viewport {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  z-index: 1001;
+}
+
+.mermaid-lightbox-content {
+  position: relative;
+  transform-origin: center center;
+  transition: transform 0.08s ease-out;
+  will-change: transform;
+  background: var(--md-default-bg-color, #ffffff);
+  padding: 28px 36px;
+  border-radius: 12px;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.55);
+  display: inline-block;
+  box-sizing: content-box;
+}
+
+.mermaid-lightbox-content.mermaid {
+  margin: 0;
+  cursor: default !important;
+  outline: none !important;
+}
+
+.mermaid-lightbox-content.mermaid::after {
+  display: none !important;
+}
+
+.mermaid-lightbox-content svg {
+  display: block;
+  overflow: visible;
+  flex-shrink: 0;
+}
+

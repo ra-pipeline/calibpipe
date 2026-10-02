@@ -9,7 +9,7 @@ This document explains the internal mechanisms `calibpipe` uses to resolve proje
 When you execute a reduction with `calibpipe run --mous=uid://A001/X128a/Xb9 --env=main`, the driver orchestrates the following execution sequence:
 
 ```mermaid
-flowchart TD
+flowchart LR
     CLI["1. CLI Invocation<br/><code>calibpipe run --mous=...</code>"] --> Env["2. Environment Resolution<br/><code>build_environment()</code>"]
     Env --> PMR["3. pipelineMakeRequest (PMR)<br/>Queries ALMA metadata via MOUS"]
     PMR --> Parse["4. Output Parsing<br/>Extract project run directory"]
