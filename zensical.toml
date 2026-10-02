@@ -1,13 +1,15 @@
 [project]
 site_name = "calibpipe"
+copyright = "Copyright &copy; 2026 Pipeline Contributors"
 docs_dir = "docs"
 site_dir = "site"
 watch = ["src"]
+extra_css = ["stylesheets/extra.css"]
+extra_javascript = ["javascripts/mermaid-zoom.js"]
 
 nav = [
     { "Home" = "index.md" },
     { "User Guide" = "guide.md" },
-    { "Execution Internals" = "internals.md" },
     { "Changelog" = "changelog.md" },
     { "API Reference" = [
         { "Overview" = "api/index.md" },
@@ -16,6 +18,7 @@ nav = [
         { "Driver (calibpipe.driver)" = "api/driver.md" },
         { "Batch (calibpipe.batch)" = "api/batch.md" },
     ] },
+    { "Execution Internals" = "internals.md" },
 ]
 
 [project.plugins.search]
@@ -28,3 +31,6 @@ default_handler = "python"
 [project.plugins.mkdocstrings.handlers.python]
 paths = ["src"]
 options = { docstring_style = "google", show_source = true, show_root_heading = true, show_root_toc_entry = true, summary = true, separate_signature = true, show_signature_annotations = true, group_by_category = true, show_category_heading = true }
+
+[project.extra]
+generator = false
