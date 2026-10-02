@@ -40,6 +40,7 @@ cmdoutput = getoutput(pmr_cmd)
 ```
 
 The arguments passed to PMR are:
+
 - `asdms_arg`: Optional list of specific Execution Blocks (`--asdms [...]` when `--onlysemipass` is used).
 - `mous_uid`: The target MOUS identifier (e.g. `uid://A001/X128a/Xb9`).
 - `intents_xml`: Selection of pipeline intents (`intents_hsd.xml` for single-dish; `intents_hifa.xml` for interferometry).
@@ -50,6 +51,7 @@ The arguments passed to PMR are:
 ### Metadata Resolution Inside PMR
 
 When `pipelineMakeRequest` executes:
+
 1. It contacts the ALMA archive / metadata services using the MOUS UID.
 2. It resolves the project code (e.g. `2016.2.00105.S`), the science goal, and the OUS tree structure.
 3. It combines the project code with the current execution timestamp to form a unique project run directory:
@@ -88,6 +90,7 @@ ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
 
 > [!WARNING] Failure Detection
 > If `pipelineMakeRequest` fails (due to archive connection issues, missing credentials, or invalid MOUS UIDs), no line matching `"Project root directory is"` will be printed. In this case, `calibpipe` halts immediately with an explicit error, logging the complete PMR output:
+>
 > ```text
 > ERROR: pipelineMakeRequest failed (could not determine project root directory):
 > <cmdoutput>
@@ -120,11 +123,14 @@ Inside `ppmr_dir`, `pipelineMakeRequest` lays out the standard ALMA Science Pipe
 ```
 
 ### Why Symlink Shortcuts are Used Instead of Physical Restructuring
+
 1. **Instant Inspection:** You can immediately inspect intermediate state or results without typing the lengthy UID path:
+
    ```bash
    cd <scipipe_rootdir>/2016.2.00105.S_2026_10_01T07_10_51.324/working
    ls <scipipe_rootdir>/2016.2.00105.S_2026_10_01T07_10_51.324/products
    ```
+
 2. **PPR XML Safety:** The pipeline process executes within the canonical physical directory `.../MOUS_.../working/`, keeping `<RelativePath>` inside `PPR.xml` 100% valid.
 3. **Archival & Datapacker Compatibility:** Downstream packaging tools (e.g. `datapacker`) and ingestion scripts strictly expect the 3-tier `SOUS_.../GOUS_.../MOUS_...` hierarchy. Symlinks keep the canonical hierarchy intact.
 4. **Configuration & CLI Control:** Controlled by `[run].symlink_shortcuts = true` in `config.toml` (or via `--symlink-shortcuts` / `--no-symlink-shortcuts` on the CLI).
@@ -136,7 +142,7 @@ Inside `ppmr_dir`, `pipelineMakeRequest` lays out the standard ALMA Science Pipe
 | `rawdata/` | PMR | Raw ALMA Science Data Model (`.asdm.sdm`) execution blocks. |
 | `working/` | PMR / `calibpipe` | Where CASA runs. Contains the PPR XML, Casa pipescript, and intermediate MS files. |
 | `products/` | ALMA Pipeline | Final calibrated tables, FITS images, and pipeline weblogs. |
-| `working/.casa/`| `calibpipe` | Private CASA runtime environment isolating user config and telemetry. |
+| `working/.casa/` | `calibpipe` | Private CASA runtime environment isolating user config and telemetry. |
 
 ---
 
@@ -155,10 +161,12 @@ if "No such file" in dir_working_output or "cannot access" in dir_working_output
 1. **Standard 3-Tier Hierarchy:** Checks for `SOUS_uid___*/GOUS_uid___*/MOUS_uid___*/working/`.
 2. **Flat Hierarchy Fallback:** If the SOUS/GOUS wrapper folders are omitted, falls back to `{ppmr_dir}/MOUS_uid___*/working/`.
 3. **PPR XML Location:** Searches for the Pipeline Processing Request XML file:
+
    ```python
    working_path = Path(ppmr_fulldir.replace("//", "/")) / "working"
    ppr_matches = list(working_path.glob("PPR*.xml"))
    ```
+
    If a matching `PPR*.xml` is found, `calibpipe` records its path; otherwise, it falls back to `{ppmr_fulldir}/working/PPR.xml`.
 
 ---
@@ -166,23 +174,57 @@ if "No such file" in dir_working_output or "cannot access" in dir_working_output
 ## 5. Frequently Asked Questions (FAQ)
 
 ### Q: Why does `calibpipe` only ask for `--mous` and not `--project`?
+
 **A:** In the ALMA data model, every MOUS UID (e.g. `uid://A001/X128a/Xb9`) is globally unique and directly indexed in the ALMA archive. `pipelineMakeRequest` uses the MOUS to resolve the project code, PI name, cycle, and observing parameters automatically, eliminating human error from entering conflicting project IDs.
 
 ### Q: Why is a timestamp appended to the project folder?
+
 **A:** On shared clusters, multiple runs or re-reductions of the same project (or even the same MOUS with different parameters) may occur over time. Appending an ISO timestamp (e.g. `_2026_10_01T07_10_51.324`) ensures:
+
 - Runs never clobber existing data products or intermediate tables from previous attempts.
 - Multiple batch jobs running concurrently never experience race conditions on the top-level project folder.
 
 ### Q: What should I check if PMR fails with `could not determine project root directory`?
+
 **A:** This indicates `pipelineMakeRequest` did not emit the expected `Project root directory is ...` banner. Common causes:
+
 1. **Unreachable PMR installation:** Verify `[site].pmr_home` in `config.toml` (defaults to `/opt/pipetools/latest`).
 2. **Missing Archive connectivity:** PMR requires network access to the ALMA archive metadata service. Check proxy settings or observatory VPN/firewalls.
 3. **Missing Java runtime:** PMR requires Java. Check `[site].java_home` or verify that `java -version` works in your shell.
 4. **Invalid MOUS UID:** Confirm the MOUS UID exists in the archive and is properly formatted (`uid://A001/...` or `uid___A001_...`).
 
 ### Q: How does CASA know to execute inside `working/`?
+
 **A:** Before invoking CASA (or `pixi run`), `calibpipe`:
+
 1. Changes the process working directory directly to `ppmr_fulldir/working/` (`os.chdir(...)`).
 2. Generates an execution script (`casa_piperun.py`) in that directory.
 3. Launches CASA with `-c /absolute/path/to/working/casa_piperun.py`.
 4. Passes `--cachedir`, `--configfile`, and `--startupfile` pointing into `working/.casa/` to isolate user state.
+
+### Q: Where can I find the shared NAASC site configuration file?
+
+**A:** At NAASC, a shared `config.toml` covering standard cluster paths, environment definitions, and site overrides is maintained at:
+
+```
+/lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml
+```
+
+You can point `calibpipe` to it directly:
+
+```bash
+calibpipe run --config=/lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml --env=main --mous=uid://A001/X128a/Xb9
+```
+
+Or copy it to your working directory or user config directory and customise locally:
+
+```bash
+# Working-directory scope (affects only this run directory)
+cp /lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml ./config.toml
+
+# User-level scope (applies to all calibpipe invocations by this user)
+mkdir -p ~/.calibpipe
+cp /lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml ~/.calibpipe/config.toml
+```
+
+If you need access or have questions about the site config, contact the pipeline team (RX or RI).
