@@ -353,6 +353,7 @@ class CalibpipeConfig(dict):
         envs: dict[str, EnvSpec] | None = None,
         site: SiteConfig | None = None,
         batch: BatchConfig | None = None,
+        batches: dict[str, BatchConfig] | None = None,
         run: RunConfig | None = None,
         profiles: dict[str, ProfileConfig] | None = None,
         raw_dict: dict[str, Any] | None = None,
@@ -364,6 +365,7 @@ class CalibpipeConfig(dict):
         self.envs = envs or {}
         self.site = site or SiteConfig()
         self.batch = batch or BatchConfig()
+        self.batches = batches or {}
         self.run = run or RunConfig()
         self.profiles = profiles or {}
         self.loaded_layers: list[Path] = [Path(p) for p in loaded_layers] if loaded_layers else []
@@ -376,6 +378,9 @@ class CalibpipeConfig(dict):
         }
         self["site"] = asdict(self.site)
         self["batch"] = asdict(self.batch)
+        self["batches"] = {
+            k: asdict(v) if is_dataclass(v) else v for k, v in self.batches.items()
+        }
         self["run"] = asdict(self.run)
         self["profiles"] = {
             k: asdict(v) if is_dataclass(v) else v for k, v in self.profiles.items()
@@ -393,6 +398,13 @@ class CalibpipeConfig(dict):
         site = SiteConfig.from_dict(data.get("site", {}))
         batch = BatchConfig.from_dict(data.get("batch", {}))
         run = RunConfig.from_dict(data.get("run", {}))
+
+        batches: dict[str, BatchConfig] = {}
+        for b_name, b_data in data.get("batches", {}).items():
+            if isinstance(b_data, dict):
+                merged_batch_data = dict(asdict(batch))
+                merged_batch_data.update(b_data)
+                batches[b_name] = BatchConfig.from_dict(merged_batch_data)
 
         profiles: dict[str, ProfileConfig] = {}
         for prof_name, prof_data in data.get("profiles", {}).items():
@@ -429,6 +441,7 @@ class CalibpipeConfig(dict):
             envs=envs,
             site=site,
             batch=batch,
+            batches=batches,
             run=run,
             profiles=profiles,
             raw_dict=data,
@@ -614,6 +627,7 @@ class ResolvedBatchOptions:
     distribution: str | None = None
     no_requeue: bool = True
     scheduler: str = "slurm"
+    profile: str | None = None
 
 
 def resolve_batch_options(
@@ -628,49 +642,67 @@ def resolve_batch_options(
 
     profile_name = getattr(cli_args, "profile", None)
     profile: ProfileConfig | None = None
+    active_batch: BatchConfig = cfg.batch
+
     if profile_name:
-        if profile_name not in cfg.profiles:
-            valid_profiles = ", ".join(cfg.profiles.keys()) or "none defined"
+        if profile_name in cfg.batches:
+            active_batch = cfg.batches[profile_name]
+        elif profile_name in cfg.profiles:
+            profile = cfg.profiles[profile_name]
+            prof_dict = {
+                k: v
+                for k, v in asdict(profile).items()
+                if v is not None and hasattr(cfg.batch, k)
+            }
+            merged_dict = asdict(cfg.batch)
+            merged_dict.update(prof_dict)
+            active_batch = BatchConfig.from_dict(merged_dict)
+        else:
+            available = sorted(set(cfg.batches.keys()) | set(cfg.profiles.keys()))
             raise ConfigError(
-                f"Unknown profile '{profile_name}'. Available profiles in config: {valid_profiles}"
+                f"Unknown batch profile '{profile_name}'. Available profiles: {available}"
             )
-        profile = cfg.profiles[profile_name]
 
-    def _val(attr: str, cfg_val: Any) -> Any:
-        cli_v = getattr(cli_args, attr, None)
-        if cli_v is not None:
-            return cli_v
-        if profile is not None:
-            prof_v = getattr(profile, attr, None)
-            if prof_v is not None:
-                return prof_v
-        return cfg_val
+    env_name = (
+        getattr(cli_args, "env", None)
+        or (profile.env if profile and profile.env else None)
+        or cfg.default_env
+    )
 
-    env_name = getattr(cli_args, "env", None) or (profile.env if profile and profile.env else None) or cfg.default_env
-    queue = _val("queue", cfg.batch.queue)
-    cores = _val("cores", cfg.batch.cores)
-    mem = _val("mem", cfg.batch.mem)
-    node = _val("node", cfg.batch.node)
-    mail_type = _val("mail_type", cfg.batch.mail_type)
-    scheduler = _val("scheduler", cfg.batch.scheduler)
+    cli_queue = getattr(cli_args, "queue", None)
+    queue = cli_queue if cli_queue else active_batch.queue
 
-    # Optional directives — CLI overrides profile overrides config, then falls back to None/default.
-    walltime = _val("walltime", cfg.batch.walltime)
-    nodelist = _val("nodelist", cfg.batch.nodelist)
-    chdir = _val("chdir", cfg.batch.chdir)
-    cpus_per_task = _int_or_none(_val("cpus_per_task", cfg.batch.cpus_per_task))
-    mem_per_cpu = _val("mem_per_cpu", cfg.batch.mem_per_cpu)
-    hint = _val("hint", cfg.batch.hint)
-    ntasks_per_core = _int_or_none(_val("ntasks_per_core", cfg.batch.ntasks_per_core))
-    distribution = _val("distribution", cfg.batch.distribution)
+    cores = getattr(cli_args, "cores", None)
+    if cores is None:
+        cores = active_batch.cores
 
+    mem = getattr(cli_args, "mem", None)
+    if mem is None:
+        mem = active_batch.mem
+
+    node = getattr(cli_args, "node", None) or active_batch.node
+    mail_type = getattr(cli_args, "mail_type", None) or active_batch.mail_type
+    scheduler = getattr(cli_args, "scheduler", None) or active_batch.scheduler
+
+    # Optional directives — CLI overrides config, then falls back to None/default.
+    def _cli_or_cfg(attr: str, cfg_val: Any) -> Any:
+        v = getattr(cli_args, attr, None)
+        return v if v is not None else cfg_val
+
+    walltime = _cli_or_cfg("walltime", active_batch.walltime)
+    nodelist = _cli_or_cfg("nodelist", active_batch.nodelist)
+    chdir = _cli_or_cfg("chdir", active_batch.chdir)
+    cpus_per_task = _int_or_none(_cli_or_cfg("cpus_per_task", active_batch.cpus_per_task))
+    mem_per_cpu = _cli_or_cfg("mem_per_cpu", active_batch.mem_per_cpu)
+    hint = _cli_or_cfg("hint", active_batch.hint)
+    ntasks_per_core = _int_or_none(
+        _cli_or_cfg("ntasks_per_core", active_batch.ntasks_per_core)
+    )
+    distribution = _cli_or_cfg("distribution", active_batch.distribution)
+
+    # no_requeue: CLI flag takes precedence; default True (safe default)
     cli_no_requeue = getattr(cli_args, "no_requeue", None)
-    if cli_no_requeue is not None:
-        no_requeue = cli_no_requeue
-    elif profile is not None and profile.no_requeue is not None:
-        no_requeue = profile.no_requeue
-    else:
-        no_requeue = cfg.batch.no_requeue
+    no_requeue = cli_no_requeue if cli_no_requeue is not None else active_batch.no_requeue
 
     return ResolvedBatchOptions(
         pipefile=Path(cli_args.pipefile),
@@ -693,6 +725,7 @@ def resolve_batch_options(
         distribution=distribution,
         no_requeue=bool(no_requeue),
         scheduler=str(scheduler),
+        profile=profile_name,
     )
 
 
@@ -1165,6 +1198,22 @@ def format_config_overview(
         lines.append(f"  Distribution:    {cfg.batch.distribution}")
     if not cfg.batch.no_requeue:
         lines.append("  Requeue:         True")
+
+    if cfg.batches:
+        lines.extend(["", "Slurm Batch Profiles ([batches.<name>]):"])
+        for b_name in sorted(cfg.batches.keys()):
+            b_cfg = cfg.batches[b_name]
+            mem_display = (
+                f"{b_cfg.mem_per_cpu}/CPU"
+                if b_cfg.mem_per_cpu
+                else f"{b_cfg.mem} GB"
+            )
+            details = [f"queue={b_cfg.queue}", f"cores={b_cfg.cores}", f"mem={mem_display}"]
+            if b_cfg.walltime:
+                details.append(f"time={b_cfg.walltime}")
+            if b_cfg.nodelist:
+                details.append(f"nodelist={b_cfg.nodelist}")
+            lines.append(f"  [{b_name}] " + ", ".join(details))
 
     lines.extend(
         [

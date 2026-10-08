@@ -120,7 +120,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
 
 # ------------------------------------------------------------------------------
-# 4. Slurm Batch Job Defaults ([batch]) (Optional)
+# 4. Slurm Batch Job Defaults ([batch]) & Profiles ([batches.<name>]) (Optional)
 # ------------------------------------------------------------------------------
 # Defaults when submitting jobs via 'calibpipe batch':
 #
@@ -140,6 +140,21 @@ pixi_dir = "/data/pipeline/branches/main"
 # distribution = "cyclic:cyclic"          # Task distribution policy (--distribution)
 # no_requeue = true                       # Prevent job requeuing on node failure (--no-requeue, default: true)
 # scheduler = "slurm"                     # Batch cluster scheduler ("slurm" or "htcondor", default: "slurm")
+#
+# Named batch profiles override baseline [batch] settings and are selectable via
+# 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):
+#
+# [batches.debug]
+# queue = "debug"                         # Test/debug queue
+# cores = 4                               # Reduced CPU count
+# mem = 32                                # Reduced RAM (GB)
+# walltime = "01:00:00"                   # Short walltime limit
+#
+# [batches.heavy]
+# queue = "batch2"                        # High-capacity queue
+# cores = 16
+# mem = 500
+# cpus_per_task = 2
 
 # ------------------------------------------------------------------------------
 # 5. Pipeline Run Defaults ([run]) (Optional)

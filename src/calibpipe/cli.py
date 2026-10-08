@@ -33,10 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
         conflict_handler="resolve",
     )
 
-    # 'batch' subcommand
+    # 'submit' subcommand (with 'batch' alias)
     subparsers.add_parser(
-        "batch",
-        help="Submit a batch of pipeline runs to Slurm (replaces runbatch.py)",
+        "submit",
+        aliases=["batch"],
+        help="Submit pipeline runs to Slurm (replaces runbatch.py)",
         parents=[batch.build_parser()],
         conflict_handler="resolve",
     )
@@ -95,7 +96,17 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     # Ergonomic routing: if first arg is not a known subcommand or global option,
     # assume the user wants `run` (e.g. `calibpipe --mous=uid://...`)
-    known_commands = {"run", "batch", "env", "config", "-h", "--help", "-V", "--version"}
+    known_commands = {
+        "run",
+        "submit",
+        "batch",
+        "env",
+        "config",
+        "-h",
+        "--help",
+        "-V",
+        "--version",
+    }
     if args_list[0] not in known_commands:
         args_list.insert(0, "run")
 
@@ -105,7 +116,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.subcommand == "run":
         # Pass remaining arguments to driver
         driver.main(args_list[1:])
-    elif args.subcommand == "batch":
+    elif args.subcommand in ("submit", "batch"):
         batch.main(args_list[1:])
     elif args.subcommand == "env":
         try:
