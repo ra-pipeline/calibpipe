@@ -21,6 +21,29 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 
 
+def _list_or_empty(value: Any) -> list[str]:
+    """Normalize a string, list, or None into a list of non-empty strings.
+
+    Recognizes 'none', 'null', and False as empty lists (disabled/cleared).
+    """
+    if value is None or value is False:
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or s.lower() in ("none", "null", "false"):
+            return []
+        return [s]
+    if isinstance(value, (list, tuple)):
+        result: list[str] = []
+        for v in value:
+            if v is not None and v is not False:
+                s = str(v).strip()
+                if s and s.lower() not in ("none", "null", "false"):
+                    result.append(s)
+        return result
+    return []
+
+
 @dataclass
 class PathsConfig:
     """Working and output directory paths for pipeline processing."""
@@ -32,6 +55,10 @@ class PathsConfig:
     aUdir: str | None = None
     validation_dir: str | None = None
     heuristics_root: str | None = None
+    workspaces: list[str] = field(default_factory=list)
+    casadata: str | None = None
+    datapath: list[str] = field(default_factory=list)
+    rundata: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PathsConfig:
@@ -43,6 +70,10 @@ class PathsConfig:
             aUdir=data.get("aUdir"),
             validation_dir=data.get("validation_dir"),
             heuristics_root=data.get("heuristics_root"),
+            workspaces=list(data.get("workspaces", []) or []),
+            casadata=data.get("casadata"),
+            datapath=_list_or_empty(data.get("datapath")),
+            rundata=_list_or_empty(data.get("rundata")),
         )
 
 
@@ -129,6 +160,7 @@ class BatchConfig:
     distribution: str | None = None  # --distribution  (e.g. "cyclic:cyclic")
     no_requeue: bool = True  # --no-requeue  (prevent silent resubmission)
     scheduler: str = "slurm"  # Batch scheduler backend: "slurm" or "htcondor"
+    dry_run: bool = False  # Simulate batch submission without submitting jobs
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
@@ -153,6 +185,7 @@ class BatchConfig:
             distribution=data.get("distribution", default_inst.distribution),
             no_requeue=bool(data.get("no_requeue", default_inst.no_requeue)),
             scheduler=str(data.get("scheduler", default_inst.scheduler)),
+            dry_run=bool(data.get("dry_run", default_inst.dry_run)),
         )
 
 
@@ -181,6 +214,10 @@ class RunConfig:
     jyperk_csv: str | None = None
     parameter_list: str | None = None
     ancillary: list[str] = field(default_factory=list)
+    datapath: list[str] = field(default_factory=list)
+    rundata: list[str] = field(default_factory=list)
+    dry_run: bool = False
+    autoreload: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
@@ -209,6 +246,10 @@ class RunConfig:
             jyperk_csv=_str_or_none(data.get("jyperk_csv")),
             parameter_list=_str_or_none(data.get("parameter_list")),
             ancillary=list(data.get("ancillary", default_inst.ancillary) or []),
+            datapath=_list_or_empty(data.get("datapath", default_inst.datapath)),
+            rundata=_list_or_empty(data.get("rundata", default_inst.rundata)),
+            dry_run=bool(data.get("dry_run", default_inst.dry_run)),
+            autoreload=bool(data.get("autoreload", default_inst.autoreload)),
         )
 
 
@@ -295,8 +336,30 @@ class ProfileConfig:
     no_requeue: bool | None = None
     scheduler: str | None = None
 
+    # Execution targets & modes
+    mous: str | None = None
+    vis: list[str] = field(default_factory=list)
+    procedure: str | None = None
+    script: str | None = None
+    cmd: str | None = None
+    ppr: str | None = None
+    vla: bool | None = None
+    interactive: bool | None = None
+    datapath: list[str] | None = None
+    rundata: list[str] | None = None
+    dry_run: bool | None = None
+    autoreload: bool | None = None
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProfileConfig:
+        vis_raw = data.get("vis")
+        if isinstance(vis_raw, str):
+            vis_list = [vis_raw]
+        elif isinstance(vis_raw, (list, tuple)):
+            vis_list = list(vis_raw)
+        else:
+            vis_list = []
+
         return cls(
             env=_str_or_none(data.get("env")),
             recipe=_str_or_none(data.get("recipe")),
@@ -336,6 +399,18 @@ class ProfileConfig:
             distribution=_str_or_none(data.get("distribution")),
             no_requeue=bool(data["no_requeue"]) if "no_requeue" in data else None,
             scheduler=_str_or_none(data.get("scheduler")),
+            mous=_str_or_none(data.get("mous")),
+            vis=vis_list,
+            procedure=_str_or_none(data.get("procedure")),
+            script=_str_or_none(data.get("script")),
+            cmd=_str_or_none(data.get("cmd")),
+            ppr=_str_or_none(data.get("ppr")),
+            vla=bool(data["vla"]) if "vla" in data else None,
+            interactive=bool(data["interactive"]) if "interactive" in data else None,
+            datapath=_list_or_empty(data["datapath"]) if "datapath" in data else None,
+            rundata=_list_or_empty(data["rundata"]) if "rundata" in data else None,
+            dry_run=bool(data["dry_run"]) if "dry_run" in data else None,
+            autoreload=bool(data["autoreload"]) if "autoreload" in data else None,
         )
 
 
@@ -411,15 +486,34 @@ class CalibpipeConfig(dict):
             if isinstance(prof_data, dict):
                 profiles[prof_name] = ProfileConfig.from_dict(prof_data)
 
+        workspaces = paths.workspaces
         envs: dict[str, EnvSpec] = {}
         for env_name, env_data in data.get("envs", {}).items():
             if isinstance(env_data, dict):
+                raw_casa_root = env_data.get("casa_root", "")
+                if raw_casa_root and workspaces:
+                    resolved_casa = resolve_workspace_path(raw_casa_root.rstrip("/"), workspaces)
+                    if resolved_casa.exists():
+                        raw_casa_root = str(resolved_casa)
+
+                raw_pixi_dir = env_data.get("pixi_dir")
+                if raw_pixi_dir and workspaces:
+                    resolved_pixi = resolve_workspace_path(raw_pixi_dir.rstrip("/"), workspaces)
+                    if resolved_pixi.exists():
+                        raw_pixi_dir = str(resolved_pixi)
+
+                raw_heuristics = env_data.get("heuristics_dir")
+                if raw_heuristics and workspaces and "{" not in raw_heuristics:
+                    resolved_heur = resolve_workspace_path(raw_heuristics.rstrip("/"), workspaces)
+                    if resolved_heur.exists():
+                        raw_heuristics = str(resolved_heur)
+
                 envs[env_name] = EnvSpec(
                     name=env_name,
-                    casa_root=env_data.get("casa_root", ""),
+                    casa_root=raw_casa_root,
                     branch=env_data.get("branch", env_name),
-                    heuristics_dir=env_data.get("heuristics_dir"),
-                    pixi_dir=env_data.get("pixi_dir"),
+                    heuristics_dir=raw_heuristics,
+                    pixi_dir=raw_pixi_dir,
                     pixi_env=env_data.get("pixi_env", "default"),
                     extra_vars={
                         k: str(v)
@@ -453,13 +547,14 @@ class CalibpipeConfig(dict):
 class ResolvedRunOptions:
     """Fully resolved execution options for a single calibpipe run."""
 
-    mous: str
-    env_name: str
-    recipe: str
-    ncores: int
-    loglevel: str
-    useresume: bool
-    use_custom_rcdir: bool
+    profile: str | None = None
+    mous: str = ""
+    env_name: str = ""
+    recipe: str = ""
+    ncores: int = 8
+    loglevel: str = "debug"
+    useresume: bool = False
+    use_custom_rcdir: bool = True
     symlink_shortcuts: bool = True
     log2term: bool = False
     flag_dir: str | None = None
@@ -496,6 +591,44 @@ class ResolvedRunOptions:
     jyperk_csv: str | None = None
     parameter_list: str | None = None
     ancillary: list[str] = field(default_factory=list)
+    datapath: list[str] = field(default_factory=list)
+    rundata: list[str] = field(default_factory=list)
+    rundata_specified: bool = False
+    dry_run: bool = False
+    autoreload: bool = True
+
+
+def resolve_workspace_path(
+    path_str: str | Path,
+    workspaces: Sequence[str | Path] = (),
+) -> Path:
+    """Resolve a file or directory path against workspace search roots.
+
+    If path_str exists as given (or is an absolute path), it is returned.
+    Otherwise, searches workspaces in order. If the path exists relative
+    to any workspace root, that resolved path is returned.
+    If not found in any workspace, returns Path(path_str).
+
+    Args:
+        path_str: Relative or absolute path string or Path object.
+        workspaces: Sequence of workspace search directories.
+
+    Returns:
+        Resolved Path object.
+    """
+    if not path_str:
+        return Path("")
+    p = Path(path_str).expanduser()
+    if p.exists() or p.is_absolute():
+        return p
+    for ws in workspaces:
+        if not ws:
+            continue
+        ws_path = Path(ws).expanduser()
+        candidate = ws_path / p
+        if candidate.exists():
+            return candidate.resolve()
+    return p
 
 
 def resolve_run_options(
@@ -562,8 +695,177 @@ def resolve_run_options(
     parameter_list = _val("parameter_list", cfg.run.parameter_list)
     ancillary = _val("ancillary", cfg.run.ancillary)
 
+    # Execution target resolution: CLI flags > profile targets > default empty
+    cli_mous = getattr(cli_opts, "mous", "") or ""
+    cli_vis = list(getattr(cli_opts, "vis", []) or [])
+    cli_script = getattr(cli_opts, "script", "") or ""
+    cli_cmd = getattr(cli_opts, "cmd", "") or ""
+    cli_ppr = getattr(cli_opts, "ppr", None)
+    cli_interactive = bool(getattr(cli_opts, "interactive", False))
+
+    cli_has_target = bool(
+        cli_mous
+        or cli_vis
+        or cli_script
+        or cli_cmd
+        or (cli_ppr and not cli_mous)
+        or cli_interactive
+    )
+
+    if cli_has_target:
+        mous = cli_mous
+        vis = cli_vis
+        script = cli_script
+        cmd = cli_cmd
+        ppr = cli_ppr
+        interactive = cli_interactive
+    elif profile is not None:
+        prof_targets = []
+        if profile.mous:
+            prof_targets.append(f"mous={profile.mous}")
+        if profile.vis:
+            prof_targets.append(f"vis={' '.join(profile.vis)}")
+        if profile.script:
+            prof_targets.append(f"script={profile.script}")
+        if profile.cmd:
+            prof_targets.append("cmd")
+        if profile.interactive:
+            prof_targets.append("interactive")
+        if profile.ppr and not profile.mous:
+            prof_targets.append(f"ppr={profile.ppr}")
+
+        if len(prof_targets) > 1:
+            raise ConfigError(
+                f"Conflicting execution targets specified in profile '{profile_name}': "
+                f"{', '.join(prof_targets)}. Please specify only one target."
+            )
+
+        mous = profile.mous or ""
+        vis = list(profile.vis or [])
+        script = profile.script or ""
+        cmd = profile.cmd or ""
+        ppr = profile.ppr
+        interactive = bool(profile.interactive) if profile.interactive is not None else False
+    else:
+        mous = ""
+        vis = []
+        script = ""
+        cmd = ""
+        ppr = None
+        interactive = False
+
+    procedure = (
+        getattr(cli_opts, "procedure", "")
+        or (profile.procedure if profile and profile.procedure else "")
+        or ""
+    )
+    cli_vla = getattr(cli_opts, "vla", None)
+    if cli_vla:
+        vla = True
+    elif profile is not None and profile.vla is not None:
+        vla = bool(profile.vla)
+    else:
+        vla = False
+
+    # Dry-run: CLI > Profile > [run]
+    cli_dry_run = getattr(cli_opts, "dry_run", None)
+    if cli_dry_run is not None:
+        dry_run = bool(cli_dry_run)
+    elif profile is not None and profile.dry_run is not None:
+        dry_run = bool(profile.dry_run)
+    else:
+        dry_run = cfg.run.dry_run
+
+    # Autoreload: CLI > Profile > [run]
+    cli_autoreload = getattr(cli_opts, "autoreload", None)
+    if cli_autoreload is not None:
+        autoreload = bool(cli_autoreload)
+    elif profile is not None and profile.autoreload is not None:
+        autoreload = bool(profile.autoreload)
+    else:
+        autoreload = cfg.run.autoreload
+
+    # Datapath & rundata resolution: CLI > Profile > [run] > [paths]
+    cli_datapath = getattr(cli_opts, "datapath", None)
+    if cli_datapath is not None:
+        resolved_datapath = _list_or_empty(cli_datapath)
+    elif profile is not None and profile.datapath is not None:
+        resolved_datapath = list(profile.datapath)
+    elif cfg.run.datapath:
+        resolved_datapath = list(cfg.run.datapath)
+    elif cfg.paths.datapath:
+        resolved_datapath = list(cfg.paths.datapath)
+    else:
+        resolved_datapath = []
+
+    cli_rundata = getattr(cli_opts, "rundata", None)
+    rundata_specified = False
+    if cli_rundata is not None:
+        resolved_rundata = _list_or_empty(cli_rundata)
+        rundata_specified = True
+    elif profile is not None and profile.rundata is not None:
+        resolved_rundata = list(profile.rundata)
+        rundata_specified = True
+    elif cfg.run.rundata:
+        resolved_rundata = list(cfg.run.rundata)
+        rundata_specified = True
+    elif cfg.paths.rundata:
+        resolved_rundata = list(cfg.paths.rundata)
+        rundata_specified = True
+    else:
+        resolved_rundata = []
+
+    # Dynamic workspace search path resolution
+    workspaces = cfg.paths.workspaces
+    if workspaces:
+        if vis:
+            vis = [str(resolve_workspace_path(v, workspaces)) for v in vis]
+        if procedure:
+            procedure = str(resolve_workspace_path(procedure, workspaces))
+        if script:
+            script = str(resolve_workspace_path(script, workspaces))
+        if ppr:
+            ppr = str(resolve_workspace_path(ppr, workspaces))
+        if cont_dat:
+            cont_dat = str(resolve_workspace_path(cont_dat, workspaces))
+        if jyperk_csv:
+            jyperk_csv = str(resolve_workspace_path(jyperk_csv, workspaces))
+        if parameter_list:
+            parameter_list = str(resolve_workspace_path(parameter_list, workspaces))
+        if ancillary:
+            ancillary = [str(resolve_workspace_path(a, workspaces)) for a in ancillary]
+        if resolved_datapath:
+            resolved_datapath = [str(resolve_workspace_path(d, workspaces)) for d in resolved_datapath]
+        if resolved_rundata:
+            resolved_rundata = [str(resolve_workspace_path(r, workspaces)) for r in resolved_rundata]
+
+    if resolved_datapath:
+        resolved_datapath = [
+            str(Path(p).expanduser().resolve()) if Path(p).expanduser().exists() else str(Path(p).expanduser())
+            for p in resolved_datapath
+        ]
+    if resolved_rundata:
+        resolved_rundata = [
+            str(Path(p).expanduser().resolve()) if Path(p).expanduser().exists() else str(Path(p).expanduser())
+            for p in resolved_rundata
+        ]
+
+    if workdir:
+        workdir_search = []
+        if cfg.paths.scipipe_rootdir:
+            workdir_search.append(cfg.paths.scipipe_rootdir)
+        if workspaces:
+            workdir_search.extend(workspaces)
+        if workdir_search:
+            resolved_wd = resolve_workspace_path(workdir, workdir_search)
+            if resolved_wd.exists():
+                workdir = str(resolved_wd)
+            elif cfg.paths.scipipe_rootdir and not Path(workdir).is_absolute() and not workdir.startswith("~"):
+                workdir = str(Path(cfg.paths.scipipe_rootdir).expanduser() / workdir)
+
     return ResolvedRunOptions(
-        mous=getattr(cli_opts, "mous", "") or "",
+        profile=profile_name,
+        mous=mous,
         env_name=env_name,
         recipe=recipe,
         ncores=int(ncores),
@@ -573,17 +875,17 @@ def resolve_run_options(
         symlink_shortcuts=bool(symlink_shortcuts),
         log2term=bool(log2term),
         flag_dir=getattr(cli_opts, "flag", None),
-        ppr=getattr(cli_opts, "ppr", None),
+        ppr=ppr,
         subdir=getattr(cli_opts, "subdir", None),
         onlysemipass=getattr(cli_opts, "onlysemipass", "") or "",
         verbose=bool(getattr(cli_opts, "verbose", False)),
-        vis=list(getattr(cli_opts, "vis", []) or []),
-        procedure=getattr(cli_opts, "procedure", "") or "",
-        script=getattr(cli_opts, "script", "") or "",
-        cmd=getattr(cli_opts, "cmd", "") or "",
-        vla=bool(getattr(cli_opts, "vla", False)),
+        vis=vis,
+        procedure=procedure,
+        script=script,
+        cmd=cmd,
+        vla=vla,
         workdir=workdir,
-        interactive=bool(getattr(cli_opts, "interactive", False)),
+        interactive=interactive,
         omp_num_threads=int(omp_num_threads) if omp_num_threads is not None else None,
         openblas_num_threads=int(openblas_num_threads) if openblas_num_threads is not None else None,
         omp_max_threads=int(omp_max_threads) if omp_max_threads is not None else None,
@@ -599,6 +901,11 @@ def resolve_run_options(
         jyperk_csv=str(jyperk_csv) if jyperk_csv is not None else None,
         parameter_list=str(parameter_list) if parameter_list is not None else None,
         ancillary=list(ancillary or []),
+        datapath=resolved_datapath,
+        rundata=resolved_rundata,
+        rundata_specified=rundata_specified,
+        dry_run=dry_run,
+        autoreload=autoreload,
     )
 
 
@@ -606,7 +913,7 @@ def resolve_run_options(
 class ResolvedBatchOptions:
     """Fully resolved options for a Slurm batch submission."""
 
-    pipefile: Path
+    pipefile: Path | None
     env_name: str
     queue: str
     cores: int
@@ -628,6 +935,7 @@ class ResolvedBatchOptions:
     no_requeue: bool = True
     scheduler: str = "slurm"
     profile: str | None = None
+    dry_run: bool = False
 
 
 def resolve_batch_options(
@@ -641,6 +949,10 @@ def resolve_batch_options(
         cfg = CalibpipeConfig.from_dict(config)
 
     profile_name = getattr(cli_args, "profile", None)
+    pipefile_arg = getattr(cli_args, "pipefile", None)
+    if not pipefile_arg and not profile_name:
+        raise ConfigError("Either a pipefile or a --profile must be specified.")
+
     profile: ProfileConfig | None = None
     active_batch: BatchConfig = cfg.batch
 
@@ -654,6 +966,8 @@ def resolve_batch_options(
                 for k, v in asdict(profile).items()
                 if v is not None and hasattr(cfg.batch, k)
             }
+            if "cores" not in prof_dict and profile.ncores is not None:
+                prof_dict["cores"] = profile.ncores
             merged_dict = asdict(cfg.batch)
             merged_dict.update(prof_dict)
             active_batch = BatchConfig.from_dict(merged_dict)
@@ -704,8 +1018,11 @@ def resolve_batch_options(
     cli_no_requeue = getattr(cli_args, "no_requeue", None)
     no_requeue = cli_no_requeue if cli_no_requeue is not None else active_batch.no_requeue
 
+    cli_dry_run = getattr(cli_args, "dry_run", None)
+    dry_run = bool(cli_dry_run if cli_dry_run is not None else active_batch.dry_run)
+
     return ResolvedBatchOptions(
-        pipefile=Path(cli_args.pipefile),
+        pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
         queue=str(queue),
         cores=int(cores),
@@ -726,6 +1043,7 @@ def resolve_batch_options(
         no_requeue=bool(no_requeue),
         scheduler=str(scheduler),
         profile=profile_name,
+        dry_run=dry_run,
     )
 
 
@@ -1145,6 +1463,14 @@ def format_config_overview(
             f"  scipipe_logdir:  {cfg.paths.scipipe_logdir or '(not set)'}",
         ]
     )
+    if cfg.paths.workspaces:
+        lines.append(f"  workspaces:      {', '.join(cfg.paths.workspaces)}")
+    if cfg.paths.casadata:
+        lines.append(f"  casadata:        {cfg.paths.casadata}")
+    if cfg.paths.datapath:
+        lines.append(f"  datapath:        {', '.join(cfg.paths.datapath)}")
+    if cfg.paths.rundata:
+        lines.append(f"  rundata:         {', '.join(cfg.paths.rundata)}")
     if cfg.paths.pickle_dir:
         lines.append(f"  pickle_dir:      {cfg.paths.pickle_dir}")
     if cfg.paths.obscaldir:
@@ -1232,6 +1558,19 @@ def format_config_overview(
         for pname in sorted(cfg.profiles.keys()):
             p = cfg.profiles[pname]
             pdetails = []
+            if p.cmd:
+                pdetails.append("target=cmd")
+            elif p.script:
+                pdetails.append(f"target=script({p.script})")
+            elif p.vis:
+                pdetails.append(f"target=vis({len(p.vis)} MS)")
+            elif p.mous:
+                pdetails.append(f"target=mous({p.mous})")
+            elif p.ppr:
+                pdetails.append(f"target=ppr({p.ppr})")
+            elif p.interactive:
+                pdetails.append("target=interactive")
+
             if p.env:
                 pdetails.append(f"env={p.env}")
             if p.recipe:
@@ -1242,6 +1581,135 @@ def format_config_overview(
                 pdetails.append(f"scheduler={p.scheduler}")
             detail_str = f" ({', '.join(pdetails)})" if pdetails else ""
             lines.append(f"  {pname}{detail_str}")
+
+    lines.append("=" * 80)
+    return "\n".join(lines)
+
+
+def format_profile_list(config: CalibpipeConfig | dict[str, Any]) -> str:
+    """Format a summary list of all available execution and batch profiles.
+
+    Args:
+        config: Loaded configuration object or dictionary.
+
+    Returns:
+        Formatted multi-line summary of profiles.
+    """
+    if isinstance(config, CalibpipeConfig):
+        cfg = config
+    else:
+        cfg = CalibpipeConfig.from_dict(config)
+
+    lines = [
+        "=" * 80,
+        "calibpipe Profiles",
+        "=" * 80,
+    ]
+
+    lines.append("\nExecution Profiles ([profiles.<name>]):")
+    if not cfg.profiles:
+        lines.append("  (none defined)")
+    else:
+        for pname in sorted(cfg.profiles.keys()):
+            p = cfg.profiles[pname]
+            pdetails = []
+            if p.cmd:
+                target_str = "cmd"
+            elif p.script:
+                target_str = f"script({p.script})"
+            elif p.vis:
+                target_str = f"vis({len(p.vis)} MS)"
+            elif p.mous:
+                target_str = f"mous({p.mous})"
+            elif p.ppr:
+                target_str = f"ppr({p.ppr})"
+            elif p.interactive:
+                target_str = "interactive"
+            elif p.recipe:
+                target_str = f"recipe({p.recipe})"
+            else:
+                target_str = "tuning"
+
+            if p.env:
+                pdetails.append(f"env={p.env}")
+            if p.ncores:
+                pdetails.append(f"cores={p.ncores}")
+            if p.psrecord:
+                pdetails.append("psrecord=True")
+            if p.backup:
+                pdetails.append("backup=True")
+            if p.workdir:
+                pdetails.append(f"workdir={p.workdir}")
+
+            detail_str = f"  [{target_str}]".ljust(18) + (f"({', '.join(pdetails)})" if pdetails else "")
+            lines.append(f"  {pname:<28} {detail_str}")
+
+    lines.append("\nBatch Profiles ([batches.<name>]):")
+    if not cfg.batches:
+        lines.append("  (none defined)")
+    else:
+        for bname in sorted(cfg.batches.keys()):
+            b = cfg.batches[bname]
+            bdetails = [f"queue={b.queue}", f"cores={b.cores}"]
+            mem_display = f"{b.mem_per_cpu}/CPU" if b.mem_per_cpu else f"{b.mem} GB"
+            bdetails.append(f"mem={mem_display}")
+            if b.walltime:
+                bdetails.append(f"time={b.walltime}")
+            if b.scheduler:
+                bdetails.append(f"scheduler={b.scheduler}")
+            target_str = f"[{b.scheduler}]"
+            detail_str = f"  {target_str}".ljust(18) + f"({', '.join(bdetails)})"
+            lines.append(f"  {bname:<28} {detail_str}")
+
+    lines.append("=" * 80)
+    return "\n".join(lines)
+
+
+def format_profile_details(config: CalibpipeConfig | dict[str, Any], name: str) -> str:
+    """Format detailed information for a single execution or batch profile.
+
+    Args:
+        config: Loaded configuration object or dictionary.
+        name: Name of the profile to inspect.
+
+    Returns:
+        Formatted multi-line summary of the profile's settings.
+
+    Raises:
+        ConfigError: If the profile is not found in cfg.profiles or cfg.batches.
+    """
+    if isinstance(config, CalibpipeConfig):
+        cfg = config
+    else:
+        cfg = CalibpipeConfig.from_dict(config)
+
+    lines = [
+        "=" * 80,
+        f"Profile: {name}",
+        "=" * 80,
+    ]
+
+    found = False
+    if name in cfg.profiles:
+        found = True
+        p = cfg.profiles[name]
+        lines.append("Type: Execution Profile ([profiles])")
+        for k, v in asdict(p).items():
+            if v is not None and v != [] and v != "":
+                lines.append(f"  {k:<22}: {v}")
+
+    if name in cfg.batches:
+        found = True
+        b = cfg.batches[name]
+        lines.append("Type: Batch Profile ([batches])")
+        for k, v in asdict(b).items():
+            if v is not None and v != "":
+                lines.append(f"  {k:<22}: {v}")
+
+    if not found:
+        available = sorted(set(cfg.profiles.keys()) | set(cfg.batches.keys()))
+        avail_str = ", ".join(available) or "none defined"
+        raise ConfigError(f"Profile '{name}' not found. Available profiles: {avail_str}")
 
     lines.append("=" * 80)
     return "\n".join(lines)
@@ -1279,12 +1747,31 @@ def resolve_env(config: dict[str, Any], env_name: str | None = None) -> EnvSpec:
             f"or 'pixi_dir' (Pixi modular CASA)."
         )
 
+    workspaces = config.get("paths", {}).get("workspaces", [])
+    casa_root = table.get("casa_root", "")
+    if casa_root and workspaces:
+        resolved_casa = resolve_workspace_path(casa_root.rstrip("/"), workspaces)
+        if resolved_casa.exists():
+            casa_root = str(resolved_casa)
+
+    pixi_dir = table.get("pixi_dir")
+    if pixi_dir and workspaces:
+        resolved_pixi = resolve_workspace_path(pixi_dir.rstrip("/"), workspaces)
+        if resolved_pixi.exists():
+            pixi_dir = str(resolved_pixi)
+
+    heuristics_dir = table.get("heuristics_dir")
+    if heuristics_dir and workspaces and "{" not in heuristics_dir:
+        resolved_heur = resolve_workspace_path(heuristics_dir.rstrip("/"), workspaces)
+        if resolved_heur.exists():
+            heuristics_dir = str(resolved_heur)
+
     return EnvSpec(
         name=name,
-        casa_root=table.get("casa_root", ""),
+        casa_root=casa_root,
         branch=table.get("branch", name),
-        heuristics_dir=table.get("heuristics_dir"),
-        pixi_dir=table.get("pixi_dir"),
+        heuristics_dir=heuristics_dir,
+        pixi_dir=pixi_dir,
         pixi_env=table.get("pixi_env", "default"),
         extra_vars={
             k: str(v)
@@ -1340,6 +1827,7 @@ def build_environment(
         spec = env_spec
 
     paths = config.get("paths", {})
+    workspaces = paths.get("workspaces", [])
     site = {**SITE_DEFAULTS, **config.get("site", {})}
     user = os.environ.get("USER", "")
 
@@ -1348,17 +1836,27 @@ def build_environment(
     env["PIPE_BRANCH"] = branch
 
     if spec.is_pixi:
-        pixi_dir = (spec.pixi_dir or "").rstrip("/")
+        pixi_dir_val = (spec.pixi_dir or "").rstrip("/")
+        if workspaces:
+            p = resolve_workspace_path(pixi_dir_val, workspaces)
+            pixi_dir = str(p.expanduser().resolve() if p.exists() else p.expanduser())
+        else:
+            pixi_dir = os.path.expanduser(pixi_dir_val)
         env["PIXI_DIR"] = pixi_dir
         env["PIXI_ENV"] = spec.pixi_env
         env["CASA_ROOT"] = pixi_dir
 
         if spec.heuristics_dir:
-            heuristics = spec.heuristics_dir.format(pixi_dir=pixi_dir, branch=branch)
+            heur_raw = spec.heuristics_dir.format(pixi_dir=pixi_dir, branch=branch)
+            if workspaces:
+                p = resolve_workspace_path(heur_raw, workspaces)
+                heuristics = str(p.expanduser().resolve() if p.exists() else p.expanduser())
+            else:
+                heuristics = os.path.expanduser(heur_raw)
         else:
             heuristics_root = paths.get("heuristics_root")
             if heuristics_root:
-                heuristics = f"{heuristics_root.rstrip('/')}/{branch}"
+                heuristics = os.path.expanduser(f"{heuristics_root.rstrip('/')}/{branch}")
             else:
                 heuristics = pixi_dir
 
@@ -1370,17 +1868,27 @@ def build_environment(
         else:
             env["SCIPIPE_SCRIPTDIR"] = f"{heuristics}/pipeline/recipes"
     else:
-        casa_root = spec.casa_root.rstrip("/")
+        casa_root_val = spec.casa_root.rstrip("/")
+        if workspaces:
+            p = resolve_workspace_path(casa_root_val, workspaces)
+            casa_root = str(p.expanduser().resolve() if p.exists() else p.expanduser())
+        else:
+            casa_root = os.path.expanduser(casa_root_val)
         casa_path = f"{casa_root}/bin"
         env["CASA_ROOT"] = casa_root
         env["CASA_PATH"] = casa_path
 
         if spec.heuristics_dir:
-            heuristics = spec.heuristics_dir.format(casa_root=casa_root, branch=branch)
+            heur_raw = spec.heuristics_dir.format(casa_root=casa_root, branch=branch)
+            if workspaces:
+                p = resolve_workspace_path(heur_raw, workspaces)
+                heuristics = str(p.expanduser().resolve() if p.exists() else p.expanduser())
+            else:
+                heuristics = os.path.expanduser(heur_raw)
         else:
             heuristics_root = paths.get("heuristics_root")
             if heuristics_root:
-                heuristics = f"{heuristics_root.rstrip('/')}/{branch}"
+                heuristics = os.path.expanduser(f"{heuristics_root.rstrip('/')}/{branch}")
             else:
                 heuristics = str(Path(__file__).resolve().parent.parent.parent)
 
@@ -1410,6 +1918,24 @@ def build_environment(
             pass
         env[var] = resolved
 
+    # Discover casadata / measurespath
+    casadata_val = paths.get("casadata")
+    if casadata_val:
+        p = resolve_workspace_path(casadata_val, workspaces)
+        if p.exists():
+            env["CASADATA"] = str(p.resolve())
+        else:
+            env["CASADATA"] = str(p.expanduser())
+    elif workspaces and "CASADATA" not in env:
+        for ws in workspaces:
+            for cand_name in ("casa-data", "casarundata", "data"):
+                cand = Path(ws).expanduser() / cand_name
+                if cand.is_dir() and (cand / "geodetic").is_dir():
+                    env["CASADATA"] = str(cand.resolve())
+                    break
+            if "CASADATA" in env:
+                break
+
     env["JAVA_HOME"] = site["java_home"]
     env["ACSDATA"] = site["acsdata"]
     env["ACSROOT"] = site["pmr_home"]
@@ -1423,7 +1949,7 @@ def build_environment(
     path_parts = env.get("PATH", "").split(":")
     prepend_paths = [pmr_bin]
     if not spec.is_pixi:
-        prepend_paths.insert(0, f"{spec.casa_root.rstrip('/')}/bin")
+        prepend_paths.insert(0, f"{casa_root}/bin")
     else:
         pixi_bin = site.get("pixi_bin")
         if pixi_bin and Path(pixi_bin).is_file():

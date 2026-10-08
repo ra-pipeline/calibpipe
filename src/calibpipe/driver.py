@@ -104,6 +104,10 @@ def write_casa_config(
     rcdir: Path,
     site_config: dict[str, Any] | None = None,
     log2term: bool = False,
+    casadata: str | None = None,
+    datapath: list[str] | None = None,
+    rundata: list[str] | None = None,
+    rundata_specified: bool = False,
 ) -> Path:
     """Generate isolated config.py for CASA inside rcdir.
 
@@ -111,6 +115,10 @@ def write_casa_config(
         rcdir: Custom runtime configuration directory.
         site_config: Optional [site] configuration mapping.
         log2term: Whether to mirror CASA logs to terminal/stdout.
+        casadata: Optional resolved casadata/measurespath path.
+        datapath: Optional list of directories for datapath.
+        rundata: Optional list of directories for rundata candidates.
+        rundata_specified: Whether rundata was explicitly specified by profile/CLI.
 
     Returns:
         Path to the generated config.py file.
@@ -118,10 +126,15 @@ def write_casa_config(
     site = site_config or {}
     telemetry = "True" if site.get("casa_enable_telemetry", False) else "False"
     log2term_str = "True" if (site.get("log2term", False) or log2term) else "False"
+    casadata_val = casadata or site.get("casadata") or os.environ.get("CASADATA", "")
     content = render_template(
         "casa_config.py.in",
         telemetry=telemetry,
         log2term=log2term_str,
+        casadata=casadata_val,
+        datapath=repr(datapath) if datapath else "None",
+        rundata=repr(rundata) if rundata else ("[]" if rundata_specified else "None"),
+        rundata_specified="True" if rundata_specified else "False",
     )
     config_file = rcdir / "config.py"
     config_file.write_text(content, encoding="utf-8")
@@ -145,6 +158,38 @@ def write_casa_startup(
     startup_file = rcdir / "startup.py"
     startup_file.write_text(content, encoding="utf-8")
     return startup_file
+
+
+def write_ipython_config(
+    rcdir: Path,
+    autoreload: bool = True,
+) -> Path:
+    """Generate isolated ipython_config.py for CASA under rcdir.
+
+    Args:
+        rcdir: Custom runtime configuration directory.
+        autoreload: Whether to configure %load_ext autoreload and %autoreload 2.
+
+    Returns:
+        Path to the generated ipython_config.py file.
+    """
+    ipython_dir = rcdir / "ipython" / "profile_default"
+    ipython_dir.mkdir(parents=True, exist_ok=True)
+    ipython_file = ipython_dir / "ipython_config.py"
+
+    lines = [
+        "# c = get_config()",
+        "c.HistoryManager.enabled = False",
+    ]
+    if autoreload:
+        lines.extend([
+            "c.InteractiveShellApp.exec_lines = [",
+            "    '%load_ext autoreload',",
+            "    '%autoreload 2',",
+            "]",
+        ])
+    ipython_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return ipython_file
 
 
 def get_casa_rcdir_args(casaroot: str | Path, rcdir: Path) -> list[str]:
@@ -578,10 +623,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Additional ancillary files or directories to stage into working directory",
     )
     p.add_argument(
+        "--datapath",
+        nargs="+",
+        default=None,
+        dest="datapath",
+        help="One or more directories to search for CASA runtime data, ephemerides, or testdata",
+    )
+    p.add_argument(
+        "--rundata",
+        nargs="+",
+        default=None,
+        dest="rundata",
+        help="One or more directories to search for CASA measures/geodetic tables (or 'none' to disable)",
+    )
+    p.add_argument(
+        "-p",
         "--profile",
         default=None,
         dest="profile",
         help="Named execution profile from [profiles.<name>]",
+    )
+    p.add_argument(
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="dry_run",
+        help="Simulate execution without running subprocess commands (--dry-run / --no-dry-run)",
+    )
+    p.add_argument(
+        "--autoreload",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="autoreload",
+        help="Enable IPython %autoreload 2 for interactive CASA sessions (--autoreload / --no-autoreload)",
     )
     return p
 
@@ -659,10 +733,18 @@ def wrap_cmd(
             quoted_cmd = shlex.quote(inner_cmd)
             rec_file = f"{rec_prefix}.rec"
             plot_file = f"{rec_prefix}.rec.png"
+            extra_flags = ["--include-children", "--include-io", "--include-cache"]
+            try:
+                help_out = subprocess.run([psrecord_exe, "--help"], capture_output=True, text=True, check=False).stdout
+                if "--use-timestamp" in help_out:
+                    extra_flags.append("--use-timestamp")
+            except Exception:
+                pass
+            flags_str = " ".join(extra_flags)
             return (
-                f"xvfb-run -d {psrecord_exe} {quoted_cmd} "
-                f"--log {rec_file} --include-children --include-io --include-cache "
-                f"--use-timestamp --interval 2 --plot {plot_file}"
+                f"xvfb-run -a {psrecord_exe} {quoted_cmd} "
+                f"--log {rec_file} {flags_str} "
+                f"--interval 2 --plot {plot_file}"
             )
         msg = "psrecord requested but 'psrecord' executable not found in PATH; running without psrecord."
         if logger_fn:
@@ -670,7 +752,7 @@ def wrap_cmd(
         else:
             print(f"WARNING: {msg}", file=sys.stderr)
 
-    return f"xvfb-run -d {inner_cmd}"
+    return f"xvfb-run -a {inner_cmd}"
 
 
 def build_casarun_prefix(
@@ -749,8 +831,8 @@ def _run_mous(
     site_cfg: dict[str, Any],
 ) -> int:
     """Execute ALMA Science Pipeline via pipelineMakeRequest (legacy PMR mode)."""
-    mous_uid = opts.mous
-    flag_and_go_dir = opts.flag
+    mous_uid = run_opts.mous or opts.mous
+    flag_and_go_dir = run_opts.flag_dir or opts.flag
     flag_and_go = bool(flag_and_go_dir)
     if flag_and_go:
         flag_and_go_dir = os.path.abspath(flag_and_go_dir)
@@ -758,7 +840,7 @@ def _run_mous(
             print(f"Cannot find the --flag directory {flag_and_go_dir}. Does it exist?")
             sys.exit(0)
 
-    ppr_override = opts.ppr
+    ppr_override = run_opts.ppr or opts.ppr
     if ppr_override:
         ppr_override = os.path.abspath(ppr_override)
         if not os.path.exists(ppr_override):
@@ -801,6 +883,14 @@ def _run_mous(
     )
 
     pmr_cmd = f"pipelineMakeRequest {asdms_arg}{mous_uid} {intents_xml} {procedure} {dl_asdms} {dl_cal}"
+    if run_opts.dry_run:
+        print("[DRY RUN] Execution mode: mous")
+        print(f"[DRY RUN] MOUS UID: {mous_uid}")
+        print(f"[DRY RUN] Environment: {env_spec.name} ({casaroot})")
+        print(f"[DRY RUN] PMR command:\n    {pmr_cmd}")
+        print(f"[DRY RUN] Planned CASA execution prefix:\n    {casarun}")
+        return 0
+
     cmdoutput = getoutput(pmr_cmd)
 
     ppmr_rel_dir = ""
@@ -865,7 +955,15 @@ def _run_mous(
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_config(
+            rcdir,
+            site_cfg,
+            log2term=run_opts.log2term,
+            casadata=env.get("CASADATA") or os.environ.get("CASADATA") or site_cfg.get("casadata"),
+            datapath=run_opts.datapath,
+            rundata=run_opts.rundata,
+            rundata_specified=run_opts.rundata_specified,
+        )
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
@@ -1020,17 +1118,31 @@ def _run_recipe_reducer(
     casarun: str,
     site_cfg: dict[str, Any],
 ) -> int:
-    """Execute pipeline directly via recipereducer.reduce (offline dataset mode)."""
-    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
-    if run_opts.backup and working_path.exists() and any(working_path.iterdir()):
-        if opts.workdir:
-            rotate_directory(working_path)
-        elif (working_path / "working").exists() and any((working_path / "working").iterdir()):
-            rotate_directory(working_path / "working")
+    target_path = (
+        Path(run_opts.workdir).expanduser().resolve()
+        if run_opts.workdir
+        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+    )
+    if target_path.name == "working":
+        project_root = target_path.parent
+        working_path = target_path
+    else:
+        project_root = target_path
+        working_path = project_root / "working"
+
+    products_path = project_root / "products"
+    rawdata_path = project_root / "rawdata"
+
+    if run_opts.backup and not run_opts.dry_run:
+        for sub_p in (working_path, products_path, rawdata_path):
+            if sub_p.exists() and (sub_p.is_symlink() or any(sub_p.iterdir())):
+                rotate_directory(sub_p)
 
     working_path.mkdir(parents=True, exist_ok=True)
+    products_path.mkdir(parents=True, exist_ok=True)
+    rawdata_path.mkdir(parents=True, exist_ok=True)
 
-    procedure = opts.procedure
+    procedure = run_opts.procedure or opts.procedure
     if not procedure:
         recipe = run_opts.recipe
         if recipe.endswith(".xml"):
@@ -1048,7 +1160,27 @@ def _run_recipe_reducer(
                 procedure_short = f"hifa_{recipe}"
             procedure = f"procedure_{procedure_short}.xml"
 
-    vis_list = [str(Path(v).resolve()) if Path(v).exists() else v for v in opts.vis]
+    raw_vis = run_opts.vis or opts.vis
+    vis_list = [str(Path(v).resolve()) if Path(v).exists() else v for v in raw_vis]
+
+    # Symlink raw visibility data into rawdata/ if not already inside rawdata_path
+    if not run_opts.dry_run:
+        for v in vis_list:
+            v_p = Path(v)
+            if v_p.exists():
+                dst = rawdata_path / v_p.name
+                if dst.is_symlink() or dst.exists():
+                    try:
+                        if dst.resolve() == v_p.resolve():
+                            continue
+                        if dst.is_symlink():
+                            dst.unlink()
+                    except OSError:
+                        pass
+                try:
+                    dst.symlink_to(v_p.resolve())
+                except OSError:
+                    pass
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.recipe_reduce.{now_ts}"
@@ -1067,7 +1199,15 @@ def _run_recipe_reducer(
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_config(
+            rcdir,
+            site_cfg,
+            log2term=run_opts.log2term,
+            casadata=os.environ.get("CASADATA") or site_cfg.get("casadata"),
+            datapath=run_opts.datapath,
+            rundata=run_opts.rundata,
+            rundata_specified=run_opts.rundata_specified,
+        )
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
@@ -1107,6 +1247,16 @@ def _run_recipe_reducer(
         logger_fn=mylog.log,
     )
 
+    if run_opts.dry_run:
+        print("[DRY RUN] Execution mode: recipe_reducer")
+        print(f"[DRY RUN] Working directory: {working_path}")
+        print(f"[DRY RUN] Procedure: {procedure}")
+        print(f"[DRY RUN] Vis list: {vis_list}")
+        print(f"[DRY RUN] Generated script: {piperun_file}")
+        print(f"[DRY RUN] Command to execute:\n    {cmd}")
+        mylog.close()
+        return 0
+
     orig_cwd = os.getcwd()
     try:
         os.chdir(working_path)
@@ -1136,14 +1286,19 @@ def _run_standalone_ppr(
     site_cfg: dict[str, Any],
 ) -> int:
     """Execute standalone PPR XML via executeppr / executevlappr without PMR."""
-    ppr_path = Path(opts.ppr).resolve()
+    ppr_str = run_opts.ppr or opts.ppr
+    ppr_path = Path(ppr_str).resolve()
     if not ppr_path.is_file():
         print(f"ERROR: Cannot find the --PPR file {ppr_path}. Does it exist?", file=sys.stderr)
         return 1
 
-    working_path = Path(opts.workdir).resolve() if opts.workdir else ppr_path.parent
+    working_path = (
+        Path(run_opts.workdir).expanduser().resolve()
+        if run_opts.workdir
+        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else ppr_path.parent)
+    )
     if run_opts.backup and working_path.exists() and any(working_path.iterdir()):
-        if opts.workdir and working_path != ppr_path.parent:
+        if (run_opts.workdir or opts.workdir) and working_path != ppr_path.parent:
             rotate_directory(working_path)
         elif (working_path / "working").exists() and any((working_path / "working").iterdir()):
             rotate_directory(working_path / "working")
@@ -1167,7 +1322,15 @@ def _run_standalone_ppr(
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_config(
+            rcdir,
+            site_cfg,
+            log2term=run_opts.log2term,
+            casadata=os.environ.get("CASADATA") or site_cfg.get("casadata"),
+            datapath=run_opts.datapath,
+            rundata=run_opts.rundata,
+            rundata_specified=run_opts.rundata_specified,
+        )
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
@@ -1191,7 +1354,7 @@ def _run_standalone_ppr(
     resolved_workdir = str(working_path.resolve())
     import_module = (
         "pipeline.infrastructure.executevlappr"
-        if opts.vla
+        if (run_opts.vla or opts.vla)
         else "pipeline.infrastructure.executeppr"
     )
     preamble = build_piperun_preamble(run_opts)
@@ -1211,6 +1374,15 @@ def _run_standalone_ppr(
         run_opts=run_opts,
         logger_fn=mylog.log,
     )
+
+    if run_opts.dry_run:
+        print("[DRY RUN] Execution mode: standalone_ppr")
+        print(f"[DRY RUN] Working directory: {working_path}")
+        print(f"[DRY RUN] PPR file: {ppr_path}")
+        print(f"[DRY RUN] Generated script: {piperun_file}")
+        print(f"[DRY RUN] Command to execute:\n    {cmd}")
+        mylog.close()
+        return 0
 
     orig_cwd = os.getcwd()
     try:
@@ -1241,13 +1413,18 @@ def _run_script(
     site_cfg: dict[str, Any],
 ) -> int:
     """Execute a Python/CASA script under the managed CASA environment."""
-    script_path = Path(opts.script).resolve()
+    script_str = run_opts.script or opts.script
+    script_path = Path(script_str).resolve()
     if not script_path.is_file():
         print(f"ERROR: Cannot find script file {script_path}. Does it exist?", file=sys.stderr)
         return 1
 
-    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
-    if run_opts.backup and opts.workdir and working_path.exists() and any(working_path.iterdir()):
+    working_path = (
+        Path(run_opts.workdir).expanduser().resolve()
+        if run_opts.workdir
+        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+    )
+    if run_opts.backup and (run_opts.workdir or opts.workdir) and working_path.exists() and any(working_path.iterdir()):
         rotate_directory(working_path)
 
     working_path.mkdir(parents=True, exist_ok=True)
@@ -1269,7 +1446,15 @@ def _run_script(
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_config(
+            rcdir,
+            site_cfg,
+            log2term=run_opts.log2term,
+            casadata=os.environ.get("CASADATA") or site_cfg.get("casadata"),
+            datapath=run_opts.datapath,
+            rundata=run_opts.rundata,
+            rundata_specified=run_opts.rundata_specified,
+        )
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
@@ -1297,6 +1482,14 @@ def _run_script(
         logger_fn=mylog.log,
     )
 
+    if run_opts.dry_run:
+        print("[DRY RUN] Execution mode: script")
+        print(f"[DRY RUN] Working directory: {working_path}")
+        print(f"[DRY RUN] Script: {script_path}")
+        print(f"[DRY RUN] Command to execute:\n    {cmd}")
+        mylog.close()
+        return 0
+
     orig_cwd = os.getcwd()
     try:
         os.chdir(working_path)
@@ -1320,8 +1513,12 @@ def _run_cmd(
     site_cfg: dict[str, Any],
 ) -> int:
     """Execute an inline Python command string under the managed CASA environment."""
-    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
-    if run_opts.backup and opts.workdir and working_path.exists() and any(working_path.iterdir()):
+    working_path = (
+        Path(run_opts.workdir).expanduser().resolve()
+        if run_opts.workdir
+        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+    )
+    if run_opts.backup and (run_opts.workdir or opts.workdir) and working_path.exists() and any(working_path.iterdir()):
         rotate_directory(working_path)
 
     working_path.mkdir(parents=True, exist_ok=True)
@@ -1343,7 +1540,15 @@ def _run_cmd(
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_config(
+            rcdir,
+            site_cfg,
+            log2term=run_opts.log2term,
+            casadata=os.environ.get("CASADATA") or site_cfg.get("casadata"),
+            datapath=run_opts.datapath,
+            rundata=run_opts.rundata,
+            rundata_specified=run_opts.rundata_specified,
+        )
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
@@ -1365,7 +1570,8 @@ def _run_cmd(
 
     cmd_file = (working_path / "casa_cmd.py").resolve()
     resolved_workdir = str(working_path.resolve())
-    code = f"import os\nos.chdir(r'{resolved_workdir}')\n{opts.cmd}\n"
+    cmd_str = run_opts.cmd or opts.cmd
+    code = f"import os\nos.chdir(r'{resolved_workdir}')\n{cmd_str}\n"
     cmd_file.write_text(code, encoding="utf-8")
     cmd = wrap_cmd(
         f"{casarun} -c {cmd_file}",
@@ -1374,6 +1580,14 @@ def _run_cmd(
         run_opts=run_opts,
         logger_fn=mylog.log,
     )
+
+    if run_opts.dry_run:
+        print("[DRY RUN] Execution mode: cmd")
+        print(f"[DRY RUN] Working directory: {working_path}")
+        print(f"[DRY RUN] Generated script: {cmd_file}")
+        print(f"[DRY RUN] Command to execute:\n    {cmd}")
+        mylog.close()
+        return 0
 
     orig_cwd = os.getcwd()
     try:
@@ -1398,14 +1612,27 @@ def _run_interactive(
     site_cfg: dict[str, Any],
 ) -> int:
     """Launch an interactive CASA session under the resolved environment."""
-    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    working_path = (
+        Path(run_opts.workdir).expanduser().resolve()
+        if run_opts.workdir
+        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+    )
     working_path.mkdir(parents=True, exist_ok=True)
 
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_config(
+            rcdir,
+            site_cfg,
+            log2term=run_opts.log2term,
+            casadata=os.environ.get("CASADATA") or site_cfg.get("casadata"),
+            datapath=run_opts.datapath,
+            rundata=run_opts.rundata,
+            rundata_specified=run_opts.rundata_specified,
+        )
         write_casa_startup(rcdir)
+        write_ipython_config(rcdir, autoreload=run_opts.autoreload)
         if env_spec.is_pixi:
             rcdir_args = [
                 "--cachedir", str(rcdir),
@@ -1415,6 +1642,12 @@ def _run_interactive(
         else:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
         casarun = f"{casarun} " + " ".join(rcdir_args)
+
+    if run_opts.dry_run:
+        print("[DRY RUN] Execution mode: interactive")
+        print(f"[DRY RUN] Working directory: {working_path}")
+        print(f"[DRY RUN] Command to execute:\n    {casarun}")
+        return 0
 
     orig_cwd = os.getcwd()
     try:
@@ -1450,6 +1683,8 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
                 "--PPR",
                 "--ppr",
                 "--mous",
+                "-p",
+                "--profile",
             )
         )
         for arg in args_list
@@ -1489,13 +1724,6 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
-    if not targets and not opts.print_env:
-        print(
-            "ERROR: No execution target specified. Provide --mous, --vis, --script, "
-            "--cmd, --PPR, or -i/--interactive.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     # Load configuration
     try:
@@ -1504,10 +1732,37 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
             include_site=not getattr(opts, "no_site_config", False),
         )
     except envconfig.ConfigError as e:
-        print(f"Configuration error: {e}")
+        print(f"Configuration error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    run_opts = envconfig.resolve_run_options(cfg, opts)
+    try:
+        run_opts = envconfig.resolve_run_options(cfg, opts)
+    except envconfig.ConfigError as e:
+        print(f"Configuration error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    resolved_targets = []
+    if run_opts.mous:
+        resolved_targets.append(f"mous={run_opts.mous}")
+    if run_opts.vis:
+        resolved_targets.append(f"vis={' '.join(run_opts.vis)}")
+    if run_opts.script:
+        resolved_targets.append(f"script={run_opts.script}")
+    if run_opts.cmd:
+        resolved_targets.append("cmd")
+    if run_opts.interactive:
+        resolved_targets.append("interactive")
+    if run_opts.ppr and not run_opts.mous:
+        resolved_targets.append(f"ppr={run_opts.ppr}")
+
+    if not resolved_targets and not opts.print_env:
+        print(
+            "ERROR: No execution target specified. Provide --mous, --vis, --script, "
+            "--cmd, --PPR, or -i/--interactive (or define a target in the profile).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     env_spec = envconfig.resolve_env(cfg, run_opts.env_name)
     env = envconfig.build_environment(cfg, env_spec, subdir=run_opts.subdir)
 
@@ -1542,17 +1797,17 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     site_cfg = cfg.get("site", {})
     casarun, casaroot = build_casarun_prefix(run_opts, env_spec, env, site_cfg)
 
-    if opts.mous:
+    if run_opts.mous:
         retcode = _run_mous(opts, run_opts, env_spec, env, casaroot, casarun, site_cfg)
-    elif opts.vis:
+    elif run_opts.vis:
         retcode = _run_recipe_reducer(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
-    elif opts.ppr and not opts.mous:
+    elif run_opts.ppr and not run_opts.mous:
         retcode = _run_standalone_ppr(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
-    elif opts.script:
+    elif run_opts.script:
         retcode = _run_script(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
-    elif opts.cmd:
+    elif run_opts.cmd:
         retcode = _run_cmd(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
-    elif opts.interactive:
+    elif run_opts.interactive:
         retcode = _run_interactive(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
     else:
         retcode = 0

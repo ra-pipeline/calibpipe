@@ -37,5 +37,67 @@ class TestCliRouting(unittest.TestCase):
         self.assertEqual(cm.exception.code, 0)
 
 
+class TestCliProfileSubcommand(unittest.TestCase):
+    """Test calibpipe profile CLI subcommands."""
+
+    def test_profile_list_and_default(self) -> None:
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.toml"
+            cfg_path.write_text("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa"
+
+[profiles.fast_test]
+desc = "Fast test profile"
+vis = "test.ms"
+ncores = 4
+""")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli.main(["profile", "list", f"--config={cfg_path}"])
+            self.assertIn("fast_test", buf.getvalue())
+
+            # Default action is list
+            buf2 = io.StringIO()
+            with redirect_stdout(buf2):
+                cli.main(["profile", f"--config={cfg_path}"])
+            self.assertIn("fast_test", buf2.getvalue())
+
+    def test_profile_show(self) -> None:
+        import io
+        import tempfile
+        from contextlib import redirect_stderr, redirect_stdout
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.toml"
+            cfg_path.write_text("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa"
+
+[profiles.fast_test]
+desc = "Fast test profile"
+vis = "test.ms"
+ncores = 4
+""")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli.main(["profile", "show", "fast_test", f"--config={cfg_path}"])
+            self.assertIn("Profile: fast_test", buf.getvalue())
+            self.assertIn("ncores                : 4", buf.getvalue())
+
+            # Missing profile exits with 1
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+                cli.main(["profile", "show", "nonexistent", f"--config={cfg_path}"])
+            self.assertEqual(cm.exception.code, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

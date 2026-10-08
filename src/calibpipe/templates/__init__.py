@@ -20,6 +20,13 @@ def render_template(template_name: str, **kwargs: Any) -> str:
     raw = files("calibpipe.templates").joinpath(template_name).read_text(encoding="utf-8")
     defaults: dict[str, Any] = {}
     if template_name == "casa_config.py.in":
-        defaults = {"telemetry": "False", "log2term": "False"}
+        defaults = {
+            "telemetry": "False",
+            "log2term": "False",
+            "casadata": "",
+            "datapath": "None",
+            "rundata": "None",
+            "rundata_specified": "False",
+        }
     str_kwargs = {**defaults, **{k: str(v) for k, v in kwargs.items()}}
     return Template(raw).safe_substitute(str_kwargs)

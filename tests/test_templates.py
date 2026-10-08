@@ -20,6 +20,28 @@ class TestTemplates(unittest.TestCase):
         self.assertIn("/home/casa/data/distro", rendered)
         self.assertIn("logfile = os.path.join(_workdir,", rendered)
 
+    def test_render_casa_config_with_datapath_and_rundata(self) -> None:
+        """Verify casa_config.py.in renders user-specified datapath and rundata."""
+        rendered = render_template(
+            "casa_config.py.in",
+            datapath="['/path/data1', '/path/data2']",
+            rundata="['/path/data1']",
+            rundata_specified="True",
+        )
+        self.assertIn("_user_datapath = ['/path/data1', '/path/data2']", rendered)
+        self.assertIn("_user_rundata = ['/path/data1']", rendered)
+        self.assertIn("_rundata_specified = True", rendered)
+
+    def test_render_casa_config_with_disabled_rundata(self) -> None:
+        """Verify casa_config.py.in handles explicitly cleared rundata."""
+        rendered = render_template(
+            "casa_config.py.in",
+            rundata="[]",
+            rundata_specified="True",
+        )
+        self.assertIn("_user_rundata = []", rendered)
+        self.assertIn("_rundata_specified = True", rendered)
+
     def test_render_casa_startup(self) -> None:
         """Verify casa_startup.py.in renders cleanly without arguments."""
         rendered = render_template("casa_startup.py.in")

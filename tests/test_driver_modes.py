@@ -97,8 +97,16 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         pmr_calls = [c for c in calls if "pipelineMakeRequest" in c[1]]
         self.assertEqual(len(pmr_calls), 0)
 
-        # Check piperun script was generated
-        piperun_file = workdir / "casa_piperun.py"
+        # Check subdirectories and symlink in rawdata
+        self.assertTrue((workdir / "working").is_dir())
+        self.assertTrue((workdir / "products").is_dir())
+        self.assertTrue((workdir / "rawdata").is_dir())
+        raw_symlink = workdir / "rawdata" / ms_path.name
+        self.assertTrue(raw_symlink.is_symlink())
+        self.assertEqual(raw_symlink.resolve(), ms_path.resolve())
+
+        # Check piperun script was generated inside working/
+        piperun_file = workdir / "working" / "casa_piperun.py"
         self.assertTrue(piperun_file.is_file())
         script_content = piperun_file.read_text()
         self.assertIn("import pipeline.recipereducer", script_content)
@@ -109,7 +117,7 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         casa_runs = [c for c in calls if c[0] == "casa_run"]
         self.assertEqual(len(casa_runs), 1)
         self.assertIn(f"-c {piperun_file.resolve()}", casa_runs[0][1])
-        self.assertIn("xvfb-run -d", casa_runs[0][1])
+        self.assertIn("xvfb-run -a", casa_runs[0][1])
 
     def test_recipe_reducer_derives_procedure_from_recipe(self) -> None:
         ms_path = self.tmp / "test.ms"
@@ -126,9 +134,34 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         ])
 
         self.assertEqual(exit_code, 0)
-        piperun_file = workdir / "casa_piperun.py"
+        piperun_file = workdir / "working" / "casa_piperun.py"
         self.assertTrue(piperun_file.is_file())
         self.assertIn("procedure='procedure_hifa_cal.xml'", piperun_file.read_text())
+
+    def test_recipe_reducer_with_workdir_ending_in_working(self) -> None:
+        ms_path = self.tmp / "test.ms"
+        ms_path.mkdir()
+
+        project_dir = self.tmp / "explicit_proj"
+        working_dir = project_dir / "working"
+        working_dir.mkdir(parents=True)
+
+        _, exit_code = self.run_driver([
+            "--vis", str(ms_path),
+            "--recipe=cal",
+            f"--config={self.config}",
+            f"--workdir={working_dir}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        # Should not create nested working/working
+        self.assertFalse((working_dir / "working").exists())
+        self.assertTrue((project_dir / "products").is_dir())
+        self.assertTrue((project_dir / "rawdata").is_dir())
+        raw_symlink = project_dir / "rawdata" / ms_path.name
+        self.assertTrue(raw_symlink.is_symlink())
+        self.assertEqual(raw_symlink.resolve(), ms_path.resolve())
+        self.assertTrue((working_dir / "casa_piperun.py").is_file())
 
 
 class TestStandalonePPR(DriverModesTestCase):
@@ -345,7 +378,7 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         ])
 
         self.assertEqual(exit_code, 0)
-        piperun = workdir / "casa_piperun.py"
+        piperun = workdir / "working" / "casa_piperun.py"
         self.assertTrue(piperun.is_file())
         content = piperun.read_text()
         self.assertIn("casalog.setMemoryFraction(0.75)", content)
@@ -367,7 +400,7 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         ])
 
         self.assertEqual(exit_code, 0)
-        piperun = workdir / "casa_piperun.py"
+        piperun = workdir / "working" / "casa_piperun.py"
         self.assertTrue(piperun.is_file())
         content = piperun.read_text()
         self.assertIn("casalog.ompSetNumThreads(6)", content)
@@ -390,7 +423,7 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         casa_runs = [c for c in calls if c[0] == "casa_run"]
         self.assertEqual(len(casa_runs), 1)
         cmd = casa_runs[0][1]
-        self.assertTrue(cmd.startswith("xvfb-run -d /usr/bin/psrecord "))
+        self.assertTrue(cmd.startswith("xvfb-run -a /usr/bin/psrecord "))
         self.assertIn("--log ", cmd)
         self.assertIn(".rec", cmd)
         self.assertIn("--plot ", cmd)
@@ -416,7 +449,7 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         # Should not use psrecord wrapper if missing
         self.assertNotIn("psrecord ", cmd)
         self.assertNotIn("--include-children", cmd)
-        self.assertTrue(cmd.startswith("xvfb-run -d /fake/casa"))
+        self.assertTrue(cmd.startswith("xvfb-run -a /fake/casa"))
 
 
 class TestStagingAndDirectoryRotation(DriverModesTestCase):
@@ -615,6 +648,122 @@ class TestNamedProfiles(DriverModesTestCase):
         cmd = casa_runs[0][1]
         self.assertIn("mpicasa -n 4", cmd)
         self.assertIn("--log2term", cmd)
+
+    def test_driver_run_with_self_contained_profile_targets(self) -> None:
+        from calibpipe import config as envconfig
+        from calibpipe.config import ProfileConfig
+
+        workdir = self.tmp / "work_self_contained"
+        workdir.mkdir()
+        vis_file = self.tmp / "test.ms"
+        vis_file.touch()
+
+        cfg = envconfig.load_merged_config(cli_arg=str(self.config))
+        cfg.profiles["self_contained"] = ProfileConfig(
+            vis=str(vis_file),
+            procedure="procedure_hifa_calimage.xml",
+            ncores=4,
+            workdir=str(workdir),
+        )
+
+        with patch("calibpipe.driver.envconfig.load_merged_config", return_value=cfg):
+            calls, exit_code = self.run_driver([
+                "-p", "self_contained",
+                f"--config={self.config}",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        casa_runs = [c for c in calls if c[0] == "casa_run"]
+        self.assertEqual(len(casa_runs), 1)
+        cmd = casa_runs[0][1]
+        self.assertIn("mpicasa -n 4", cmd)
+        self.assertIn("casa_piperun.py", cmd)
+        piperun_file = workdir / "working" / "casa_piperun.py"
+        self.assertTrue(piperun_file.is_file())
+        script_content = piperun_file.read_text()
+        self.assertIn("import pipeline.recipereducer", script_content)
+        self.assertIn("procedure='procedure_hifa_calimage.xml'", script_content)
+
+    def test_driver_run_profile_target_overridden_by_cli(self) -> None:
+        from calibpipe import config as envconfig
+        from calibpipe.config import ProfileConfig
+
+        workdir = self.tmp / "work_override_target"
+        workdir.mkdir()
+        script_file = self.tmp / "script.py"
+        script_file.touch()
+
+        cfg = envconfig.load_merged_config(cli_arg=str(self.config))
+        cfg.profiles["script_prof"] = ProfileConfig(
+            script=str(script_file),
+            workdir=str(workdir),
+        )
+
+        with patch("calibpipe.driver.envconfig.load_merged_config", return_value=cfg):
+            calls, exit_code = self.run_driver([
+                "-p", "script_prof",
+                "--cmd", "import casatasks",
+                f"--config={self.config}",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        casa_runs = [c for c in calls if c[0] == "casa_run"]
+        self.assertEqual(len(casa_runs), 1)
+        cmd = casa_runs[0][1]
+        self.assertIn("casa_cmd.py", cmd)
+        cmd_file = workdir / "casa_cmd.py"
+        self.assertTrue(cmd_file.is_file())
+        self.assertIn("import casatasks", cmd_file.read_text())
+
+    def test_driver_dry_run_flag(self) -> None:
+        workdir = self.tmp / "work_dry_run"
+        workdir.mkdir()
+        script_file = self.tmp / "dry_test.py"
+        script_file.touch()
+
+        calls, exit_code = self.run_driver([
+            "--script", str(script_file),
+            "--dry-run",
+            f"--config={self.config}",
+            f"--workdir={workdir}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        casa_runs = [c for c in calls if c[0] == "casa_run"]
+        self.assertEqual(len(casa_runs), 0)
+
+    def test_write_ipython_config(self) -> None:
+        from calibpipe.driver import write_ipython_config
+
+        rcdir = self.tmp / "rc_autoreload"
+        cfg_file = write_ipython_config(rcdir, autoreload=True)
+        self.assertTrue(cfg_file.is_file())
+        content = cfg_file.read_text()
+        self.assertIn("%load_ext autoreload", content)
+        self.assertIn("%autoreload 2", content)
+
+        rcdir_no = self.tmp / "rc_no_autoreload"
+        cfg_file_no = write_ipython_config(rcdir_no, autoreload=False)
+        self.assertTrue(cfg_file_no.is_file())
+        content_no = cfg_file_no.read_text()
+        self.assertNotIn("%load_ext autoreload", content_no)
+
+    def test_write_casa_config_datapath_and_rundata(self) -> None:
+        from calibpipe.driver import write_casa_config
+
+        rcdir = self.tmp / "rc_datapath_test"
+        rcdir.mkdir(parents=True)
+        config_file = write_casa_config(
+            rcdir,
+            datapath=["/tmp/my_data1", "/tmp/my_data2"],
+            rundata=["/tmp/my_rundata"],
+            rundata_specified=True,
+        )
+        self.assertTrue(config_file.is_file())
+        content = config_file.read_text()
+        self.assertIn("_user_datapath = ['/tmp/my_data1', '/tmp/my_data2']", content)
+        self.assertIn("_user_rundata = ['/tmp/my_rundata']", content)
+        self.assertIn("_rundata_specified = True", content)
 
 
 if __name__ == "__main__":

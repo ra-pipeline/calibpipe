@@ -354,7 +354,7 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
             "--scheduler=htcondor",
             "-c", "4",
             "-m", "32",
-            "-p",
+            "--partition=plwg",
         ])
         self.assertEqual(len(calls), 1)
         cmd, htc_script = calls[0]
@@ -434,6 +434,56 @@ class TestBatchProfiles(RunbatchCaptureCase):
             self.assertIn("request_cpus = 12", htc_script)
             self.assertIn("request_memory = 64G", htc_script)
             self.assertIn('+partition = "batch"', htc_script)
+
+    def test_profile_direct_submission_without_pipefile(self):
+        from calibpipe.config import ProfileConfig
+
+        cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+        cfg.profiles["test_prof"] = ProfileConfig(
+            cores=4,
+            mem=32,
+            queue="test_partition",
+        )
+        with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
+            calls = self.run_and_capture([
+                f"--config={CONFIG}",
+                "-p", "test_prof",
+            ])
+            self.assertEqual(len(calls), 1)
+            cmd, script = calls[0]
+            self.assertTrue(cmd.startswith("sbatch "))
+            self.assertIn("#SBATCH --partition=test_partition", script)
+            self.assertIn("#SBATCH --ntasks=4", script)
+            self.assertIn("#SBATCH --mem=32G", script)
+            self.assertIn("#SBATCH --job-name=test_prof_", script)
+            self.assertIn("calibpipe run -p=test_prof", script)
+
+    def test_batch_dry_run_skips_submission(self):
+        buf = io.StringIO()
+        tmpdir = tempfile.mkdtemp()
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            with (
+                patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF),
+                patch.object(runbatch.subprocess, "run") as mock_run,
+                patch.object(runbatch.time, "strftime", return_value=FAKE_DATE),
+                patch.dict(runbatch.os.environ, {"USER": FAKE_USER}),
+                patch.object(
+                    sys,
+                    "argv",
+                    ["runbatch.py", str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}", "--dry-run"],
+                ),
+                redirect_stdout(buf),
+            ):
+                runbatch.main()
+                mock_run.assert_not_called()
+                out = buf.getvalue()
+                self.assertIn("[DRY RUN] Would execute: sbatch", out)
+                self.assertIn("script saved →", out)
+        finally:
+            os.chdir(orig_cwd)
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":

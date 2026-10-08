@@ -14,12 +14,61 @@ logfile = os.path.join(_workdir, f"casa-{time.strftime('%Y%m%d-%H%M%S', time.gmt
 measures_auto_update = False
 data_auto_update = False
 
-# Resolve measures/rundata path if available
-for _p in [
-    os.environ.get("CASADATA", ""),
-    "/home/casa/data/distro",
-]:
-    if _p and os.path.isdir(_p):
-        measurespath = _p
-        rundata = _p
-        break
+# Datapath and rundata configuration (per-test / profile or auto-discovered)
+_user_datapath = $datapath
+_user_rundata = $rundata
+_rundata_specified = $rundata_specified
+
+measurespath = None
+rundata = None
+
+if _rundata_specified and _user_rundata:
+    _rundata_candidates = _user_rundata if isinstance(_user_rundata, (list, tuple)) else [_user_rundata]
+    for _r in _rundata_candidates:
+        if isinstance(_r, str) and _r:
+            _expanded = os.path.abspath(os.path.expanduser(_r))
+            if os.path.isdir(_expanded):
+                measurespath = _expanded
+                rundata = _expanded
+                break
+elif _rundata_specified and not _user_rundata:
+    # Explicitly cleared or disabled in profile (e.g. rundata = [] or None)
+    measurespath = None
+    rundata = None
+else:
+    # Auto-discovery fallback
+    _measures_candidates = [
+        os.environ.get("CASADATA", ""),
+        "$casadata",
+        os.environ.get("CASARUNDATA", ""),
+        "~/.casa/data",
+        "~/.casa/casarundata",
+        "/home/casa/data/distro",
+        "/opt/casa/data",
+        "/opt/casa/casarundata",
+    ]
+    for _p in _measures_candidates:
+        if not _p:
+            continue
+        _expanded = os.path.abspath(os.path.expanduser(_p))
+        if os.path.isdir(os.path.join(_expanded, "geodetic")):
+            measurespath = _expanded
+            rundata = _expanded
+            break
+        elif os.path.isdir(_expanded):
+            measurespath = _expanded
+            rundata = _expanded
+            break
+
+# Resolve datapath
+if _user_datapath:
+    if isinstance(_user_datapath, (list, tuple)):
+        datapath = [os.path.abspath(os.path.expanduser(p)) for p in _user_datapath if isinstance(p, str)]
+    elif isinstance(_user_datapath, str):
+        datapath = [os.path.abspath(os.path.expanduser(_user_datapath))]
+    else:
+        datapath = list(_user_datapath)
+    if measurespath is not None and measurespath not in datapath:
+        datapath.insert(0, measurespath)
+elif measurespath is not None:
+    datapath = [measurespath]

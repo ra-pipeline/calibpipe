@@ -54,6 +54,18 @@ aUdir = "/opt/analysis_scripts"
 # [Optional] Directory containing baseline reference validation products:
 validation_dir = "/data/pipeline_validation/CASA6.1.63"
 
+# [Optional] Workspace search directories for resolving relative datasets, scripts, and ancillary files:
+# workspaces = ["/data/pipeline/datasets", "/data/pipeline/testdata"]
+
+# [Optional] CASA measures and runtime data directory (e.g. casa-data or casarundata):
+# casadata = "/data/casa/distro"
+
+# [Optional] List of directories for CASA datapath (runtime data and test datasets):
+# datapath = ["/data/casa/distro", "/data/pipeline/pipeline-testdata"]
+
+# [Optional] Candidate measures/rundata directories searched in order:
+# rundata = ["/data/casa/distro"]
+
 # [Optional] Base directory for multiple pipeline branch checkouts.
 # If set, any [envs.<name>] without an explicit heuristics_dir will default to:
 #   {heuristics_root}/{branch}
@@ -140,6 +152,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # distribution = "cyclic:cyclic"          # Task distribution policy (--distribution)
 # no_requeue = true                       # Prevent job requeuing on node failure (--no-requeue, default: true)
 # scheduler = "slurm"                     # Batch cluster scheduler ("slurm" or "htcondor", default: "slurm")
+# dry_run = false                         # Simulate batch submission without submitting jobs (default: false)
 #
 # Named batch profiles override baseline [batch] settings and are selectable via
 # 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):
@@ -183,6 +196,10 @@ pixi_dir = "/data/pipeline/branches/main"
 # jyperk_csv = "jyperk.csv"               # Path to Single-Dish Jy/K conversion table to stage into working directory
 # parameter_list = "parameter.list"       # Path to pipeline parameter override list to stage into working directory
 # ancillary = ["extra.txt"]               # List of additional files or directories to stage into working directory
+# datapath = ["/data/casa/data"]          # List of directories for CASA datapath
+# rundata = ["/data/casa/data"]           # Candidate measures/rundata directories (or "none" to disable)
+# dry_run = false                         # Simulate execution without running subprocess commands (default: false)
+# autoreload = true                       # Enable IPython %autoreload 2 for interactive CASA sessions (default: true)
 
 # ------------------------------------------------------------------------------
 # 6. Execution Profiles ([profiles.<name>]) (Optional)
@@ -191,6 +208,9 @@ pixi_dir = "/data/pipeline/branches/main"
 # and cluster resource settings. Select via:
 #   calibpipe run --profile=vlass_seip ...
 #   calibpipe batch ... --profile=vlass_seip
+#
+# Execution profiles can also define self-contained targets (cmd, script, vis, mous, ppr, interactive),
+# allowing single-command runs like 'calibpipe run -p regression/fast' with zero CLI target flags:
 #
 # Precedence: CLI flags > [profiles.<name>] > [run] / [batch] > built-in defaults.
 #
@@ -210,6 +230,14 @@ pixi_dir = "/data/pipeline/branches/main"
 # log2term = true
 # psrecord = true
 # scheduler = "slurm"
+#
+# [profiles."regression/pipeline_fast"]
+# env = "main"
+# workdir = "/scratch/tests/fast_reg"
+# cmd = "import pytest; pytest.main(['-vv', 'tests/regression/test_fast.py'])"
+# ncores = 4
+# backup = true
+# autoreload = true
 
 
 
