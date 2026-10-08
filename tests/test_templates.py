@@ -52,6 +52,40 @@ class TestTemplates(unittest.TestCase):
         self.assertIn("umask 002", rendered)
         self.assertIn(cmd, rendered)
 
+    def test_render_htcondor_submit(self) -> None:
+        """Verify htcondor_job.htc.in renders with HTCondor submit directives."""
+        rendered = render_template(
+            "htcondor_job.htc.in",
+            partition="batch",
+            extra_requirements=' && ( TARGET.Machine == "node01" )',
+            request_memory="64G",
+            request_cpus="8",
+            batch_name="mous_job",
+            initialdir="/tmp/work",
+            output="batch.out",
+            error="batch.err",
+            log="batch.log",
+            notification="Always",
+            arguments="wrapper.sh",
+        )
+        self.assertIn("+partition = \"batch\"", rendered)
+        self.assertIn("( ( batch == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ) && ( TARGET.Machine == \"node01\" ) )", rendered)
+        self.assertIn("request_cpus = 8", rendered)
+        self.assertIn("request_memory = 64G", rendered)
+        self.assertIn("batch_name = mous_job", rendered)
+        self.assertIn("arguments = wrapper.sh", rendered)
+        self.assertIn("periodic_remove = JobStatus == 1 && NumJobStarts > 0", rendered)
+
+    def test_render_htcondor_wrapper(self) -> None:
+        """Verify htcondor_job.sh.in renders with pipejob command."""
+        cmd = "calibpipe run --mous=uid://A001/X1/X1 --env=main"
+        rendered = render_template("htcondor_job.sh.in", pipejob=cmd)
+        self.assertIn("#!/bin/bash", rendered)
+        self.assertIn("ulimit -Sn 8192", rendered)
+        self.assertIn("umask 002", rendered)
+        self.assertIn(cmd, rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -97,6 +97,16 @@ def _int_or_none(value: Any) -> int | None:
     return None if value is None or value == "" else int(value)
 
 
+def _float_or_none(value: Any) -> float | None:
+    """Return float(value) or None if value is None or empty string."""
+    return None if value is None or value == "" else float(value)
+
+
+def _str_or_none(value: Any) -> str | None:
+    """Return str(value) or None if value is None or empty string."""
+    return None if value is None or value == "" else str(value)
+
+
 @dataclass
 class BatchConfig:
     """Slurm batch cluster resource submission defaults."""
@@ -118,6 +128,7 @@ class BatchConfig:
     ntasks_per_core: int | None = None  # --ntasks-per-core  (e.g. 1 to disable HT)
     distribution: str | None = None  # --distribution  (e.g. "cyclic:cyclic")
     no_requeue: bool = True  # --no-requeue  (prevent silent resubmission)
+    scheduler: str = "slurm"  # Batch scheduler backend: "slurm" or "htcondor"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
@@ -141,6 +152,7 @@ class BatchConfig:
             ),
             distribution=data.get("distribution", default_inst.distribution),
             no_requeue=bool(data.get("no_requeue", default_inst.no_requeue)),
+            scheduler=str(data.get("scheduler", default_inst.scheduler)),
         )
 
 
@@ -154,6 +166,21 @@ class RunConfig:
     useresume: bool = False
     symlink_shortcuts: bool = True
     log2term: bool = False
+    omp_num_threads: int | None = None
+    openblas_num_threads: int | None = None
+    omp_max_threads: int | None = None
+    mem_frac: float | None = None
+    oversubscribe: bool = False
+    bind_to: str | None = None
+    map_by: str | None = None
+    psrecord: bool = False
+    memstats: bool = False
+    pl_psrecord: bool = False
+    backup: bool = False
+    cont_dat: str | None = None
+    jyperk_csv: str | None = None
+    parameter_list: str | None = None
+    ancillary: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
@@ -167,6 +194,21 @@ class RunConfig:
                 data.get("symlink_shortcuts", default_inst.symlink_shortcuts)
             ),
             log2term=bool(data.get("log2term", default_inst.log2term)),
+            omp_num_threads=_int_or_none(data.get("omp_num_threads")),
+            openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
+            omp_max_threads=_int_or_none(data.get("omp_max_threads")),
+            mem_frac=_float_or_none(data.get("mem_frac")),
+            oversubscribe=bool(data.get("oversubscribe", default_inst.oversubscribe)),
+            bind_to=_str_or_none(data.get("bind_to")),
+            map_by=_str_or_none(data.get("map_by")),
+            psrecord=bool(data.get("psrecord", default_inst.psrecord)),
+            memstats=bool(data.get("memstats", default_inst.memstats)),
+            pl_psrecord=bool(data.get("pl_psrecord", default_inst.pl_psrecord)),
+            backup=bool(data.get("backup", default_inst.backup)),
+            cont_dat=_str_or_none(data.get("cont_dat")),
+            jyperk_csv=_str_or_none(data.get("jyperk_csv")),
+            parameter_list=_str_or_none(data.get("parameter_list")),
+            ancillary=list(data.get("ancillary", default_inst.ancillary) or []),
         )
 
 
@@ -206,6 +248,97 @@ class EnvSpec:
         return bool(self.pixi_dir)
 
 
+@dataclass
+class ProfileConfig:
+    """Named execution and batch resource profile."""
+
+    env: str | None = None
+
+    # Run options
+    recipe: str | None = None
+    ncores: int | None = None
+    loglevel: str | None = None
+    useresume: bool | None = None
+    symlink_shortcuts: bool | None = None
+    log2term: bool | None = None
+    omp_num_threads: int | None = None
+    openblas_num_threads: int | None = None
+    omp_max_threads: int | None = None
+    mem_frac: float | None = None
+    oversubscribe: bool | None = None
+    bind_to: str | None = None
+    map_by: str | None = None
+    psrecord: bool | None = None
+    memstats: bool | None = None
+    pl_psrecord: bool | None = None
+    backup: bool | None = None
+    cont_dat: str | None = None
+    jyperk_csv: str | None = None
+    parameter_list: str | None = None
+    ancillary: list[str] = field(default_factory=list)
+    workdir: str | None = None
+
+    # Batch options
+    queue: str | None = None
+    cores: int | None = None
+    mem: int | None = None
+    node: str | None = None
+    mail_type: str | None = None
+    walltime: str | None = None
+    nodelist: str | None = None
+    chdir: str | None = None
+    cpus_per_task: int | None = None
+    mem_per_cpu: str | None = None
+    hint: str | None = None
+    ntasks_per_core: int | None = None
+    distribution: str | None = None
+    no_requeue: bool | None = None
+    scheduler: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProfileConfig:
+        return cls(
+            env=_str_or_none(data.get("env")),
+            recipe=_str_or_none(data.get("recipe")),
+            ncores=_int_or_none(data.get("ncores")),
+            loglevel=_str_or_none(data.get("loglevel")),
+            useresume=bool(data["useresume"]) if "useresume" in data else None,
+            symlink_shortcuts=bool(data["symlink_shortcuts"]) if "symlink_shortcuts" in data else None,
+            log2term=bool(data["log2term"]) if "log2term" in data else None,
+            omp_num_threads=_int_or_none(data.get("omp_num_threads")),
+            openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
+            omp_max_threads=_int_or_none(data.get("omp_max_threads")),
+            mem_frac=_float_or_none(data.get("mem_frac")),
+            oversubscribe=bool(data["oversubscribe"]) if "oversubscribe" in data else None,
+            bind_to=_str_or_none(data.get("bind_to")),
+            map_by=_str_or_none(data.get("map_by")),
+            psrecord=bool(data["psrecord"]) if "psrecord" in data else None,
+            memstats=bool(data["memstats"]) if "memstats" in data else None,
+            pl_psrecord=bool(data["pl_psrecord"]) if "pl_psrecord" in data else None,
+            backup=bool(data["backup"]) if "backup" in data else None,
+            cont_dat=_str_or_none(data.get("cont_dat")),
+            jyperk_csv=_str_or_none(data.get("jyperk_csv")),
+            parameter_list=_str_or_none(data.get("parameter_list")),
+            ancillary=list(data.get("ancillary", []) or []),
+            workdir=_str_or_none(data.get("workdir")),
+            queue=_str_or_none(data.get("queue")),
+            cores=_int_or_none(data.get("cores")),
+            mem=_int_or_none(data.get("mem")),
+            node=_str_or_none(data.get("node")),
+            mail_type=_str_or_none(data.get("mail_type")),
+            walltime=_str_or_none(data.get("walltime")),
+            nodelist=_str_or_none(data.get("nodelist")),
+            chdir=_str_or_none(data.get("chdir")),
+            cpus_per_task=_int_or_none(data.get("cpus_per_task")),
+            mem_per_cpu=_str_or_none(data.get("mem_per_cpu")),
+            hint=_str_or_none(data.get("hint")),
+            ntasks_per_core=_int_or_none(data.get("ntasks_per_core")),
+            distribution=_str_or_none(data.get("distribution")),
+            no_requeue=bool(data["no_requeue"]) if "no_requeue" in data else None,
+            scheduler=_str_or_none(data.get("scheduler")),
+        )
+
+
 class CalibpipeConfig(dict):
     """Strongly-typed, single source of truth configuration object for calibpipe.
 
@@ -221,6 +354,7 @@ class CalibpipeConfig(dict):
         site: SiteConfig | None = None,
         batch: BatchConfig | None = None,
         run: RunConfig | None = None,
+        profiles: dict[str, ProfileConfig] | None = None,
         raw_dict: dict[str, Any] | None = None,
         loaded_layers: Sequence[str | Path] | None = None,
     ) -> None:
@@ -231,6 +365,7 @@ class CalibpipeConfig(dict):
         self.site = site or SiteConfig()
         self.batch = batch or BatchConfig()
         self.run = run or RunConfig()
+        self.profiles = profiles or {}
         self.loaded_layers: list[Path] = [Path(p) for p in loaded_layers] if loaded_layers else []
 
         # Synchronize dictionary keys for backwards compatibility
@@ -242,6 +377,9 @@ class CalibpipeConfig(dict):
         self["site"] = asdict(self.site)
         self["batch"] = asdict(self.batch)
         self["run"] = asdict(self.run)
+        self["profiles"] = {
+            k: asdict(v) if is_dataclass(v) else v for k, v in self.profiles.items()
+        }
 
     @classmethod
     def from_dict(
@@ -255,6 +393,11 @@ class CalibpipeConfig(dict):
         site = SiteConfig.from_dict(data.get("site", {}))
         batch = BatchConfig.from_dict(data.get("batch", {}))
         run = RunConfig.from_dict(data.get("run", {}))
+
+        profiles: dict[str, ProfileConfig] = {}
+        for prof_name, prof_data in data.get("profiles", {}).items():
+            if isinstance(prof_data, dict):
+                profiles[prof_name] = ProfileConfig.from_dict(prof_data)
 
         envs: dict[str, EnvSpec] = {}
         for env_name, env_data in data.get("envs", {}).items():
@@ -287,6 +430,7 @@ class CalibpipeConfig(dict):
             site=site,
             batch=batch,
             run=run,
+            profiles=profiles,
             raw_dict=data,
             loaded_layers=loaded_layers,
         )
@@ -319,19 +463,50 @@ class ResolvedRunOptions:
     workdir: str = ""
     interactive: bool = False
 
+    # Hardware & MPI tuning
+    omp_num_threads: int | None = None
+    openblas_num_threads: int | None = None
+    omp_max_threads: int | None = None
+    mem_frac: float | None = None
+    oversubscribe: bool = False
+    bind_to: str | None = None
+    map_by: str | None = None
+
+    # Telemetry profiling
+    psrecord: bool = False
+    memstats: bool = False
+    pl_psrecord: bool = False
+
+    # Ancillary staging & backup
+    backup: bool = False
+    cont_dat: str | None = None
+    jyperk_csv: str | None = None
+    parameter_list: str | None = None
+    ancillary: list[str] = field(default_factory=list)
+
 
 def resolve_run_options(
     config: CalibpipeConfig | dict[str, Any],
     cli_opts: Any,
 ) -> ResolvedRunOptions:
-    """Resolve runtime options by cascading CLI flags over config.toml over defaults.
+    """Resolve runtime options by cascading CLI flags over profile over config.toml over defaults.
 
-    Precedence: CLI flag > config.toml ([run] / [site]) > built-in defaults.
+    Precedence: CLI flag > profile ([profiles.<name>]) > config.toml ([run] / [site]) > built-in defaults.
     """
     if isinstance(config, CalibpipeConfig):
         cfg = config
     else:
         cfg = CalibpipeConfig.from_dict(config)
+
+    profile_name = getattr(cli_opts, "profile", None)
+    profile: ProfileConfig | None = None
+    if profile_name:
+        if profile_name not in cfg.profiles:
+            valid_profiles = ", ".join(cfg.profiles.keys()) or "none defined"
+            raise ConfigError(
+                f"Unknown profile '{profile_name}'. Available profiles in config: {valid_profiles}"
+            )
+        profile = cfg.profiles[profile_name]
 
     # Custom rcdir: CLI flag > [site].use_custom_rcdir > default
     if getattr(cli_opts, "custom_rcdir", None) is not None:
@@ -339,23 +514,40 @@ def resolve_run_options(
     else:
         use_custom_rcdir = cfg.site.use_custom_rcdir
 
-    if getattr(cli_opts, "symlink_shortcuts", None) is not None:
-        symlink_shortcuts = bool(cli_opts.symlink_shortcuts)
-    else:
-        symlink_shortcuts = cfg.run.symlink_shortcuts
+    def _val(attr: str, cfg_val: Any) -> Any:
+        cli_v = getattr(cli_opts, attr, None)
+        if cli_v is not None:
+            return cli_v
+        if profile is not None:
+            prof_v = getattr(profile, attr, None)
+            if prof_v is not None:
+                return prof_v
+        return cfg_val
 
-    if getattr(cli_opts, "log2term", None) is not None:
-        log2term = bool(cli_opts.log2term)
-    else:
-        log2term = cfg.run.log2term or cfg.site.log2term
+    symlink_shortcuts = _val("symlink_shortcuts", cfg.run.symlink_shortcuts)
+    log2term = _val("log2term", cfg.run.log2term or cfg.site.log2term)
+    recipe = _val("recipe", cfg.run.recipe)
+    ncores = _val("ncores", cfg.run.ncores)
+    loglevel = _val("loglevel", cfg.run.loglevel)
+    useresume = _val("useresume", cfg.run.useresume)
+    env_name = getattr(cli_opts, "env", None) or (profile.env if profile and profile.env else None) or cfg.default_env
+    workdir = getattr(cli_opts, "workdir", "") or (profile.workdir if profile and profile.workdir else "") or ""
 
-    recipe = getattr(cli_opts, "recipe", None) or cfg.run.recipe
-    ncores = getattr(cli_opts, "ncores", None)
-    if ncores is None:
-        ncores = cfg.run.ncores
-    loglevel = getattr(cli_opts, "loglevel", None) or cfg.run.loglevel
-    useresume = getattr(cli_opts, "useresume", False) or cfg.run.useresume
-    env_name = getattr(cli_opts, "env", None) or cfg.default_env
+    omp_num_threads = _val("omp_num_threads", cfg.run.omp_num_threads)
+    openblas_num_threads = _val("openblas_num_threads", cfg.run.openblas_num_threads)
+    omp_max_threads = _val("omp_max_threads", cfg.run.omp_max_threads)
+    mem_frac = _val("mem_frac", cfg.run.mem_frac)
+    oversubscribe = _val("oversubscribe", cfg.run.oversubscribe)
+    bind_to = _val("bind_to", cfg.run.bind_to)
+    map_by = _val("map_by", cfg.run.map_by)
+    psrecord = _val("psrecord", cfg.run.psrecord)
+    memstats = _val("memstats", cfg.run.memstats)
+    pl_psrecord = _val("pl_psrecord", cfg.run.pl_psrecord)
+    backup = _val("backup", cfg.run.backup)
+    cont_dat = _val("cont_dat", cfg.run.cont_dat)
+    jyperk_csv = _val("jyperk_csv", cfg.run.jyperk_csv)
+    parameter_list = _val("parameter_list", cfg.run.parameter_list)
+    ancillary = _val("ancillary", cfg.run.ancillary)
 
     return ResolvedRunOptions(
         mous=getattr(cli_opts, "mous", "") or "",
@@ -365,8 +557,8 @@ def resolve_run_options(
         loglevel=loglevel,
         useresume=bool(useresume),
         use_custom_rcdir=use_custom_rcdir,
-        symlink_shortcuts=symlink_shortcuts,
-        log2term=log2term,
+        symlink_shortcuts=bool(symlink_shortcuts),
+        log2term=bool(log2term),
         flag_dir=getattr(cli_opts, "flag", None),
         ppr=getattr(cli_opts, "ppr", None),
         subdir=getattr(cli_opts, "subdir", None),
@@ -377,8 +569,23 @@ def resolve_run_options(
         script=getattr(cli_opts, "script", "") or "",
         cmd=getattr(cli_opts, "cmd", "") or "",
         vla=bool(getattr(cli_opts, "vla", False)),
-        workdir=getattr(cli_opts, "workdir", "") or "",
+        workdir=workdir,
         interactive=bool(getattr(cli_opts, "interactive", False)),
+        omp_num_threads=int(omp_num_threads) if omp_num_threads is not None else None,
+        openblas_num_threads=int(openblas_num_threads) if openblas_num_threads is not None else None,
+        omp_max_threads=int(omp_max_threads) if omp_max_threads is not None else None,
+        mem_frac=float(mem_frac) if mem_frac is not None else None,
+        oversubscribe=bool(oversubscribe),
+        bind_to=str(bind_to) if bind_to is not None else None,
+        map_by=str(map_by) if map_by is not None else None,
+        psrecord=bool(psrecord),
+        memstats=bool(memstats),
+        pl_psrecord=bool(pl_psrecord),
+        backup=bool(backup),
+        cont_dat=str(cont_dat) if cont_dat is not None else None,
+        jyperk_csv=str(jyperk_csv) if jyperk_csv is not None else None,
+        parameter_list=str(parameter_list) if parameter_list is not None else None,
+        ancillary=list(ancillary or []),
     )
 
 
@@ -406,58 +613,69 @@ class ResolvedBatchOptions:
     ntasks_per_core: int | None = None
     distribution: str | None = None
     no_requeue: bool = True
+    scheduler: str = "slurm"
 
 
 def resolve_batch_options(
     config: CalibpipeConfig | dict[str, Any],
     cli_args: Any,
 ) -> ResolvedBatchOptions:
-    """Resolve batch options by cascading CLI flags over config.toml [batch] over defaults."""
+    """Resolve batch options by cascading CLI flags over profile over config.toml [batch] over defaults."""
     if isinstance(config, CalibpipeConfig):
         cfg = config
     else:
         cfg = CalibpipeConfig.from_dict(config)
 
-    env_name = getattr(cli_args, "env", None) or cfg.default_env
+    profile_name = getattr(cli_args, "profile", None)
+    profile: ProfileConfig | None = None
+    if profile_name:
+        if profile_name not in cfg.profiles:
+            valid_profiles = ", ".join(cfg.profiles.keys()) or "none defined"
+            raise ConfigError(
+                f"Unknown profile '{profile_name}'. Available profiles in config: {valid_profiles}"
+            )
+        profile = cfg.profiles[profile_name]
 
-    cli_queue = getattr(cli_args, "queue", None)
-    queue = cli_queue if cli_queue else cfg.batch.queue
+    def _val(attr: str, cfg_val: Any) -> Any:
+        cli_v = getattr(cli_args, attr, None)
+        if cli_v is not None:
+            return cli_v
+        if profile is not None:
+            prof_v = getattr(profile, attr, None)
+            if prof_v is not None:
+                return prof_v
+        return cfg_val
 
-    cores = getattr(cli_args, "cores", None)
-    if cores is None:
-        cores = cfg.batch.cores
+    env_name = getattr(cli_args, "env", None) or (profile.env if profile and profile.env else None) or cfg.default_env
+    queue = _val("queue", cfg.batch.queue)
+    cores = _val("cores", cfg.batch.cores)
+    mem = _val("mem", cfg.batch.mem)
+    node = _val("node", cfg.batch.node)
+    mail_type = _val("mail_type", cfg.batch.mail_type)
+    scheduler = _val("scheduler", cfg.batch.scheduler)
 
-    mem = getattr(cli_args, "mem", None)
-    if mem is None:
-        mem = cfg.batch.mem
+    # Optional directives — CLI overrides profile overrides config, then falls back to None/default.
+    walltime = _val("walltime", cfg.batch.walltime)
+    nodelist = _val("nodelist", cfg.batch.nodelist)
+    chdir = _val("chdir", cfg.batch.chdir)
+    cpus_per_task = _int_or_none(_val("cpus_per_task", cfg.batch.cpus_per_task))
+    mem_per_cpu = _val("mem_per_cpu", cfg.batch.mem_per_cpu)
+    hint = _val("hint", cfg.batch.hint)
+    ntasks_per_core = _int_or_none(_val("ntasks_per_core", cfg.batch.ntasks_per_core))
+    distribution = _val("distribution", cfg.batch.distribution)
 
-    node = getattr(cli_args, "node", None) or cfg.batch.node
-    mail_type = getattr(cli_args, "mail_type", None) or cfg.batch.mail_type
-
-    # Optional directives — CLI overrides config, then falls back to None/default.
-    def _cli_or_cfg(attr: str, cfg_val: Any) -> Any:
-        v = getattr(cli_args, attr, None)
-        return v if v is not None else cfg_val
-
-    walltime = _cli_or_cfg("walltime", cfg.batch.walltime)
-    nodelist = _cli_or_cfg("nodelist", cfg.batch.nodelist)
-    chdir = _cli_or_cfg("chdir", cfg.batch.chdir)
-    cpus_per_task = _int_or_none(_cli_or_cfg("cpus_per_task", cfg.batch.cpus_per_task))
-    mem_per_cpu = _cli_or_cfg("mem_per_cpu", cfg.batch.mem_per_cpu)
-    hint = _cli_or_cfg("hint", cfg.batch.hint)
-    ntasks_per_core = _int_or_none(
-        _cli_or_cfg("ntasks_per_core", cfg.batch.ntasks_per_core)
-    )
-    distribution = _cli_or_cfg("distribution", cfg.batch.distribution)
-
-    # no_requeue: CLI flag takes precedence; default True (safe default)
     cli_no_requeue = getattr(cli_args, "no_requeue", None)
-    no_requeue = cli_no_requeue if cli_no_requeue is not None else cfg.batch.no_requeue
+    if cli_no_requeue is not None:
+        no_requeue = cli_no_requeue
+    elif profile is not None and profile.no_requeue is not None:
+        no_requeue = profile.no_requeue
+    else:
+        no_requeue = cfg.batch.no_requeue
 
     return ResolvedBatchOptions(
         pipefile=Path(cli_args.pipefile),
         env_name=env_name,
-        queue=queue,
+        queue=str(queue),
         cores=int(cores),
         mem=int(mem),
         node=str(node),
@@ -474,6 +692,7 @@ def resolve_batch_options(
         ntasks_per_core=ntasks_per_core,
         distribution=distribution,
         no_requeue=bool(no_requeue),
+        scheduler=str(scheduler),
     )
 
 
@@ -918,6 +1137,7 @@ def format_config_overview(
             f"  Log2term:        {cfg.run.log2term or cfg.site.log2term}",
             "",
             "Slurm Batch Defaults ([batch]):",
+            f"  Scheduler:       {cfg.batch.scheduler}",
             f"  Queue:           {cfg.batch.queue}",
             f"  Cores / Memory:  {cfg.batch.cores} cores, "
             + (
@@ -954,9 +1174,27 @@ def format_config_overview(
             f"  Cores:           {cfg.run.ncores}",
             f"  Log Level:       {cfg.run.loglevel}",
             f"  Use Resume:      {cfg.run.useresume}",
-            "=" * 80,
         ]
     )
+
+    if cfg.profiles:
+        lines.append("")
+        lines.append("Execution Profiles ([profiles]):")
+        for pname in sorted(cfg.profiles.keys()):
+            p = cfg.profiles[pname]
+            pdetails = []
+            if p.env:
+                pdetails.append(f"env={p.env}")
+            if p.recipe:
+                pdetails.append(f"recipe={p.recipe}")
+            if p.ncores:
+                pdetails.append(f"ncores={p.ncores}")
+            if p.scheduler:
+                pdetails.append(f"scheduler={p.scheduler}")
+            detail_str = f" ({', '.join(pdetails)})" if pdetails else ""
+            lines.append(f"  {pname}{detail_str}")
+
+    lines.append("=" * 80)
     return "\n".join(lines)
 
 

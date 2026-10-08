@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -16,7 +17,13 @@ from pathlib import Path
 from typing import Any
 
 from calibpipe import config as envconfig
-from calibpipe.steps.staging import find_dirs, find_files, stage_flags_and_wvr
+from calibpipe.steps.staging import (
+    find_dirs,
+    find_files,
+    rotate_directory,
+    stage_ancillary_files,
+    stage_flags_and_wvr,
+)
 from calibpipe.templates import render_template
 
 # Expose modules/functions at module level for compatibility with existing tests/mocks
@@ -338,7 +345,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--recipe",
-        default="calimage",
+        default=None,
         choices=[
             "cal",
             "image",
@@ -348,19 +355,29 @@ def build_parser() -> argparse.ArgumentParser:
             "calimage_selfcal",
             "calsurvey",
         ],
-        help="Pipeline recipe to execute (default: calimage)",
+        help="Pipeline recipe to execute (default: from [run].recipe or calimage)",
     )
     p.add_argument(
         "--ebwfile", default="", help="File with effective bandwidth information"
     )
-    p.add_argument("--ncores", type=int, default=8, help="Number of cores (default: 8)")
-    p.add_argument("--loglevel", default="debug", help="PL log level (default: debug)")
+    p.add_argument(
+        "--ncores",
+        type=int,
+        default=None,
+        help="Number of cores (default: from [run].ncores or 8)",
+    )
+    p.add_argument(
+        "--loglevel",
+        default=None,
+        help="PL log level (default: from [run].loglevel or debug)",
+    )
     p.add_argument(
         "--pickle", action="store_true", help="Run picklePipeRun upon completion"
     )
     p.add_argument(
         "--useresume",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Use break/resume instead of two contexts",
     )
     p.add_argument(
@@ -453,7 +470,207 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Launch an interactive CASA shell session",
     )
+    # Hardware & MPI runtime tuning
+    p.add_argument(
+        "--omp-num-threads",
+        type=int,
+        default=None,
+        dest="omp_num_threads",
+        help="Set OMP_NUM_THREADS environment variable",
+    )
+    p.add_argument(
+        "--openblas-num-threads",
+        type=int,
+        default=None,
+        dest="openblas_num_threads",
+        help="Set OPENBLAS_NUM_THREADS environment variable",
+    )
+    p.add_argument(
+        "--omp-max-threads",
+        type=int,
+        default=None,
+        dest="omp_max_threads",
+        help="Restrict maximum OpenMP threads via casalog.ompSetNumThreads",
+    )
+    p.add_argument(
+        "--mem-frac",
+        type=float,
+        default=None,
+        dest="mem_frac",
+        help="Set CASA memory fraction limit via casalog.setMemoryFraction (0.0 - 1.0)",
+    )
+    p.add_argument(
+        "--oversubscribe",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="oversubscribe",
+        help="Allow OpenMPI process oversubscription (--oversubscribe / --no-oversubscribe)",
+    )
+    p.add_argument(
+        "--bind-to",
+        type=str,
+        default=None,
+        dest="bind_to",
+        help="OpenMPI process binding policy (e.g. none, core, socket)",
+    )
+    p.add_argument(
+        "--map-by",
+        type=str,
+        default=None,
+        dest="map_by",
+        help="OpenMPI process mapping policy (e.g. core, socket, node)",
+    )
+
+    # Telemetry and resource profiling
+    p.add_argument(
+        "--psrecord",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="psrecord",
+        help="Profile execution using psrecord CLI utility (--psrecord / --no-psrecord)",
+    )
+    p.add_argument(
+        "--memstats",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="memstats",
+        help="Enable pipeline memory statistics tracking (--memstats / --no-memstats)",
+    )
+    p.add_argument(
+        "--pl-psrecord",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="pl_psrecord",
+        help="Enable pipeline internal psrecord profiling (--pl-psrecord / --no-pl-psrecord)",
+    )
+
+    # Ancillary staging & safe backup rotation
+    p.add_argument(
+        "--backup",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="backup",
+        help="Rotate existing working directories to timestamped _backup_ directories before execution",
+    )
+    p.add_argument(
+        "--cont-dat",
+        default=None,
+        dest="cont_dat",
+        help="Path to cont.dat file to stage into working directory",
+    )
+    p.add_argument(
+        "--jyperk-csv",
+        default=None,
+        dest="jyperk_csv",
+        help="Path to jyperk.csv file to stage into working directory",
+    )
+    p.add_argument(
+        "--parameter-list",
+        default=None,
+        dest="parameter_list",
+        help="Path to parameter.list file to stage into working directory",
+    )
+    p.add_argument(
+        "--ancillary",
+        nargs="+",
+        default=None,
+        dest="ancillary",
+        help="Additional ancillary files or directories to stage into working directory",
+    )
+    p.add_argument(
+        "--profile",
+        default=None,
+        dest="profile",
+        help="Named execution profile from [profiles.<name>]",
+    )
     return p
+
+
+def build_piperun_preamble(run_opts: envconfig.ResolvedRunOptions) -> str:
+    """Generate Python preamble code for hardware tuning and telemetry.
+
+    Args:
+        run_opts: Resolved runtime execution options.
+
+    Returns:
+        Formatted Python code string to prepend to piperun scripts.
+    """
+    preamble_lines: list[str] = []
+
+    has_casalog_tuning = (
+        run_opts.omp_max_threads is not None or run_opts.mem_frac is not None
+    )
+    if has_casalog_tuning:
+        preamble_lines.append("try:")
+        preamble_lines.append("    from casatasks import casalog")
+        if run_opts.omp_max_threads is not None:
+            preamble_lines.append(
+                f"    if casalog.ompGetNumThreads() > {run_opts.omp_max_threads}:"
+            )
+            preamble_lines.append(
+                f"        casalog.ompSetNumThreads({run_opts.omp_max_threads})"
+            )
+        if run_opts.mem_frac is not None:
+            preamble_lines.append(
+                f"    casalog.setMemoryFraction({run_opts.mem_frac})"
+            )
+        preamble_lines.append("except Exception as exc:")
+        preamble_lines.append(
+            "    print(f'Warning: Failed to apply casalog tuning: {exc}')"
+        )
+
+    if run_opts.memstats or run_opts.pl_psrecord:
+        preamble_lines.append("try:")
+        preamble_lines.append("    import pipeline.infrastructure.utils as utils")
+        if run_opts.memstats:
+            preamble_lines.append("    utils.enable_memstats()")
+        if run_opts.pl_psrecord:
+            preamble_lines.append("    utils.enable_psrecord()")
+        preamble_lines.append("except Exception as exc:")
+        preamble_lines.append(
+            "    print(f'Warning: Failed to enable pipeline telemetry: {exc}')"
+        )
+
+    return "\n".join(preamble_lines) + ("\n" if preamble_lines else "")
+
+
+def wrap_cmd(
+    inner_cmd: str,
+    workdir: Path,
+    rec_prefix: str,
+    run_opts: envconfig.ResolvedRunOptions,
+    logger_fn: Callable[[str], None] | None = None,
+) -> str:
+    """Wrap a CASA command with xvfb-run and optionally psrecord resource profiling.
+
+    Args:
+        inner_cmd: Base command without xvfb-run prefix.
+        workdir: Working directory of execution.
+        rec_prefix: Base filename path for .rec and .rec.png telemetry files.
+        run_opts: Resolved runtime options.
+        logger_fn: Optional logging function for diagnostic messages.
+
+    Returns:
+        Full shell command string ready for execution.
+    """
+    if run_opts.psrecord:
+        psrecord_exe = shutil.which("psrecord")
+        if psrecord_exe:
+            quoted_cmd = shlex.quote(inner_cmd)
+            rec_file = f"{rec_prefix}.rec"
+            plot_file = f"{rec_prefix}.rec.png"
+            return (
+                f"xvfb-run -d {psrecord_exe} {quoted_cmd} "
+                f"--log {rec_file} --include-children --include-io --include-cache "
+                f"--use-timestamp --interval 2 --plot {plot_file}"
+            )
+        msg = "psrecord requested but 'psrecord' executable not found in PATH; running without psrecord."
+        if logger_fn:
+            logger_fn(msg)
+        else:
+            print(f"WARNING: {msg}", file=sys.stderr)
+
+    return f"xvfb-run -d {inner_cmd}"
 
 
 def build_casarun_prefix(
@@ -508,7 +725,16 @@ def build_casarun_prefix(
         else:
             casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry --nogui --agg"
             if run_opts.ncores > 1:
-                casarun = f"{casaroot}/bin/mpicasa -n {run_opts.ncores}  {casarun}"
+                mpi_flags: list[str] = []
+                if run_opts.oversubscribe:
+                    mpi_flags.append("--oversubscribe")
+                if run_opts.bind_to:
+                    mpi_flags.append(f"--bind-to {run_opts.bind_to}")
+                if run_opts.map_by:
+                    mpi_flags.append(f"--map-by {run_opts.map_by}")
+
+                extra_mpi = f" {' '.join(mpi_flags)}" if mpi_flags else ""
+                casarun = f"{casaroot}/bin/mpicasa -n {run_opts.ncores}{extra_mpi}  {casarun}"
 
     return casarun, casaroot
 
@@ -664,6 +890,15 @@ def _run_mous(
 
     # Prepare working execution directory and fixes script
     working_path.mkdir(parents=True, exist_ok=True)
+    stage_ancillary_files(
+        working_path,
+        cont_dat=run_opts.cont_dat,
+        jyperk_csv=run_opts.jyperk_csv,
+        parameter_list=run_opts.parameter_list,
+        ancillary=run_opts.ancillary,
+        recipe=recipe,
+        log_func=log_message,
+    )
     if recipe not in ["image", "image_selfcal"]:
         fixes_file = working_path / "sacmPL-fixes.casa.py.txt"
         rawdata_fixes = (
@@ -685,11 +920,13 @@ def _run_mous(
         if env_spec.is_pixi:
             piperun_file = (working_path / "casa_piperun.py").resolve()
             resolved_workdir = str(working_path.resolve())
+            preamble = build_piperun_preamble(run_opts)
             if recipe not in ["image", "image_selfcal"]:
                 if run_opts.useresume:
                     code = (
                         "import os\n"
                         f"os.chdir(r'{resolved_workdir}')\n"
+                        f"{preamble}"
                         "import pipeline.infrastructure.executeppr as eppr\n"
                         f"eppr.executeppr('{pprfile}', breakpoint='hifa_flagdata', bpaction='break', "
                         f"loglevel='{run_opts.loglevel}')\n"
@@ -701,6 +938,7 @@ def _run_mous(
                     code = (
                         "import os\n"
                         f"os.chdir(r'{resolved_workdir}')\n"
+                        f"{preamble}"
                         "import pipeline.infrastructure.executeppr as eppr\n"
                         f"eppr.executeppr('{pprfile}', importonly=True, loglevel='{run_opts.loglevel}')\n"
                         "execfile('sacmPL-fixes.casa.py.txt')\n"
@@ -710,31 +948,56 @@ def _run_mous(
                 code = (
                     "import os\n"
                     f"os.chdir(r'{resolved_workdir}')\n"
+                    f"{preamble}"
                     "import pipeline.infrastructure.executeppr as eppr\n"
                     f"eppr.executeppr('{pprfile}', loglevel='{run_opts.loglevel}')\n"
                 )
             piperun_file.write_text(code, encoding="utf-8")
-            cmd = f"xvfb-run -d {casarun} -c {piperun_file}"
+            cmd = wrap_cmd(
+                f"{casarun} -c {piperun_file}",
+                workdir=working_path,
+                rec_prefix=f"{working_path}/calibpipe.mous.{mous_uid.replace('/', '_').replace(':', '_')}",
+                run_opts=run_opts,
+                logger_fn=log_message,
+            )
         else:
+            preamble_cmd = ""
+            if run_opts.omp_max_threads is not None:
+                preamble_cmd += f"from casatasks import casalog; casalog.ompSetNumThreads({run_opts.omp_max_threads}); "
+            if run_opts.mem_frac is not None:
+                preamble_cmd += f"from casatasks import casalog; casalog.setMemoryFraction({run_opts.mem_frac}); "
+            if run_opts.memstats:
+                preamble_cmd += "import pipeline.infrastructure.utils as utils; utils.enable_memstats(); "
+            if run_opts.pl_psrecord:
+                preamble_cmd += "import pipeline.infrastructure.utils as utils; utils.enable_psrecord(); "
+
             if recipe not in ["image", "image_selfcal"]:
                 if run_opts.useresume:
-                    cmd = (
-                        f"xvfb-run -d {casarun} -c "
-                        f"\"eppr.executeppr('{pprfile}',breakpoint='hifa_flagdata',bpaction='break', "
+                    inner_cmd = (
+                        f"{casarun} -c "
+                        f"\"{preamble_cmd}eppr.executeppr('{pprfile}',breakpoint='hifa_flagdata',bpaction='break', "
                         f"loglevel='{run_opts.loglevel}');"
                         f"execfile('sacmPL-fixes.casa.py.txt');"
                         f"eppr.executeppr('{pprfile}',breakpoint='hifa_importdata',bpaction='resume', "
                         f"loglevel='{run_opts.loglevel}');exit;\""
                     )
                 else:
-                    cmd = (
-                        f"xvfb-run -d {casarun} -c "
-                        f"\"eppr.executeppr('{pprfile}',importonly=True, loglevel='{run_opts.loglevel}');"
+                    inner_cmd = (
+                        f"{casarun} -c "
+                        f"\"{preamble_cmd}eppr.executeppr('{pprfile}',importonly=True, loglevel='{run_opts.loglevel}');"
                         f"execfile('sacmPL-fixes.casa.py.txt');"
                         f"eppr.executeppr('{pprfile}',importonly=False,loglevel='{run_opts.loglevel}');exit;\""
                     )
             else:
-                cmd = f"xvfb-run -d {casarun} -c \"eppr.executeppr('{pprfile}', loglevel='{run_opts.loglevel}');exit;\""
+                inner_cmd = f"{casarun} -c \"{preamble_cmd}eppr.executeppr('{pprfile}', loglevel='{run_opts.loglevel}');exit;\""
+
+            cmd = wrap_cmd(
+                inner_cmd,
+                workdir=working_path,
+                rec_prefix=f"{working_path}/calibpipe.mous.{mous_uid.replace('/', '_').replace(':', '_')}",
+                run_opts=run_opts,
+                logger_fn=log_message,
+            )
 
         if run_opts.verbose:
             retcode = mylog.run(cmd)
@@ -759,6 +1022,12 @@ def _run_recipe_reducer(
 ) -> int:
     """Execute pipeline directly via recipereducer.reduce (offline dataset mode)."""
     working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    if run_opts.backup and working_path.exists() and any(working_path.iterdir()):
+        if opts.workdir:
+            rotate_directory(working_path)
+        elif (working_path / "working").exists() and any((working_path / "working").iterdir()):
+            rotate_directory(working_path / "working")
+
     working_path.mkdir(parents=True, exist_ok=True)
 
     procedure = opts.procedure
@@ -785,6 +1054,16 @@ def _run_recipe_reducer(
     log_name = f"{working_path}/calibpipe.recipe_reduce.{now_ts}"
     mylog = RunLogger(log_name, print_flag=True)
 
+    stage_ancillary_files(
+        working_path,
+        cont_dat=run_opts.cont_dat,
+        jyperk_csv=run_opts.jyperk_csv,
+        parameter_list=run_opts.parameter_list,
+        ancillary=run_opts.ancillary,
+        recipe=procedure,
+        log_func=mylog.log,
+    )
+
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
@@ -810,15 +1089,23 @@ def _run_recipe_reducer(
 
     piperun_file = (working_path / "casa_piperun.py").resolve()
     resolved_workdir = str(working_path.resolve())
+    preamble = build_piperun_preamble(run_opts)
     code = (
         "import os\n"
         f"os.chdir(r'{resolved_workdir}')\n"
+        f"{preamble}"
         "import pipeline\n"
         "import pipeline.recipereducer\n"
         f"pipeline.recipereducer.reduce(vis={vis_list!r}, procedure={procedure!r}, loglevel={run_opts.loglevel!r})\n"
     )
     piperun_file.write_text(code, encoding="utf-8")
-    cmd = f"xvfb-run -d {casarun} -c {piperun_file}"
+    cmd = wrap_cmd(
+        f"{casarun} -c {piperun_file}",
+        workdir=working_path,
+        rec_prefix=f"{working_path}/calibpipe.recipe_reduce.{now_ts}",
+        run_opts=run_opts,
+        logger_fn=mylog.log,
+    )
 
     orig_cwd = os.getcwd()
     try:
@@ -855,11 +1142,27 @@ def _run_standalone_ppr(
         return 1
 
     working_path = Path(opts.workdir).resolve() if opts.workdir else ppr_path.parent
+    if run_opts.backup and working_path.exists() and any(working_path.iterdir()):
+        if opts.workdir and working_path != ppr_path.parent:
+            rotate_directory(working_path)
+        elif (working_path / "working").exists() and any((working_path / "working").iterdir()):
+            rotate_directory(working_path / "working")
+
     working_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.ppr.{now_ts}"
     mylog = RunLogger(log_name, print_flag=True)
+
+    stage_ancillary_files(
+        working_path,
+        cont_dat=run_opts.cont_dat,
+        jyperk_csv=run_opts.jyperk_csv,
+        parameter_list=run_opts.parameter_list,
+        ancillary=run_opts.ancillary,
+        recipe=run_opts.recipe,
+        log_func=mylog.log,
+    )
 
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
@@ -891,15 +1194,23 @@ def _run_standalone_ppr(
         if opts.vla
         else "pipeline.infrastructure.executeppr"
     )
+    preamble = build_piperun_preamble(run_opts)
     code = (
         "import os\n"
         f"os.chdir(r'{resolved_workdir}')\n"
+        f"{preamble}"
         "import pipeline\n"
         f"import {import_module} as eppr\n"
         f"eppr.executeppr({str(ppr_path)!r}, importonly={run_opts.useresume!r}, loglevel={run_opts.loglevel!r})\n"
     )
     piperun_file.write_text(code, encoding="utf-8")
-    cmd = f"xvfb-run -d {casarun} -c {piperun_file}"
+    cmd = wrap_cmd(
+        f"{casarun} -c {piperun_file}",
+        workdir=working_path,
+        rec_prefix=f"{working_path}/calibpipe.ppr.{now_ts}",
+        run_opts=run_opts,
+        logger_fn=mylog.log,
+    )
 
     orig_cwd = os.getcwd()
     try:
@@ -936,11 +1247,24 @@ def _run_script(
         return 1
 
     working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    if run_opts.backup and opts.workdir and working_path.exists() and any(working_path.iterdir()):
+        rotate_directory(working_path)
+
     working_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.script.{now_ts}"
     mylog = RunLogger(log_name, print_flag=True)
+
+    stage_ancillary_files(
+        working_path,
+        cont_dat=run_opts.cont_dat,
+        jyperk_csv=run_opts.jyperk_csv,
+        parameter_list=run_opts.parameter_list,
+        ancillary=run_opts.ancillary,
+        recipe=run_opts.recipe,
+        log_func=mylog.log,
+    )
 
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
@@ -965,7 +1289,13 @@ def _run_script(
     if run_opts.log2term:
         casarun = f"{casarun} --log2term"
 
-    cmd = f"xvfb-run -d {casarun} -c {script_path}"
+    cmd = wrap_cmd(
+        f"{casarun} -c {script_path}",
+        workdir=working_path,
+        rec_prefix=f"{working_path}/calibpipe.script.{now_ts}",
+        run_opts=run_opts,
+        logger_fn=mylog.log,
+    )
 
     orig_cwd = os.getcwd()
     try:
@@ -991,11 +1321,24 @@ def _run_cmd(
 ) -> int:
     """Execute an inline Python command string under the managed CASA environment."""
     working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    if run_opts.backup and opts.workdir and working_path.exists() and any(working_path.iterdir()):
+        rotate_directory(working_path)
+
     working_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.cmd.{now_ts}"
     mylog = RunLogger(log_name, print_flag=True)
+
+    stage_ancillary_files(
+        working_path,
+        cont_dat=run_opts.cont_dat,
+        jyperk_csv=run_opts.jyperk_csv,
+        parameter_list=run_opts.parameter_list,
+        ancillary=run_opts.ancillary,
+        recipe=run_opts.recipe,
+        log_func=mylog.log,
+    )
 
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
@@ -1024,7 +1367,13 @@ def _run_cmd(
     resolved_workdir = str(working_path.resolve())
     code = f"import os\nos.chdir(r'{resolved_workdir}')\n{opts.cmd}\n"
     cmd_file.write_text(code, encoding="utf-8")
-    cmd = f"xvfb-run -d {casarun} -c {cmd_file}"
+    cmd = wrap_cmd(
+        f"{casarun} -c {cmd_file}",
+        workdir=working_path,
+        rec_prefix=f"{working_path}/calibpipe.cmd.{now_ts}",
+        run_opts=run_opts,
+        logger_fn=mylog.log,
+    )
 
     orig_cwd = os.getcwd()
     try:
@@ -1169,6 +1518,22 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     # Isolate CASA from foreign virtualenv (e.g. from `uv run` or activated venv)
     # to prevent IPython UserWarning and cross-environment sys.path pollution
     os.environ.pop("VIRTUAL_ENV", None)
+
+    # Clean runtime environment (avoid Qt session errors and foreign user-site packages)
+    os.environ.pop("SESSION_MANAGER", None)
+    os.environ["PYTHONNOUSERSITE"] = "1"
+    os.environ["KOKKOS_DISABLE_WARNINGS"] = "1"
+
+    # Configure OpenMP and OpenBLAS threading
+    if run_opts.omp_num_threads is not None:
+        os.environ["OMP_NUM_THREADS"] = str(run_opts.omp_num_threads)
+    elif run_opts.ncores > 1:
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+    if run_opts.openblas_num_threads is not None:
+        os.environ["OPENBLAS_NUM_THREADS"] = str(run_opts.openblas_num_threads)
+    elif run_opts.ncores > 1:
+        os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
     if opts.print_env:
         print(envconfig.format_shell_exports(env, export=False))

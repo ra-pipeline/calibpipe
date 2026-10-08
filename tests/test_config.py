@@ -161,6 +161,21 @@ class TestTypedModels(unittest.TestCase):
         self.assertEqual(res1.ncores, 8)
         self.assertTrue(res1.use_custom_rcdir)
         self.assertFalse(res1.log2term)
+        self.assertIsNone(res1.omp_num_threads)
+        self.assertIsNone(res1.openblas_num_threads)
+        self.assertIsNone(res1.omp_max_threads)
+        self.assertIsNone(res1.mem_frac)
+        self.assertFalse(res1.oversubscribe)
+        self.assertIsNone(res1.bind_to)
+        self.assertIsNone(res1.map_by)
+        self.assertFalse(res1.psrecord)
+        self.assertFalse(res1.memstats)
+        self.assertFalse(res1.pl_psrecord)
+        self.assertFalse(res1.backup)
+        self.assertIsNone(res1.cont_dat)
+        self.assertIsNone(res1.jyperk_csv)
+        self.assertIsNone(res1.parameter_list)
+        self.assertEqual(res1.ancillary, [])
 
         # 2. CLI overrides
         override_opts = argparse.Namespace(
@@ -171,6 +186,21 @@ class TestTypedModels(unittest.TestCase):
             useresume=True,
             loglevel="info",
             log2term=True,
+            omp_num_threads=4,
+            openblas_num_threads=2,
+            omp_max_threads=8,
+            mem_frac=0.8,
+            oversubscribe=True,
+            bind_to="core",
+            map_by="socket",
+            psrecord=True,
+            memstats=True,
+            pl_psrecord=True,
+            backup=True,
+            cont_dat="my_cont.dat",
+            jyperk_csv="my_jyperk.csv",
+            parameter_list="my_param.list",
+            ancillary=["extra1.txt", "extra_dir"],
         )
         res2 = resolve_run_options(cfg, override_opts)
         self.assertEqual(res2.recipe, "image")
@@ -179,6 +209,21 @@ class TestTypedModels(unittest.TestCase):
         self.assertTrue(res2.useresume)
         self.assertEqual(res2.loglevel, "info")
         self.assertTrue(res2.log2term)
+        self.assertEqual(res2.omp_num_threads, 4)
+        self.assertEqual(res2.openblas_num_threads, 2)
+        self.assertEqual(res2.omp_max_threads, 8)
+        self.assertEqual(res2.mem_frac, 0.8)
+        self.assertTrue(res2.oversubscribe)
+        self.assertEqual(res2.bind_to, "core")
+        self.assertEqual(res2.map_by, "socket")
+        self.assertTrue(res2.psrecord)
+        self.assertTrue(res2.memstats)
+        self.assertTrue(res2.pl_psrecord)
+        self.assertTrue(res2.backup)
+        self.assertEqual(res2.cont_dat, "my_cont.dat")
+        self.assertEqual(res2.jyperk_csv, "my_jyperk.csv")
+        self.assertEqual(res2.parameter_list, "my_param.list")
+        self.assertEqual(res2.ancillary, ["extra1.txt", "extra_dir"])
 
     def test_resolve_batch_options_precedence(self):
         import argparse
@@ -211,8 +256,8 @@ class TestTypedModels(unittest.TestCase):
             mail_type="FAIL",
             extra_args=["--verbose"],
             walltime="12:00:00",
-            nodelist="cvpost01",
-            chdir="/lustre/work",
+            nodelist="node01",
+            chdir="/scratch/work",
             cpus_per_task=4,
             mem_per_cpu="30G",
             hint="nomultithread",
@@ -228,14 +273,87 @@ class TestTypedModels(unittest.TestCase):
         self.assertEqual(res2.mail_type, "FAIL")
         self.assertEqual(res2.extra_args, ["--verbose"])
         self.assertEqual(res2.walltime, "12:00:00")
-        self.assertEqual(res2.nodelist, "cvpost01")
-        self.assertEqual(res2.chdir, "/lustre/work")
+        self.assertEqual(res2.nodelist, "node01")
+        self.assertEqual(res2.chdir, "/scratch/work")
         self.assertEqual(res2.cpus_per_task, 4)
         self.assertEqual(res2.mem_per_cpu, "30G")
         self.assertEqual(res2.hint, "nomultithread")
         self.assertEqual(res2.ntasks_per_core, 1)
         self.assertEqual(res2.distribution, "cyclic:cyclic")
         self.assertFalse(res2.no_requeue)
+        self.assertEqual(res2.scheduler, "slurm")
+
+    def test_resolve_run_options_with_profile(self):
+        import argparse
+
+        from calibpipe.config import ConfigError, ProfileConfig
+
+        cfg = load_config(CONFIG)
+        cfg.profiles["fast_debug"] = ProfileConfig(
+            env="dev",
+            recipe="image",
+            ncores=4,
+            log2term=True,
+            backup=True,
+            parameter_list="debug.param",
+        )
+
+        # 1. Profile applies defaults when CLI flags unset
+        opts1 = argparse.Namespace(mous="uid://A001/X1/X1", profile="fast_debug")
+        res1 = resolve_run_options(cfg, opts1)
+        self.assertEqual(res1.env_name, "dev")
+        self.assertEqual(res1.recipe, "image")
+        self.assertEqual(res1.ncores, 4)
+        self.assertTrue(res1.log2term)
+        self.assertTrue(res1.backup)
+        self.assertEqual(res1.parameter_list, "debug.param")
+
+        # 2. CLI flag overrides profile
+        opts2 = argparse.Namespace(
+            mous="uid://A001/X1/X1",
+            profile="fast_debug",
+            recipe="calsurvey",
+            ncores=8,
+        )
+        res2 = resolve_run_options(cfg, opts2)
+        self.assertEqual(res2.recipe, "calsurvey")
+        self.assertEqual(res2.ncores, 8)
+        self.assertTrue(res2.backup)  # Still inherited from profile
+
+        # 3. Unknown profile raises ConfigError
+        opts_unknown = argparse.Namespace(profile="nonexistent")
+        with self.assertRaises(ConfigError) as cm:
+            resolve_run_options(cfg, opts_unknown)
+        self.assertIn("Unknown profile 'nonexistent'", str(cm.exception))
+
+    def test_resolve_batch_options_with_profile(self):
+        import argparse
+
+        from calibpipe.config import ProfileConfig
+
+        cfg = load_config(CONFIG)
+        cfg.profiles["htc_test"] = ProfileConfig(
+            queue="batch",
+            cores=16,
+            mem=64,
+            scheduler="htcondor",
+            no_requeue=False,
+        )
+
+        # 1. Profile applies batch options
+        args1 = argparse.Namespace(pipefile="test.txt", profile="htc_test")
+        res1 = resolve_batch_options(cfg, args1)
+        self.assertEqual(res1.queue, "batch")
+        self.assertEqual(res1.cores, 16)
+        self.assertEqual(res1.mem, 64)
+        self.assertEqual(res1.scheduler, "htcondor")
+        self.assertFalse(res1.no_requeue)
+
+        # 2. CLI flags override profile
+        args2 = argparse.Namespace(pipefile="test.txt", profile="htc_test", cores=32)
+        res2 = resolve_batch_options(cfg, args2)
+        self.assertEqual(res2.cores, 32)
+        self.assertEqual(res2.scheduler, "htcondor")
 
     def test_format_config_overview(self):
         from calibpipe.config import BatchConfig, format_config_overview
@@ -577,6 +695,7 @@ class TestConfigExampleSchemaDrift(unittest.TestCase):
 
     def test_config_example_covers_all_schema_fields(self):
         import dataclasses
+
         from calibpipe.config import (
             BatchConfig,
             CalibpipeConfig,

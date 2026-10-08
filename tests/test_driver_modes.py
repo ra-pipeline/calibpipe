@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
-import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -71,6 +69,8 @@ casa_root = "/fake/casa/main"
                 exit_code = 0
             except SystemExit as e:
                 exit_code = int(e.code) if e.code is not None else 0
+            finally:
+                self.last_env = dict(driver.os.environ)
 
         return calls, exit_code
 
@@ -118,7 +118,7 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         workdir = self.tmp / "work_reducer_cal"
         workdir.mkdir()
 
-        calls, exit_code = self.run_driver([
+        _, exit_code = self.run_driver([
             "--vis", str(ms_path),
             "--recipe=cal",
             f"--config={self.config}",
@@ -165,7 +165,7 @@ class TestStandalonePPR(DriverModesTestCase):
         workdir = self.tmp / "work_vla"
         workdir.mkdir()
 
-        calls, exit_code = self.run_driver([
+        _, exit_code = self.run_driver([
             "--PPR", str(ppr_file),
             "--vla",
             f"--config={self.config}",
@@ -248,7 +248,7 @@ class TestTargetConflictAndValidation(DriverModesTestCase):
     """Tests for mutual exclusion and missing target handling."""
 
     def test_conflicting_targets_exits_1(self) -> None:
-        calls, exit_code = self.run_driver([
+        _, exit_code = self.run_driver([
             "--mous=uid://A001/X1/X1",
             "--script=/path/to/script.py",
             f"--config={self.config}",
@@ -256,12 +256,369 @@ class TestTargetConflictAndValidation(DriverModesTestCase):
         self.assertEqual(exit_code, 1)
 
     def test_missing_targets_exits_1(self) -> None:
-        calls, exit_code = self.run_driver([
+        _, exit_code = self.run_driver([
             f"--config={self.config}",
             "--env=main",
         ])
         self.assertEqual(exit_code, 1)
 
 
+class TestHardwareAndMpiTuning(DriverModesTestCase):
+    """Tests for hardware tuning, thread controls, and MPI flags."""
+
+    def test_clean_environment_and_default_threads(self) -> None:
+        workdir = self.tmp / "work_hw_def"
+        workdir.mkdir()
+        script_file = self.tmp / "test.py"
+        script_file.touch()
+
+        with patch.dict(os.environ, {"SESSION_MANAGER": "local/host:1234"}, clear=False):
+            _, exit_code = self.run_driver([
+                "--script", str(script_file),
+                f"--config={self.config}",
+                f"--workdir={workdir}",
+            ])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(self.last_env.get("PYTHONNOUSERSITE"), "1")
+            self.assertEqual(self.last_env.get("KOKKOS_DISABLE_WARNINGS"), "1")
+            self.assertNotIn("SESSION_MANAGER", self.last_env)
+            # Default ncores is 8 (> 1), so OMP and OPENBLAS threads default to 1
+            self.assertEqual(self.last_env.get("OMP_NUM_THREADS"), "1")
+            self.assertEqual(self.last_env.get("OPENBLAS_NUM_THREADS"), "1")
+
+    def test_explicit_thread_overrides(self) -> None:
+        workdir = self.tmp / "work_hw_override"
+        workdir.mkdir()
+        script_file = self.tmp / "test.py"
+        script_file.touch()
+
+        _, exit_code = self.run_driver([
+            "--script", str(script_file),
+            "--omp-num-threads=4",
+            "--openblas-num-threads=2",
+            f"--config={self.config}",
+            f"--workdir={workdir}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(self.last_env.get("OMP_NUM_THREADS"), "4")
+        self.assertEqual(self.last_env.get("OPENBLAS_NUM_THREADS"), "2")
+
+    def test_mpi_flags_rendering(self) -> None:
+        workdir = self.tmp / "work_mpi"
+        workdir.mkdir()
+        script_file = self.tmp / "test.py"
+        script_file.touch()
+
+        calls, exit_code = self.run_driver([
+            "--script", str(script_file),
+            "--oversubscribe",
+            "--bind-to=core",
+            "--map-by=socket",
+            f"--config={self.config}",
+            f"--workdir={workdir}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        casa_runs = [c for c in calls if c[0] == "casa_run"]
+        self.assertEqual(len(casa_runs), 1)
+        cmd = casa_runs[0][1]
+        self.assertIn("mpicasa -n 8 --oversubscribe --bind-to core --map-by socket  /fake/casa/main/bin/casa", cmd)
+
+
+class TestTelemetryAndProfiling(DriverModesTestCase):
+    """Tests for piperun telemetry preambles and psrecord profiling."""
+
+    def test_piperun_preamble_mem_frac_and_memstats(self) -> None:
+        workdir = self.tmp / "work_telemetry_1"
+        workdir.mkdir()
+        ms_path = self.tmp / "test.ms"
+        ms_path.mkdir()
+
+        _, exit_code = self.run_driver([
+            "--vis", str(ms_path),
+            "--mem-frac=0.75",
+            "--memstats",
+            f"--config={self.config}",
+            f"--workdir={workdir}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        piperun = workdir / "casa_piperun.py"
+        self.assertTrue(piperun.is_file())
+        content = piperun.read_text()
+        self.assertIn("casalog.setMemoryFraction(0.75)", content)
+        self.assertIn("utils.enable_memstats()", content)
+        self.assertNotIn("utils.enable_psrecord()", content)
+
+    def test_piperun_preamble_omp_max_threads_and_pl_psrecord(self) -> None:
+        workdir = self.tmp / "work_telemetry_2"
+        workdir.mkdir()
+        ms_path = self.tmp / "test.ms"
+        ms_path.mkdir()
+
+        _, exit_code = self.run_driver([
+            "--vis", str(ms_path),
+            "--omp-max-threads=6",
+            "--pl-psrecord",
+            f"--config={self.config}",
+            f"--workdir={workdir}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        piperun = workdir / "casa_piperun.py"
+        self.assertTrue(piperun.is_file())
+        content = piperun.read_text()
+        self.assertIn("casalog.ompSetNumThreads(6)", content)
+        self.assertIn("utils.enable_psrecord()", content)
+        self.assertNotIn("utils.enable_memstats()", content)
+
+    def test_psrecord_cli_wrapper_when_available(self) -> None:
+        workdir = self.tmp / "work_psrecord"
+        workdir.mkdir()
+
+        with patch("calibpipe.driver.shutil.which", return_value="/usr/bin/psrecord"):
+            calls, exit_code = self.run_driver([
+                "--cmd", "print(123)",
+                "--psrecord",
+                f"--config={self.config}",
+                f"--workdir={workdir}",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        casa_runs = [c for c in calls if c[0] == "casa_run"]
+        self.assertEqual(len(casa_runs), 1)
+        cmd = casa_runs[0][1]
+        self.assertTrue(cmd.startswith("xvfb-run -d /usr/bin/psrecord "))
+        self.assertIn("--log ", cmd)
+        self.assertIn(".rec", cmd)
+        self.assertIn("--plot ", cmd)
+        self.assertIn(".rec.png", cmd)
+        self.assertIn("--interval 2", cmd)
+
+    def test_psrecord_cli_fallback_when_missing(self) -> None:
+        workdir = self.tmp / "work_no_psrecord"
+        workdir.mkdir()
+
+        with patch("calibpipe.driver.shutil.which", return_value=None):
+            calls, exit_code = self.run_driver([
+                "--cmd", "print(123)",
+                "--psrecord",
+                f"--config={self.config}",
+                f"--workdir={workdir}",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        casa_runs = [c for c in calls if c[0] == "casa_run"]
+        self.assertEqual(len(casa_runs), 1)
+        cmd = casa_runs[0][1]
+        # Should not use psrecord wrapper if missing
+        self.assertNotIn("psrecord ", cmd)
+        self.assertNotIn("--include-children", cmd)
+        self.assertTrue(cmd.startswith("xvfb-run -d /fake/casa"))
+
+
+class TestStagingAndDirectoryRotation(DriverModesTestCase):
+    """Tests for safe directory rotation and ancillary file staging."""
+
+    def test_rotate_directory_renames_existing_dir(self) -> None:
+        from calibpipe.steps.staging import rotate_directory
+
+        target = self.tmp / "test_target"
+        target.mkdir()
+        (target / "data.txt").write_text("sample data")
+
+        backup_path = rotate_directory(target)
+        self.assertIsNotNone(backup_path)
+        self.assertFalse(target.exists())
+        self.assertTrue(backup_path.exists())
+        self.assertIn("_backup_", backup_path.name)
+        self.assertEqual((backup_path / "data.txt").read_text(), "sample data")
+
+    def test_rotate_directory_handles_collision(self) -> None:
+        from calibpipe.steps.staging import rotate_directory
+
+        target = self.tmp / "test_target_collision"
+        target.mkdir()
+        (target / "foo.txt").write_text("hello")
+
+        backup_1 = rotate_directory(target)
+        self.assertIsNotNone(backup_1)
+        self.assertTrue(backup_1.exists())
+
+        # Create target again at the same path with same mtime
+        target.mkdir()
+        (target / "bar.txt").write_text("world")
+        os.utime(target, (backup_1.stat().st_atime, backup_1.stat().st_mtime))
+
+        backup_2 = rotate_directory(target)
+        self.assertIsNotNone(backup_2)
+        self.assertTrue(backup_2.exists())
+        self.assertNotEqual(backup_1, backup_2)
+        self.assertTrue(backup_2.name.endswith("_1"))
+
+    def test_rotate_directory_nonexistent_returns_none(self) -> None:
+        from calibpipe.steps.staging import rotate_directory
+
+        nonexistent = self.tmp / "does_not_exist"
+        self.assertIsNone(rotate_directory(nonexistent))
+
+    def test_rotate_directory_current_working_dir_returns_none(self) -> None:
+        from calibpipe.steps.staging import rotate_directory
+
+        cwd_path = Path.cwd()
+        self.assertIsNone(rotate_directory(cwd_path))
+
+    def test_stage_ancillary_files(self) -> None:
+        from calibpipe.steps.staging import stage_ancillary_files
+
+        workdir = self.tmp / "staged_work"
+        cont = self.tmp / "test_cont.dat"
+        cont.write_text("cont ranges")
+        jyperk = self.tmp / "test_jyperk.csv"
+        jyperk.write_text("jyperk factors")
+        param = self.tmp / "test_param.list"
+        param.write_text("param list")
+        extra_dir = self.tmp / "extra_dir"
+        extra_dir.mkdir()
+        (extra_dir / "nested.txt").write_text("nested")
+
+        staged = stage_ancillary_files(
+            workdir,
+            cont_dat=cont,
+            jyperk_csv=jyperk,
+            parameter_list=param,
+            ancillary=[str(extra_dir)],
+            recipe="SEIP_workflow",
+        )
+
+        self.assertEqual(len(staged), 4)
+        self.assertTrue((workdir / "cont.dat").is_file())
+        self.assertEqual((workdir / "cont.dat").read_text(), "cont ranges")
+        self.assertTrue((workdir / "jyperk.csv").is_file())
+        self.assertEqual((workdir / "jyperk.csv").read_text(), "jyperk factors")
+        # Recipe contains SEIP, so parameter list gets SEIP_ prefix
+        self.assertTrue((workdir / "SEIP_parameter.list").is_file())
+        self.assertEqual((workdir / "SEIP_parameter.list").read_text(), "param list")
+        self.assertTrue((workdir / "extra_dir" / "nested.txt").is_file())
+        self.assertEqual((workdir / "extra_dir" / "nested.txt").read_text(), "nested")
+
+    def test_stage_ancillary_files_same_source_and_target_no_error(self) -> None:
+        from calibpipe.steps.staging import stage_ancillary_files
+
+        workdir = self.tmp / "staged_same"
+        workdir.mkdir()
+        cont = workdir / "cont.dat"
+        cont.write_text("already here")
+        nested_dir = workdir / "sub"
+        nested_dir.mkdir()
+        (nested_dir / "file.txt").write_text("nested content")
+
+        # Staging a file and directory already located in workdir should not raise SameFileError or delete sub
+        staged = stage_ancillary_files(
+            workdir,
+            cont_dat=cont,
+            ancillary=[str(nested_dir)],
+        )
+
+        self.assertEqual(len(staged), 2)
+        self.assertTrue(cont.is_file())
+        self.assertEqual(cont.read_text(), "already here")
+        self.assertTrue((nested_dir / "file.txt").is_file())
+
+    def test_stage_ancillary_missing_file_logs_warning(self) -> None:
+        from calibpipe.steps.staging import stage_ancillary_files
+
+        workdir = self.tmp / "staged_warn"
+        workdir.mkdir()
+        logs: list[str] = []
+
+        staged = stage_ancillary_files(
+            workdir,
+            cont_dat=self.tmp / "nonexistent_cont.dat",
+            jyperk_csv=self.tmp / "nonexistent_jyperk.csv",
+            parameter_list=self.tmp / "nonexistent_param.list",
+            ancillary=[str(self.tmp / "nonexistent_extra")],
+            log_func=logs.append,
+        )
+
+        self.assertEqual(len(staged), 0)
+        self.assertEqual(len(logs), 4)
+        self.assertTrue(all("Warning:" in log for log in logs))
+
+    def test_driver_backup_and_ancillary_execution(self) -> None:
+        workdir = self.tmp / "work_backup_test"
+        workdir.mkdir()
+        (workdir / "previous_marker.txt").write_text("old run")
+
+        cont_file = self.tmp / "run_cont.dat"
+        cont_file.write_text("continuum")
+
+        script_file = self.tmp / "test_backup.py"
+        script_file.touch()
+
+        _, exit_code = self.run_driver([
+            "--script", str(script_file),
+            "--backup",
+            f"--cont-dat={cont_file}",
+            f"--config={self.config}",
+            f"--workdir={workdir}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        # Previous run folder was rotated
+        backups = list(self.tmp.glob("work_backup_test_backup_*"))
+        self.assertEqual(len(backups), 1)
+        self.assertTrue((backups[0] / "previous_marker.txt").is_file())
+
+        # Fresh workdir was created with cont.dat staged
+        self.assertTrue(workdir.is_dir())
+        self.assertFalse((workdir / "previous_marker.txt").exists())
+        self.assertTrue((workdir / "cont.dat").is_file())
+        self.assertEqual((workdir / "cont.dat").read_text(), "continuum")
+
+
+class TestNamedProfiles(DriverModesTestCase):
+    """Tests for named execution profile resolution in driver runs."""
+
+    def test_driver_run_with_profile(self) -> None:
+        from calibpipe import config as envconfig
+        from calibpipe.config import ProfileConfig
+
+        workdir = self.tmp / "work_profile_test"
+        workdir.mkdir()
+        script_file = self.tmp / "test_prof.py"
+        script_file.touch()
+
+        cfg = envconfig.load_merged_config(cli_arg=str(self.config))
+        cfg.profiles["fast_prof"] = ProfileConfig(
+            ncores=4,
+            log2term=True,
+            omp_num_threads=2,
+            openblas_num_threads=2,
+        )
+
+        with patch("calibpipe.driver.envconfig.load_merged_config", return_value=cfg):
+            calls, exit_code = self.run_driver([
+                "--script", str(script_file),
+                "--profile=fast_prof",
+                f"--config={self.config}",
+                f"--workdir={workdir}",
+            ])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(self.last_env.get("OMP_NUM_THREADS"), "2")
+        self.assertEqual(self.last_env.get("OPENBLAS_NUM_THREADS"), "2")
+        casa_runs = [c for c in calls if c[0] == "casa_run"]
+        self.assertEqual(len(casa_runs), 1)
+        cmd = casa_runs[0][1]
+        self.assertIn("mpicasa -n 4", cmd)
+        self.assertIn("--log2term", cmd)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+

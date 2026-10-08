@@ -1,0 +1,16 @@
+requirements = ( ( $partition == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 )$extra_requirements )
+request_gpus = 0
+request_memory = $request_memory
+request_cpus = $request_cpus
+batch_name = $batch_name
+initialdir = $initialdir
+output = $output
+error = $error
+log = $log
+notification = $notification
+getenv = true
+executable = /bin/bash
+arguments = $arguments
++partition = "$partition"
+periodic_remove = JobStatus == 1 && NumJobStarts > 0
+queue

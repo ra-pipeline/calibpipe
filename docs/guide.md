@@ -234,8 +234,9 @@ config.toml
 ├── [paths]                       <-- Tier 1: Working directories & pipeline datasets
 ├── [envs.<name>]                 <-- Tier 2: Selectable CASA + Pipeline runtime targets
 ├── [site]                        <-- Tier 3: Observatory tooling & cluster overrides (Optional)
-├── [batch]                       <-- Tier 4: Slurm cluster batch submission defaults (Optional)
-└── [run]                         <-- Tier 5: Pipeline single-run driver defaults (Optional)
+├── [batch]                       <-- Tier 4: Batch scheduler submission defaults (Optional)
+├── [run]                         <-- Tier 5: Pipeline single-run driver defaults (Optional)
+└── [profiles.<name>]             <-- Tier 6: Named execution & batch profiles (Optional)
 ```
 
 #### Tier 1: Workspace & Product Paths (`[paths]`)
@@ -276,29 +277,30 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 - `flux_service_url`: Primary ALMA flux service URL.
 - `flux_service_url_backup`: Secondary ALMA flux service backup URL.
 - `casa_enable_telemetry`: If `true`, enables CASA telemetry (default: `false`).
-- `submit_host`: If set, `calibpipe batch` strictly refuses to submit Slurm jobs unless run on this specific hostname.
+- `submit_host`: If set, `calibpipe batch` strictly refuses to submit batch jobs unless run on this specific hostname.
 - `strict_paths`: If set to `true`, path validation aborts with an error instead of issuing warnings.
 - `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py` and `startup.py`) inside the run tree, ensuring pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`.
 - `log2term`: Mirror CASA log output directly to stdout / terminal in real time (default: `false`).
 
-#### Tier 4: Slurm Batch Defaults (`[batch]`) (Optional)
+#### Tier 4: Batch Scheduler Defaults (`[batch]`) (Optional)
 
 Configures baseline defaults for `calibpipe batch` when CLI flags are not provided:
 
-- `queue`: Slurm partition / queue name (default: `plwg`).
-- `cores`: Number of tasks / CPU cores allocated per Slurm job `--ntasks` (default: `8`).
-- `mem`: Total RAM in GB per job `--mem` (default: `248`; mutually exclusive with `mem_per_cpu`).
+- `scheduler`: Batch workload manager (`"slurm"` or `"htcondor"`, default: `"slurm"`).
+- `queue`: Slurm partition or HTCondor partition (`+partition`) name (default: `plwg`).
+- `cores`: Number of tasks / CPU cores allocated per job `--ntasks` / `request_cpus` (default: `8`).
+- `mem`: Total RAM in GB per job `--mem` / `request_memory` (default: `248`; mutually exclusive with `mem_per_cpu`).
 - `node`: Slurm node count string `--nodes` (default: `"1"`).
-- `mail_type`: Slurm email notification policy `--mail-type` (default: `ALL`).
+- `mail_type`: Email notification policy `--mail-type` / `notification` (default: `ALL`).
 - `walltime`: Optional job runtime limit `--time` (e.g. `"24:00:00"`; omitted if unset).
-- `nodelist`: Optional target host pinning `--nodelist` (e.g. `"cvpost01"`).
-- `chdir`: Optional working directory override `--chdir`.
+- `nodelist`: Optional target host pinning `--nodelist` (Slurm) or `TARGET.Machine` requirement (HTCondor).
+- `chdir`: Optional working directory override `--chdir` (Slurm) or `initialdir` (HTCondor).
 - `cpus_per_task`: Optional CPUs per MPI task `--cpus-per-task` for hybrid `mpicasa` execution.
 - `mem_per_cpu`: Optional RAM per CPU `--mem-per-cpu` (e.g. `"30G"`; replaces `mem` if set).
 - `hint`: Optional scheduler placement hint `--hint` (e.g. `"nomultithread"`).
 - `ntasks_per_core`: Optional task limit per physical core `--ntasks-per-core` (e.g. `1` to disable hyperthreading).
 - `distribution`: Optional task distribution policy `--distribution` (e.g. `"cyclic:cyclic"`).
-- `no_requeue`: Prevent Slurm from requeuing jobs on node failure `--no-requeue` (default: `true`).
+- `no_requeue`: Prevent scheduler from requeuing jobs on node failure `--no-requeue` (default: `true`).
 
 #### Tier 5: Pipeline Run Defaults (`[run]`) (Optional)
 
@@ -310,7 +312,48 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `useresume`: Use breakpoint / resume execution instead of two sequential CASA contexts (default: `false`).
 - `symlink_shortcuts`: Automatically create convenience symlinks (`working`, `products`, `rawdata`) in the project run root (default: `true`; override via `--symlink-shortcuts` / `--no-symlink-shortcuts`).
 - `log2term`: Mirror CASA log messages to stdout / terminal in real time (default: `false`; override via `--log2term` / `--no-log2term`).
+- `omp_num_threads`: `OMP_NUM_THREADS` environment variable override (default: `1` when `ncores > 1`).
+- `openblas_num_threads`: `OPENBLAS_NUM_THREADS` environment variable override (default: `1` when `ncores > 1`).
+- `omp_max_threads`: Restrict maximum OpenMP thread count via `casalog.ompSetNumThreads`.
+- `mem_frac`: CASA memory fraction limit via `casalog.setMemoryFraction` (e.g. `0.8`).
+- `oversubscribe`: OpenMPI `--oversubscribe` flag for `mpicasa` (default: `false`).
+- `bind_to`: OpenMPI process binding policy `--bind-to` (e.g. `"core"`, `"socket"`, `"none"`).
+- `map_by`: OpenMPI process mapping policy `--map-by` (e.g. `"core"`, `"socket"`, `"node"`).
+- `psrecord`: System resource consumption profiling via `psrecord` CLI (default: `false`).
+- `memstats`: Pipeline memory statistics tracking via `pipeline.infrastructure.utils.enable_memstats()` (default: `false`).
+- `pl_psrecord`: Pipeline internal telemetry tracking via `pipeline.infrastructure.utils.enable_psrecord()` (default: `false`).
+- `backup`: Rotate existing non-empty working directories to timestamped `_backup_<timestamp>` directories before execution (default: `false`).
+- `cont_dat`: File path to `cont.dat` staged into the working execution directory.
+- `jyperk_csv`: File path to `jyperk.csv` staged into the working execution directory.
+- `parameter_list`: File path to parameter list override staged into the working execution directory (automatically prefixed with `SEIP_` or `QLIP_` for matching recipes).
+- `ancillary`: List of additional paths (files or directories) staged into the working execution directory.
 *(Note: Isolated CASA runtime directory generation is configured under `[site].use_custom_rcdir` and can be overridden via `--custom-rcdir` / `--no-custom-rcdir`).*
+
+#### Tier 6: Named Profiles (`[profiles.<name>]`) (Optional)
+
+Named execution profiles bundle reusable collections of `[run]` driver parameters and `[batch]` cluster directives into a single preset. Profiles can be selected on the command line via `--profile=<name>` across both `calibpipe run` and `calibpipe batch`.
+
+```toml
+[profiles.fast_turnaround]
+env = "main"
+ncores = 4
+loglevel = "info"
+omp_num_threads = 2
+openblas_num_threads = 2
+log2term = true
+
+[profiles.htcondor_vlass]
+scheduler = "htcondor"
+queue = "batch"
+cores = 16
+mem = 64
+recipe = "image"
+mem_frac = 0.85
+backup = true
+```
+
+Precedence order when resolving parameters is strictly hierarchical:
+`CLI flag > --profile=<name> > [run] / [batch] base config > built-in defaults`.
 
 ---
 
@@ -405,13 +448,98 @@ Launch an interactive CASA shell with all environment variables, paths, and cust
 calibpipe run -i --env=main
 ```
 
-### 2. Submit a Batch to Slurm
+#### G. Hardware Tuning & Telemetry Profiling
+
+Fine-tune CPU threading, OpenMPI bindings, memory caps, and resource profiling across any execution mode:
+
+```bash
+# Restrict OpenMP/OpenBLAS threads and cap CASA memory fraction
+calibpipe run --vis /data/test.ms --omp-num-threads=4 --openblas-num-threads=2 --mem-frac=0.8 --env=main
+
+# MPI process placement and oversubscription
+calibpipe run --vis /data/test.ms --ncores=16 --oversubscribe --bind-to=core --map-by=socket --env=main
+
+# Resource telemetry sampling with psrecord and pipeline memory statistics
+calibpipe run --vis /data/test.ms --psrecord --memstats --pl-psrecord --env=main
+```
+
+- `--omp-num-threads <int>`: Sets `OMP_NUM_THREADS` in subprocess environment (defaults to `1` when `ncores > 1`).
+- `--openblas-num-threads <int>`: Sets `OPENBLAS_NUM_THREADS` in subprocess environment (defaults to `1` when `ncores > 1`).
+- `--omp-max-threads <int>`: Calls `casalog.ompSetNumThreads(...)` if current thread count exceeds the limit.
+- `--mem-frac <float>`: Calls `casalog.setMemoryFraction(...)` to set CASA memory fraction (e.g. `0.8`).
+- `--oversubscribe`: Passes `--oversubscribe` to OpenMPI `mpicasa` execution.
+- `--bind-to <type>`: Passes `--bind-to <type>` to OpenMPI `mpicasa` (e.g. `core`, `socket`, `none`).
+- `--map-by <type>`: Passes `--map-by <type>` to OpenMPI `mpicasa` (e.g. `core`, `socket`, `node`).
+- `--psrecord`: Wraps session with `psrecord` CLI, generating `.rec` and `.rec.png` time-series telemetry plots.
+- `--memstats`: Injects `pipeline.infrastructure.utils.enable_memstats()` into the execution preamble.
+- `--pl-psrecord`: Injects `pipeline.infrastructure.utils.enable_psrecord()` into the execution preamble.
+
+#### H. Ancillary File Staging & Safe Backup Rotation
+
+Stage required input files or parameter overrides and preserve prior run outputs across all execution modes:
+
+```bash
+# Safe rerun: rotate prior run directory to timestamped backup and stage continuum list
+calibpipe run --vis /data/test.ms --backup --cont-dat=/data/cont.dat --workdir=./run1 --env=main
+
+# Single-Dish run with Jy/K factors and additional ancillary calibrations
+calibpipe run --vis /data/sd.ms --jyperk-csv=/data/jyperk.csv --ancillary /data/caltable1 /data/caltable2 --env=main
+
+# VLASS imaging with parameter list override (automatically prefixed with SEIP_ or QLIP_)
+calibpipe run --vis /data/vlass.ms --procedure=procedure_hifv_vlassSEIP.xml --parameter-list=vlass.param --env=main
+```
+
+- `--backup`: Non-destructively rotates existing non-empty working directories to `<workdir>_backup_<YYYYMMDD_HHMMSS>` (with collision suffix `_1`, `_2` if needed).
+- `--cont-dat <path>`: Copies continuum frequency selection file to `cont.dat` in the execution directory.
+- `--jyperk-csv <path>`: Copies Single-Dish Kelvin-to-Jansky conversion factors to `jyperk.csv`.
+- `--parameter-list <path>`: Copies parameter override file to `parameter.list` (or `SEIP_parameter.list` / `QLIP_parameter.list` when matching VLASS recipe names).
+- `--ancillary <path...>`: Copies additional files or directory trees directly into the target execution directory.
+
+#### I. Named Execution Profiles (`--profile`)
+
+Apply pre-configured hardware tuning, recipes, threading, or telemetry settings defined under `[profiles.<name>]`:
+
+```bash
+# Execute with profile settings cascaded over base configuration
+calibpipe run --vis /data/test.ms --profile=fast_turnaround
+
+# Profile options can still be overridden on the command line
+calibpipe run --vis /data/test.ms --profile=fast_turnaround --ncores=8
+```
+
+### 2. Submit a Batch (Slurm & HTCondor)
+
+`calibpipe batch` submits one or more pipeline jobs to a cluster workload manager (Slurm or HTCondor).
+
+#### A. Slurm Batch Submission (Default)
 
 ```bash
 calibpipe batch quick.run --env=main -c 8 -m 248 -p
 ```
 
 The `-p` flag selects the `plwg` queue (use `-b` for `batch2`, or omit to use `[batch].queue` from configuration).
+
+#### B. HTCondor Batch Submission
+
+To submit jobs through HTCondor, specify `--scheduler=htcondor` or set `[batch].scheduler = "htcondor"` in configuration:
+
+```bash
+calibpipe batch quick.run --scheduler=htcondor -c 8 -m 64
+```
+
+When targeting HTCondor, `calibpipe` generates both:
+- `batch.<job>.sh`: A shell wrapper that configures environment limits (`ulimit -Sn 8192`, `umask 002`) and runs the `calibpipe run` command.
+- `batch.<job>.htc`: The HTCondor submit description file setting `request_cpus`, `request_memory`, `initialdir`, `notification`, and Lustre cluster requirements.
+
+Jobs are submitted via `condor_submit`, and the active queue is displayed via `condor_q`.
+
+#### C. Batch Named Profiles
+
+Combine batch cluster resources and driver options using named profiles:
+
+```bash
+calibpipe batch quick.run --profile=htcondor_vlass
+```
 
 The `quick.run` file contains one MOUS per line, with an optional recipe column:
 
