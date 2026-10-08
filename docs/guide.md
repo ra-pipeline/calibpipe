@@ -281,7 +281,7 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 - `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py` and `startup.py`) inside the run tree, ensuring pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`.
 - `log2term`: Mirror CASA log output directly to stdout / terminal in real time (default: `false`).
 
-#### Tier 4: Slurm Batch Defaults (`[batch]`) (Optional)
+#### Tier 4: Slurm Batch Defaults (`[batch]`) & Profiles (`[batches.<name>]`) (Optional)
 
 Configures baseline defaults for `calibpipe batch` when CLI flags are not provided:
 
@@ -299,6 +299,34 @@ Configures baseline defaults for `calibpipe batch` when CLI flags are not provid
 - `ntasks_per_core`: Optional task limit per physical core `--ntasks-per-core` (e.g. `1` to disable hyperthreading).
 - `distribution`: Optional task distribution policy `--distribution` (e.g. `"cyclic:cyclic"`).
 - `no_requeue`: Prevent Slurm from requeuing jobs on node failure `--no-requeue` (default: `true`).
+
+**Named Batch Profiles (`[batches.<name>]`):**
+Define preset resource profiles for different workloads, test queues, or node types. Profiles inherit all unspecified fields from baseline `[batch]`:
+
+```toml
+[batch]
+queue = "plwg"
+cores = 8
+mem = 248
+
+[batches.debug]
+queue = "debug"
+cores = 4
+mem = 32
+walltime = "01:00:00"
+
+[batches.heavy]
+queue = "batch2"
+cores = 16
+mem = 500
+cpus_per_task = 2
+```
+
+Select a profile via `--profile=<name>` (or `--batch-profile=<name>`):
+
+```bash
+calibpipe submit quick.run --profile=debug --env=main
+```
 
 #### Tier 5: Pipeline Run Defaults (`[run]`) (Optional)
 
@@ -322,8 +350,8 @@ When `build_environment()` runs, environment variables are assembled and overlai
 flowchart TD
     A["1. Host Shell Environment (os.environ: USER, HOME, PATH)"] --> B["2. Built-in Defaults (SITE_DEFAULTS)"]
     B --> C["3. [site] Overrides from config.toml"]
-    C --> D["4. [paths] Directories (interpolating {user})"]
     D --> E["5. Target [envs.<name>] (CASA_ROOT / PIXI_DIR, heuristics, PATH prepends)"]
+    C --> D["4. [paths] Directories (interpolating {user})"]
     E --> F["6. Path Reachability Validation (check_paths)"]
 ```
 
@@ -353,13 +381,26 @@ The legacy script wrapper still works:
 ./scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
 ```
 
-### 2. Submit a Batch to Slurm
+### 2. Submit to Slurm
 
 ```bash
-calibpipe batch quick.run --env=main -c 8 -m 248 -p
+# Using a named batch profile (e.g. debug, heavy):
+calibpipe submit quick.run --profile=debug --env=main
+
+# Direct Slurm partition selection:
+calibpipe submit quick.run --partition=test_partition --env=main
+
+# With explicit resource flags:
+calibpipe submit quick.run --env=main -c 8 -m 248 -p
 ```
 
-The `-p` flag selects the `plwg` queue (use `-b` for `batch2`, or omit to use `[batch].queue` from configuration).
+> [!TIP]
+> `calibpipe submit` and `calibpipe batch` are interchangeable. `submit` is the canonical subcommand, and `batch` is preserved as a permanent alias for backward compatibility.
+
+- `--profile=<name>` (or `--batch-profile`): Selects a named preset from `[batches.<name>]` in configuration.
+- `--partition=<name>` (or `--queue`): Submits to any specified Slurm partition.
+- `-p` / `-b`: Legacy shortcuts selecting `plwg` or `batch2` respectively.
+- Individual flags like `-c` (cores) or `-m` (memory) can be combined with `--profile` to apply last-mile overrides.
 
 The `quick.run` file contains one MOUS per line, with an optional recipe column:
 
@@ -372,12 +413,12 @@ uid://A002/Xcff05c/Xd calimage
 The legacy script wrapper also remains available:
 
 ```bash
-./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p
+./scripts/runbatch.py quick.run --profile=debug --env=main
 ```
 
 #### Multi-Job Concurrency and HPC Safety
 
-When running large batches across Slurm nodes (`calibpipe batch ...`), `calibpipe` implements several
+When running large batches across Slurm nodes (`calibpipe submit ...` or `calibpipe batch ...`), `calibpipe` implements several
 safeguards to guarantee conflict-free concurrent execution:
 
 ##### 1. Pixi Lockfile & Environment Concurrency (`--frozen`)

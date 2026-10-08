@@ -80,12 +80,22 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Add --no-requeue directive (default: on; prevents silent resubmission)")
     p.add_argument("--requeue", dest="no_requeue", action="store_false",
                    help="Allow Slurm to requeue job on node failure")
-    # Queue selection
+    # Batch profile selection
+    p.add_argument(
+        "--profile",
+        "--batch-profile",
+        dest="profile",
+        default=None,
+        help="Named Slurm batch profile from [batches.<name>] in config",
+    )
+    # Queue / partition selection
     queue = p.add_mutually_exclusive_group()
     queue.add_argument("-p", dest="queue", action="store_const", const="plwg", default=None,
                        help="Submit to the plwg queue (default)")
-    queue.add_argument("-b", dest="queue", action="store_const", const="batch2",
+    queue.add_argument("-b", dest="queue", action="store_const", const="batch2", default=None,
                        help="Submit to the batch2 queue")
+    queue.add_argument("--partition", "--queue", dest="queue", default=None,
+                       help="Slurm partition/queue name (overrides [batch].queue or profile)")
     p.add_argument("--extra-arg", action="append", default=[], dest="extra_args",
                    help="Extra flag passed through to calibpipe driver, repeatable")
     p.add_argument(
@@ -279,11 +289,11 @@ def main(argv: Sequence[str] | None = None) -> None:
             cli_arg=args.config,
             include_site=not getattr(args, "no_site_config", False),
         )
+        batch_opts = envconfig.resolve_batch_options(cfg, args)
     except envconfig.ConfigError as e:
         print(f"ERROR: {e}")
         sys.exit(1)
 
-    batch_opts = envconfig.resolve_batch_options(cfg, args)
     check_submit_host(cfg)
 
     pipefile = batch_opts.pipefile

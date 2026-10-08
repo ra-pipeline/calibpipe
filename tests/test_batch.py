@@ -147,8 +147,60 @@ class TestCliFlags(RunbatchCaptureCase):
         command, script = calls[0]
         self.assert_matches_reference("custom_outfile_errfile_mail_type", command, script)
 
+    def test_custom_partition_flag(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
+            "--partition=test_queue",
+        ])
+        self.assertEqual(len(calls), 1)
+        command, script = calls[0]
+        self.assertIn("#SBATCH --partition=test_queue", script)
+
+    def test_batch_profile_flag(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as tf:
+            tf.write("""
+default_env = "main"
+[paths]
+scipipe_rootdir = "/fake/root/{user}"
+scipipe_logdir = "/fake/logs/{user}"
+[envs.main]
+casa_root = "/fake/casa/main"
+
+[batch]
+queue = "plwg"
+cores = 8
+mem = 248
+
+[batches.debug]
+queue = "debug"
+cores = 4
+mem = 32
+walltime = "01:00:00"
+""")
+            tf_path = tf.name
+
+        try:
+            calls = self.run_and_capture([
+                str(PIPEFILE_ONE_LINE), "--env=main", f"--config={tf_path}",
+                "--profile=debug",
+            ])
+            self.assertEqual(len(calls), 1)
+            command, script = calls[0]
+            self.assertIn("#SBATCH --partition=debug", script)
+            self.assertIn("#SBATCH --ntasks=4", script)
+            self.assertIn("#SBATCH --mem=32G", script)
+            self.assertIn("#SBATCH --time=01:00:00", script)
+        finally:
+            Path(tf_path).unlink(missing_ok=True)
+
 
 class TestErrorPaths(RunbatchCaptureCase):
+    def test_unknown_batch_profile_exits_1(self):
+        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+            self.run_and_capture([str(PIPEFILE_ONE_LINE), f"--config={CONFIG}", "--profile=nonexistent"])
+        self.assertEqual(cm.exception.code, 1)
+
     def test_missing_config_exits_1(self):
         with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
             self.run_and_capture([str(PIPEFILE), "--config=/nonexistent/config.toml"])

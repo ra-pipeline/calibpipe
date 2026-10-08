@@ -572,6 +572,116 @@ scipipe_rootdir = "/tmp/root"
         self.assertIn("[2] /home/user/.config/calibpipe/config.toml", overview)
 
 
+class TestBatchProfiles(unittest.TestCase):
+    """Test named batch profile configuration and resolution."""
+
+    def test_batch_profiles_parsed_and_inherit_baseline(self):
+        from calibpipe.config import CalibpipeConfig
+
+        data = {
+            "batch": {
+                "queue": "plwg",
+                "cores": 8,
+                "mem": 248,
+                "mail_type": "ALL",
+            },
+            "batches": {
+                "debug": {
+                    "queue": "debug",
+                    "cores": 4,
+                    "mem": 32,
+                    "walltime": "01:00:00",
+                },
+                "heavy": {
+                    "queue": "batch2",
+                    "cores": 16,
+                    "cpus_per_task": 2,
+                },
+            },
+        }
+        cfg = CalibpipeConfig.from_dict(data)
+        self.assertIn("debug", cfg.batches)
+        self.assertIn("heavy", cfg.batches)
+
+        # debug profile overrides
+        debug_cfg = cfg.batches["debug"]
+        self.assertEqual(debug_cfg.queue, "debug")
+        self.assertEqual(debug_cfg.cores, 4)
+        self.assertEqual(debug_cfg.mem, 32)
+        self.assertEqual(debug_cfg.walltime, "01:00:00")
+        # debug profile inherits mail_type from baseline
+        self.assertEqual(debug_cfg.mail_type, "ALL")
+
+        # heavy profile overrides & inherits
+        heavy_cfg = cfg.batches["heavy"]
+        self.assertEqual(heavy_cfg.queue, "batch2")
+        self.assertEqual(heavy_cfg.cores, 16)
+        self.assertEqual(heavy_cfg.cpus_per_task, 2)
+        self.assertEqual(heavy_cfg.mem, 248)
+
+    def test_resolve_batch_options_with_profile(self):
+        from argparse import Namespace
+        from calibpipe.config import CalibpipeConfig
+
+        cfg = CalibpipeConfig.from_dict({
+            "batch": {"queue": "plwg", "cores": 8, "mem": 248},
+            "batches": {
+                "debug": {"queue": "debug", "cores": 4, "mem": 32, "walltime": "01:00:00"},
+            },
+        })
+        cli_args = Namespace(pipefile="jobs.txt", profile="debug", queue=None, cores=None, mem=None, node=None, mail_type=None)
+        opts = resolve_batch_options(cfg, cli_args)
+        self.assertEqual(opts.profile, "debug")
+        self.assertEqual(opts.queue, "debug")
+        self.assertEqual(opts.cores, 4)
+        self.assertEqual(opts.mem, 32)
+        self.assertEqual(opts.walltime, "01:00:00")
+
+    def test_resolve_batch_options_cli_overrides_profile(self):
+        from argparse import Namespace
+        from calibpipe.config import CalibpipeConfig
+
+        cfg = CalibpipeConfig.from_dict({
+            "batch": {"queue": "plwg", "cores": 8, "mem": 248},
+            "batches": {
+                "debug": {"queue": "debug", "cores": 4, "mem": 32},
+            },
+        })
+        cli_args = Namespace(pipefile="jobs.txt", profile="debug", queue="custom_queue", cores=16, mem=None, node=None, mail_type=None)
+        opts = resolve_batch_options(cfg, cli_args)
+        self.assertEqual(opts.profile, "debug")
+        self.assertEqual(opts.queue, "custom_queue")
+        self.assertEqual(opts.cores, 16)
+        self.assertEqual(opts.mem, 32)
+
+    def test_resolve_batch_options_unknown_profile_raises(self):
+        from argparse import Namespace
+        from calibpipe.config import CalibpipeConfig
+
+        cfg = CalibpipeConfig.from_dict({
+            "batch": {"queue": "plwg"},
+            "batches": {"debug": {"queue": "debug"}},
+        })
+        cli_args = Namespace(pipefile="jobs.txt", profile="nonexistent", queue=None, cores=None, mem=None, node=None, mail_type=None)
+        with self.assertRaises(ConfigError) as cm:
+            resolve_batch_options(cfg, cli_args)
+        self.assertIn("Unknown batch profile 'nonexistent'", str(cm.exception))
+        self.assertIn("Available profiles: ['debug']", str(cm.exception))
+
+    def test_format_config_overview_shows_profiles(self):
+        from calibpipe.config import CalibpipeConfig, format_config_overview
+
+        cfg = CalibpipeConfig.from_dict({
+            "batch": {"queue": "plwg", "cores": 8, "mem": 248},
+            "batches": {
+                "debug": {"queue": "debug", "cores": 4, "mem": 32},
+            },
+        })
+        overview = format_config_overview(cfg)
+        self.assertIn("Slurm Batch Profiles ([batches.<name>]):", overview)
+        self.assertIn("[debug] queue=debug, cores=4, mem=32 GB", overview)
+
+
 class TestConfigExampleSchemaDrift(unittest.TestCase):
     """Ensure config.example.toml never drifts from the typed dataclass schema in config.py."""
 

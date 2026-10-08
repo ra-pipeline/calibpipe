@@ -220,6 +220,7 @@ class CalibpipeConfig(dict):
         envs: dict[str, EnvSpec] | None = None,
         site: SiteConfig | None = None,
         batch: BatchConfig | None = None,
+        batches: dict[str, BatchConfig] | None = None,
         run: RunConfig | None = None,
         raw_dict: dict[str, Any] | None = None,
         loaded_layers: Sequence[str | Path] | None = None,
@@ -230,6 +231,7 @@ class CalibpipeConfig(dict):
         self.envs = envs or {}
         self.site = site or SiteConfig()
         self.batch = batch or BatchConfig()
+        self.batches = batches or {}
         self.run = run or RunConfig()
         self.loaded_layers: list[Path] = [Path(p) for p in loaded_layers] if loaded_layers else []
 
@@ -241,6 +243,9 @@ class CalibpipeConfig(dict):
         }
         self["site"] = asdict(self.site)
         self["batch"] = asdict(self.batch)
+        self["batches"] = {
+            k: asdict(v) if is_dataclass(v) else v for k, v in self.batches.items()
+        }
         self["run"] = asdict(self.run)
 
     @classmethod
@@ -255,6 +260,13 @@ class CalibpipeConfig(dict):
         site = SiteConfig.from_dict(data.get("site", {}))
         batch = BatchConfig.from_dict(data.get("batch", {}))
         run = RunConfig.from_dict(data.get("run", {}))
+
+        batches: dict[str, BatchConfig] = {}
+        for b_name, b_data in data.get("batches", {}).items():
+            if isinstance(b_data, dict):
+                merged_batch_data = dict(asdict(batch))
+                merged_batch_data.update(b_data)
+                batches[b_name] = BatchConfig.from_dict(merged_batch_data)
 
         envs: dict[str, EnvSpec] = {}
         for env_name, env_data in data.get("envs", {}).items():
@@ -286,6 +298,7 @@ class CalibpipeConfig(dict):
             envs=envs,
             site=site,
             batch=batch,
+            batches=batches,
             run=run,
             raw_dict=data,
             loaded_layers=loaded_layers,
@@ -391,6 +404,7 @@ class ResolvedBatchOptions:
     ntasks_per_core: int | None = None
     distribution: str | None = None
     no_requeue: bool = True
+    profile: str | None = None
 
 
 def resolve_batch_options(
@@ -405,39 +419,50 @@ def resolve_batch_options(
 
     env_name = getattr(cli_args, "env", None) or cfg.default_env
 
+    profile_name = getattr(cli_args, "profile", None)
+    if profile_name:
+        if profile_name not in cfg.batches:
+            available = sorted(cfg.batches.keys())
+            raise ConfigError(
+                f"Unknown batch profile '{profile_name}'. Available profiles: {available}"
+            )
+        active_batch = cfg.batches[profile_name]
+    else:
+        active_batch = cfg.batch
+
     cli_queue = getattr(cli_args, "queue", None)
-    queue = cli_queue if cli_queue else cfg.batch.queue
+    queue = cli_queue if cli_queue else active_batch.queue
 
     cores = getattr(cli_args, "cores", None)
     if cores is None:
-        cores = cfg.batch.cores
+        cores = active_batch.cores
 
     mem = getattr(cli_args, "mem", None)
     if mem is None:
-        mem = cfg.batch.mem
+        mem = active_batch.mem
 
-    node = getattr(cli_args, "node", None) or cfg.batch.node
-    mail_type = getattr(cli_args, "mail_type", None) or cfg.batch.mail_type
+    node = getattr(cli_args, "node", None) or active_batch.node
+    mail_type = getattr(cli_args, "mail_type", None) or active_batch.mail_type
 
     # Optional directives — CLI overrides config, then falls back to None/default.
     def _cli_or_cfg(attr: str, cfg_val: Any) -> Any:
         v = getattr(cli_args, attr, None)
         return v if v is not None else cfg_val
 
-    walltime = _cli_or_cfg("walltime", cfg.batch.walltime)
-    nodelist = _cli_or_cfg("nodelist", cfg.batch.nodelist)
-    chdir = _cli_or_cfg("chdir", cfg.batch.chdir)
-    cpus_per_task = _int_or_none(_cli_or_cfg("cpus_per_task", cfg.batch.cpus_per_task))
-    mem_per_cpu = _cli_or_cfg("mem_per_cpu", cfg.batch.mem_per_cpu)
-    hint = _cli_or_cfg("hint", cfg.batch.hint)
+    walltime = _cli_or_cfg("walltime", active_batch.walltime)
+    nodelist = _cli_or_cfg("nodelist", active_batch.nodelist)
+    chdir = _cli_or_cfg("chdir", active_batch.chdir)
+    cpus_per_task = _int_or_none(_cli_or_cfg("cpus_per_task", active_batch.cpus_per_task))
+    mem_per_cpu = _cli_or_cfg("mem_per_cpu", active_batch.mem_per_cpu)
+    hint = _cli_or_cfg("hint", active_batch.hint)
     ntasks_per_core = _int_or_none(
-        _cli_or_cfg("ntasks_per_core", cfg.batch.ntasks_per_core)
+        _cli_or_cfg("ntasks_per_core", active_batch.ntasks_per_core)
     )
-    distribution = _cli_or_cfg("distribution", cfg.batch.distribution)
+    distribution = _cli_or_cfg("distribution", active_batch.distribution)
 
     # no_requeue: CLI flag takes precedence; default True (safe default)
     cli_no_requeue = getattr(cli_args, "no_requeue", None)
-    no_requeue = cli_no_requeue if cli_no_requeue is not None else cfg.batch.no_requeue
+    no_requeue = cli_no_requeue if cli_no_requeue is not None else active_batch.no_requeue
 
     return ResolvedBatchOptions(
         pipefile=Path(cli_args.pipefile),
@@ -459,6 +484,7 @@ def resolve_batch_options(
         ntasks_per_core=ntasks_per_core,
         distribution=distribution,
         no_requeue=bool(no_requeue),
+        profile=profile_name,
     )
 
 
@@ -930,6 +956,22 @@ def format_config_overview(
         lines.append(f"  Distribution:    {cfg.batch.distribution}")
     if not cfg.batch.no_requeue:
         lines.append("  Requeue:         True")
+
+    if cfg.batches:
+        lines.extend(["", "Slurm Batch Profiles ([batches.<name>]):"])
+        for b_name in sorted(cfg.batches.keys()):
+            b_cfg = cfg.batches[b_name]
+            mem_display = (
+                f"{b_cfg.mem_per_cpu}/CPU"
+                if b_cfg.mem_per_cpu
+                else f"{b_cfg.mem} GB"
+            )
+            details = [f"queue={b_cfg.queue}", f"cores={b_cfg.cores}", f"mem={mem_display}"]
+            if b_cfg.walltime:
+                details.append(f"time={b_cfg.walltime}")
+            if b_cfg.nodelist:
+                details.append(f"nodelist={b_cfg.nodelist}")
+            lines.append(f"  [{b_name}] " + ", ".join(details))
 
     lines.extend(
         [
