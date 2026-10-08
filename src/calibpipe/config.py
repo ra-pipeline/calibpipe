@@ -11,7 +11,7 @@ import shlex
 import shutil
 import sys
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -142,7 +142,7 @@ def _str_or_none(value: Any) -> str | None:
 class BatchConfig:
     """Slurm batch cluster resource submission defaults."""
 
-    queue: str = "plwg"
+    partition: str = "plwg"
     cores: int = 8
     mem: int = 248
     node: str = "1"
@@ -163,11 +163,55 @@ class BatchConfig:
     requirements: str | None = None  # HTCondor requirements expression override
     dry_run: bool = False  # Simulate batch submission without submitting jobs
 
+    def __init__(
+        self,
+        partition: str = "plwg",
+        cores: int = 8,
+        mem: int = 248,
+        node: str = "1",
+        mail_type: str = "ALL",
+        walltime: str | None = None,
+        nodelist: str | None = None,
+        chdir: str | None = None,
+        cpus_per_task: int | None = None,
+        mem_per_cpu: str | None = None,
+        hint: str | None = None,
+        ntasks_per_core: int | None = None,
+        distribution: str | None = None,
+        no_requeue: bool = True,
+        scheduler: str = "slurm",
+        requirements: str | None = None,
+        dry_run: bool = False,
+        queue: str | None = None,
+    ) -> None:
+        self.partition = queue if queue is not None else partition
+        self.cores = cores
+        self.mem = mem
+        self.node = node
+        self.mail_type = mail_type
+        self.walltime = walltime
+        self.nodelist = nodelist
+        self.chdir = chdir
+        self.cpus_per_task = cpus_per_task
+        self.mem_per_cpu = mem_per_cpu
+        self.hint = hint
+        self.ntasks_per_core = ntasks_per_core
+        self.distribution = distribution
+        self.no_requeue = no_requeue
+        self.scheduler = scheduler
+        self.requirements = requirements
+        self.dry_run = dry_run
+
+    @property
+    def queue(self) -> str:
+        """Backward-compatible alias for partition."""
+        return self.partition
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
         default_inst = cls()
         return cls(
-            queue=str(data.get("queue", default_inst.queue)),
+            partition=str(data.get("partition", data.get("queue", default_inst.partition))),
             cores=int(data.get("cores", default_inst.cores)),
             mem=int(data.get("mem", default_inst.mem)),
             node=str(data.get("node", default_inst.node)),
@@ -322,7 +366,7 @@ class ProfileConfig:
     workdir: str | None = None
 
     # Batch options
-    queue: str | None = None
+    partition: str | None = None
     cores: int | None = None
     mem: int | None = None
     node: str | None = None
@@ -352,6 +396,22 @@ class ProfileConfig:
     rundata: list[str] | None = None
     dry_run: bool | None = None
     autoreload: bool | None = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        if "queue" in kwargs and "partition" not in kwargs:
+            kwargs["partition"] = kwargs.pop("queue")
+        for f in fields(self):
+            if f.name in kwargs:
+                setattr(self, f.name, kwargs[f.name])
+            elif f.default_factory is not MISSING:
+                setattr(self, f.name, f.default_factory())
+            else:
+                setattr(self, f.name, f.default)
+
+    @property
+    def queue(self) -> str | None:
+        """Backward-compatible alias for partition."""
+        return self.partition
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProfileConfig:
@@ -387,7 +447,7 @@ class ProfileConfig:
             parameter_list=_str_or_none(data.get("parameter_list")),
             ancillary=list(data.get("ancillary", []) or []),
             workdir=_str_or_none(data.get("workdir")),
-            queue=_str_or_none(data.get("queue")),
+            partition=_str_or_none(data.get("partition", data.get("queue"))),
             cores=_int_or_none(data.get("cores")),
             mem=_int_or_none(data.get("mem")),
             node=_str_or_none(data.get("node")),
@@ -481,8 +541,11 @@ class CalibpipeConfig(dict):
         batches: dict[str, BatchConfig] = {}
         for b_name, b_data in data.get("batches", {}).items():
             if isinstance(b_data, dict):
+                b_copy = dict(b_data)
+                if "queue" in b_copy and "partition" not in b_copy:
+                    b_copy["partition"] = b_copy["queue"]
                 merged_batch_data = dict(asdict(batch))
-                merged_batch_data.update(b_data)
+                merged_batch_data.update(b_copy)
                 batches[b_name] = BatchConfig.from_dict(merged_batch_data)
 
         profiles: dict[str, ProfileConfig] = {}
@@ -919,7 +982,7 @@ class ResolvedBatchOptions:
 
     pipefile: Path | None
     env_name: str
-    queue: str
+    partition: str
     cores: int
     mem: int
     node: str
@@ -941,6 +1004,11 @@ class ResolvedBatchOptions:
     requirements: str | None = None
     profile: str | None = None
     dry_run: bool = False
+
+    @property
+    def queue(self) -> str:
+        """Backward-compatible alias for partition."""
+        return self.partition
 
 
 def resolve_batch_options(
@@ -973,6 +1041,8 @@ def resolve_batch_options(
             }
             if "cores" not in prof_dict and profile.ncores is not None:
                 prof_dict["cores"] = profile.ncores
+            if "partition" not in prof_dict and profile.partition is not None:
+                prof_dict["partition"] = profile.partition
             merged_dict = asdict(cfg.batch)
             merged_dict.update(prof_dict)
             active_batch = BatchConfig.from_dict(merged_dict)
@@ -988,8 +1058,8 @@ def resolve_batch_options(
         or cfg.default_env
     )
 
-    cli_queue = getattr(cli_args, "queue", None)
-    queue = cli_queue if cli_queue else active_batch.queue
+    cli_partition = getattr(cli_args, "partition", None) or getattr(cli_args, "queue", None)
+    partition = cli_partition if cli_partition else active_batch.partition
 
     cores = getattr(cli_args, "cores", None)
     if cores is None:
@@ -1031,7 +1101,7 @@ def resolve_batch_options(
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
-        queue=str(queue),
+        partition=str(partition),
         cores=int(cores),
         mem=int(mem),
         node=str(node),
@@ -1505,7 +1575,7 @@ def format_config_overview(
             "",
             "Slurm Batch Defaults ([batch]):",
             f"  Scheduler:       {cfg.batch.scheduler}",
-            f"  Queue:           {cfg.batch.queue}",
+            f"  Partition:       {cfg.batch.partition}",
             f"  Cores / Memory:  {cfg.batch.cores} cores, "
             + (
                 f"{cfg.batch.mem_per_cpu}/CPU"
@@ -1542,7 +1612,7 @@ def format_config_overview(
                 if b_cfg.mem_per_cpu
                 else f"{b_cfg.mem} GB"
             )
-            details = [f"queue={b_cfg.queue}", f"cores={b_cfg.cores}", f"mem={mem_display}"]
+            details = [f"partition={b_cfg.partition}", f"cores={b_cfg.cores}", f"mem={mem_display}"]
             if b_cfg.walltime:
                 details.append(f"time={b_cfg.walltime}")
             if b_cfg.nodelist:
@@ -1658,7 +1728,7 @@ def format_profile_list(config: CalibpipeConfig | dict[str, Any]) -> str:
     else:
         for bname in sorted(cfg.batches.keys()):
             b = cfg.batches[bname]
-            bdetails = [f"queue={b.queue}", f"cores={b.cores}"]
+            bdetails = [f"partition={b.partition}", f"cores={b.cores}"]
             mem_display = f"{b.mem_per_cpu}/CPU" if b.mem_per_cpu else f"{b.mem} GB"
             bdetails.append(f"mem={mem_display}")
             if b.walltime:

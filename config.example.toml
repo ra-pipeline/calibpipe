@@ -137,7 +137,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # Defaults when submitting jobs via 'calibpipe batch':
 #
 # [batch]
-# queue = "plwg"                          # Slurm partition/queue
+# partition = "plwg"                      # Slurm partition / HTCondor partition (or legacy 'queue')
 # cores = 8                               # Cores per batch job (--ntasks)
 # mem = 248                               # Memory in GB per batch job (--mem; mutually exclusive with mem_per_cpu)
 # node = "1"                              # Number of nodes (--nodes)
@@ -159,13 +159,13 @@ pixi_dir = "/data/pipeline/branches/main"
 # 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):
 #
 # [batches.debug]
-# queue = "debug"                         # Test/debug queue
+# partition = "debug"                     # Test/debug partition
 # cores = 4                               # Reduced CPU count
 # mem = 32                                # Reduced RAM (GB)
 # walltime = "01:00:00"                   # Short walltime limit
 #
 # [batches.heavy]
-# queue = "batch2"                        # High-capacity queue
+# partition = "batch2"                    # High-capacity partition
 # cores = 16
 # mem = 500
 # cpus_per_task = 2
@@ -221,7 +221,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # ncores = 16
 # parameter_list = "vlass.param"
 # backup = true
-# queue = "plwg"
+# partition = "plwg"
 # mem = 120
 #
 # [profiles.fast_debug]

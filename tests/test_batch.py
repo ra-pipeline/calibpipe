@@ -190,6 +190,7 @@ walltime = "01:00:00"
             self.assertIn("#SBATCH --ntasks=4", script)
             self.assertIn("#SBATCH --mem=32G", script)
             self.assertIn("#SBATCH --time=01:00:00", script)
+            self.assertNotIn("--profile=debug", script)
         finally:
             Path(tf_path).unlink(missing_ok=True)
 

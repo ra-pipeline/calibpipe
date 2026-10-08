@@ -1,5 +1,5 @@
 #!/bin/sh
-#SBATCH --partition=$queue
+#SBATCH --partition=$partition
 #SBATCH --nodes=$node
 #SBATCH --ntasks=$cores
 #SBATCH --job-name=$job_name

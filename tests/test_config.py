@@ -378,7 +378,7 @@ class TestTypedModels(unittest.TestCase):
         self.assertIn("Default Env:      main", overview)
         self.assertIn("Custom RCDIR:    True", overview)
         self.assertIn("Log2term:        False", overview)
-        self.assertIn("Queue:           plwg", overview)
+        self.assertIn("Partition:       plwg", overview)
 
         # When optional batch directives are configured
         cfg.batch = BatchConfig(
@@ -814,7 +814,7 @@ class TestBatchProfiles(unittest.TestCase):
         })
         overview = format_config_overview(cfg)
         self.assertIn("Slurm Batch Profiles ([batches.<name>]):", overview)
-        self.assertIn("[debug] queue=debug, cores=4, mem=32 GB", overview)
+        self.assertIn("[debug] partition=debug, cores=4, mem=32 GB", overview)
 
 
 class TestConfigExampleSchemaDrift(unittest.TestCase):

@@ -13,8 +13,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from calibpipe import config as envconfig
 from calibpipe.templates import render_template
@@ -96,10 +96,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     # Queue / partition selection
     queue = p.add_mutually_exclusive_group()
-    queue.add_argument("-b", dest="queue", action="store_const", const="batch2", default=None,
-                       help="Submit to the batch2 queue")
-    queue.add_argument("--partition", "--queue", dest="queue", default=None,
-                       help="Slurm partition/queue name (overrides [batch].queue or profile)")
+    queue.add_argument("-b", dest="partition", action="store_const", const="batch2", default=None,
+                       help="Submit to the batch2 partition")
+    queue.add_argument("--partition", "--queue", dest="partition", default=None,
+                       help="Slurm / HTCondor partition name (overrides [batch].partition or profile)")
     p.add_argument("--extra-arg", action="append", default=[], dest="extra_args",
                    help="Extra flag passed through to calibpipe driver, repeatable")
     p.add_argument(
@@ -175,7 +175,8 @@ def _sbatch_directive(flag: str, value: object) -> str | None:
 def build_sbatch_script(
     pipejob: str,
     *,
-    queue: str,
+    partition: str = "plwg",
+    queue: str | None = None,
     node: str,
     cores: int,
     mem: str | None,
@@ -205,7 +206,8 @@ def build_sbatch_script(
 
     Args:
         pipejob: Fully assembled `calibpipe` execution command.
-        queue: Slurm partition name.
+        partition: Slurm partition name.
+        queue: Backward-compatible alias for `partition`.
         node: Number of nodes (``--nodes``).
         cores: Number of tasks (``--ntasks``).
         mem: Total memory string (e.g. ``"248G"``); ignored when ``mem_per_cpu`` is set.
@@ -227,6 +229,8 @@ def build_sbatch_script(
     Returns:
         Rendered shell script contents.
     """
+    active_partition = queue if queue is not None else partition
+
     # Build the optional directives block in the same order as pcasa.py's job_slurm()
     optional_lines = []
     for line in [
@@ -249,7 +253,8 @@ def build_sbatch_script(
     return render_template(
         'slurm_job.sh.in',
         pipejob=pipejob,
-        queue=queue,
+        partition=active_partition,
+        queue=active_partition,
         node=node,
         cores=cores,
         job_name=job_name,
@@ -444,7 +449,7 @@ def _dispatch_job(
 
         htc_body, runner_body = build_htcondor_script(
             pipejob,
-            partition=batch_opts.queue,
+            partition=batch_opts.partition,
             cores=batch_opts.cores,
             mem=mem_str,
             mem_per_cpu=batch_opts.mem_per_cpu,
@@ -497,7 +502,7 @@ def _dispatch_job(
         mem_str = None if batch_opts.mem_per_cpu else f"{batch_opts.mem}G"
         script_body = build_sbatch_script(
             pipejob,
-            queue=batch_opts.queue,
+            partition=batch_opts.partition,
             node=batch_opts.node,
             cores=batch_opts.cores,
             mem=mem_str,
@@ -602,7 +607,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 pipejob_parts.append(f"--config={args.config}")
             if getattr(args, "no_site_config", False):
                 pipejob_parts.append("--no-site-config")
-            if getattr(args, "profile", None):
+            if getattr(args, "profile", None) and args.profile in cfg.profiles:
                 pipejob_parts.append(f"--profile={args.profile}")
             if batch_opts.env_name:
                 pipejob_parts.append(f"--env={batch_opts.env_name}")

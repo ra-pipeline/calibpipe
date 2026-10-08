@@ -28,5 +28,11 @@ def render_template(template_name: str, **kwargs: Any) -> str:
             "rundata": "None",
             "rundata_specified": "False",
         }
+    elif template_name == "slurm_job.sh.in":
+        p = kwargs.get("partition", kwargs.get("queue", "plwg"))
+        defaults = {
+            "partition": p,
+            "queue": p,
+        }
     str_kwargs = {**defaults, **{k: str(v) for k, v in kwargs.items()}}
     return Template(raw).safe_substitute(str_kwargs)

@@ -291,7 +291,7 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 Configures baseline defaults for `calibpipe batch` when CLI flags are not provided:
 
 - `scheduler`: Batch workload manager (`"slurm"` or `"htcondor"`, default: `"slurm"`).
-- `queue`: Slurm partition or HTCondor partition (`+partition`) name (default: `plwg`).
+- `partition`: Slurm partition or HTCondor partition (`+partition`) name (default: `plwg`; legacy alias `queue` supported).
 - `cores`: Number of tasks / CPU cores allocated per job `--ntasks` / `request_cpus` (default: `8`).
 - `mem`: Total RAM in GB per job `--mem` / `request_memory` (default: `248`; mutually exclusive with `mem_per_cpu`).
 - `node`: Slurm node count string `--nodes` (default: `"1"`).
@@ -312,18 +312,18 @@ Define preset resource profiles for different workloads, test queues, or node ty
 
 ```toml
 [batch]
-queue = "plwg"
+partition = "plwg"
 cores = 8
 mem = 248
 
 [batches.debug]
-queue = "debug"
+partition = "debug"
 cores = 4
 mem = 32
 walltime = "01:00:00"
 
 [batches.heavy]
-queue = "batch2"
+partition = "batch2"
 cores = 16
 mem = 500
 cpus_per_task = 2
@@ -826,8 +826,8 @@ Execution Profiles ([profiles.<name>]):
   interactive_dev                [interactive]   (cores=4)
 
 Batch Profiles ([batches.<name>]):
-  debug                          [slurm]         (queue=debug, cores=4, mem=32 GB, scheduler=slurm)
-  heavy                          [slurm]         (queue=batch2, cores=16, mem=500 GB, scheduler=slurm)
+  debug                          [slurm]         (partition=debug, cores=4, mem=32 GB, scheduler=slurm)
+  heavy                          [slurm]         (partition=batch2, cores=16, mem=500 GB, scheduler=slurm)
 ================================================================================
 ```
 
