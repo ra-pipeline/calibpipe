@@ -117,6 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Batch scheduler to target: 'slurm' (default) or 'htcondor'",
     )
     p.add_argument(
+        "--requirements",
+        default=None,
+        dest="requirements",
+        help="HTCondor ClassAd requirements expression override (e.g. 'none', 'default', or custom expression)",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
@@ -269,6 +275,7 @@ def build_htcondor_script(
     mail_type: str = "Always",
     chdir: str | None = None,
     nodelist: str | None = None,
+    requirements: str | None = None,
 ) -> tuple[str, str]:
     """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
 
@@ -285,6 +292,7 @@ def build_htcondor_script(
         mail_type: Notification setting (notification).
         chdir: Initial working directory (initialdir).
         nodelist: Optional pinned machine name (TARGET.Machine == "<nodelist>").
+        requirements: Optional custom ClassAd requirements expression.
 
     Returns:
         Tuple of (submit_file_content, wrapper_script_content).
@@ -325,10 +333,22 @@ def build_htcondor_script(
     raw_notif = str(mail_type).lower().strip() if mail_type else ""
     notification = htc_notification_map.get(raw_notif, "Always")
 
+    # Determine requirements expression
+    if requirements is not None:
+        req_clean = requirements.strip()
+        if req_clean.lower() in ("none", "false", "any"):
+            req_expr = f"NumJobStarts == 0{extra_req}"
+        elif req_clean.lower() in ("default", "cluster", "nrao"):
+            req_expr = f"( {partition} == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ){extra_req}"
+        else:
+            req_expr = f"{req_clean}{extra_req}"
+    else:
+        req_expr = f"( {partition} == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ){extra_req}"
+
     htc_content = render_template(
         "htcondor_job.htc.in",
         partition=partition,
-        extra_requirements=extra_req,
+        requirements=req_expr,
         request_memory=request_memory,
         request_cpus=cores,
         batch_name=job_name,
@@ -435,6 +455,7 @@ def _dispatch_job(
             mail_type=batch_opts.mail_type,
             chdir=batch_opts.chdir,
             nodelist=batch_opts.nodelist,
+            requirements=batch_opts.requirements,
         )
 
         script_record_sh_path = Path(script_record_sh).resolve()

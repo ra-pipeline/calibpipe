@@ -160,6 +160,7 @@ class BatchConfig:
     distribution: str | None = None  # --distribution  (e.g. "cyclic:cyclic")
     no_requeue: bool = True  # --no-requeue  (prevent silent resubmission)
     scheduler: str = "slurm"  # Batch scheduler backend: "slurm" or "htcondor"
+    requirements: str | None = None  # HTCondor requirements expression override
     dry_run: bool = False  # Simulate batch submission without submitting jobs
 
     @classmethod
@@ -185,6 +186,7 @@ class BatchConfig:
             distribution=data.get("distribution", default_inst.distribution),
             no_requeue=bool(data.get("no_requeue", default_inst.no_requeue)),
             scheduler=str(data.get("scheduler", default_inst.scheduler)),
+            requirements=data.get("requirements", default_inst.requirements),
             dry_run=bool(data.get("dry_run", default_inst.dry_run)),
         )
 
@@ -335,6 +337,7 @@ class ProfileConfig:
     distribution: str | None = None
     no_requeue: bool | None = None
     scheduler: str | None = None
+    requirements: str | None = None
 
     # Execution targets & modes
     mous: str | None = None
@@ -399,6 +402,7 @@ class ProfileConfig:
             distribution=_str_or_none(data.get("distribution")),
             no_requeue=bool(data["no_requeue"]) if "no_requeue" in data else None,
             scheduler=_str_or_none(data.get("scheduler")),
+            requirements=_str_or_none(data.get("requirements")),
             mous=_str_or_none(data.get("mous")),
             vis=vis_list,
             procedure=_str_or_none(data.get("procedure")),
@@ -934,6 +938,7 @@ class ResolvedBatchOptions:
     distribution: str | None = None
     no_requeue: bool = True
     scheduler: str = "slurm"
+    requirements: str | None = None
     profile: str | None = None
     dry_run: bool = False
 
@@ -1021,6 +1026,8 @@ def resolve_batch_options(
     cli_dry_run = getattr(cli_args, "dry_run", None)
     dry_run = bool(cli_dry_run if cli_dry_run is not None else active_batch.dry_run)
 
+    requirements = _cli_or_cfg("requirements", getattr(active_batch, "requirements", None))
+
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
@@ -1042,6 +1049,7 @@ def resolve_batch_options(
         distribution=distribution,
         no_requeue=bool(no_requeue),
         scheduler=str(scheduler),
+        requirements=requirements,
         profile=profile_name,
         dry_run=dry_run,
     )

@@ -79,7 +79,7 @@ class TestTemplates(unittest.TestCase):
         rendered = render_template(
             "htcondor_job.htc.in",
             partition="batch",
-            extra_requirements=' && ( TARGET.Machine == "node01" )',
+            requirements='( ( batch == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ) && ( TARGET.Machine == "node01" ) )',
             request_memory="64G",
             request_cpus="8",
             batch_name="mous_job",

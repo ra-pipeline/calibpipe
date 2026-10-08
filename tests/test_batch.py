@@ -378,6 +378,31 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
         _, htc_script = calls[0]
         self.assertIn('( TARGET.Machine == "node01" )', htc_script)
 
+    def test_htcondor_requirements_override_none(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--scheduler=htcondor",
+            "--requirements=none",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, htc_script = calls[0]
+        self.assertIn("requirements = ( NumJobStarts == 0 )", htc_script)
+        self.assertNotIn("HasLustre", htc_script)
+
+    def test_htcondor_requirements_override_custom(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--scheduler=htcondor",
+            "--requirements=( TARGET.Arch == \"X86_64\" )",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, htc_script = calls[0]
+        self.assertIn("requirements = ( ( TARGET.Arch == \"X86_64\" ) )", htc_script)
+
     def test_htcondor_mem_per_cpu_scales_by_cores(self):
         calls = self.run_and_capture([
             str(PIPEFILE_ONE_LINE),
