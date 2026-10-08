@@ -413,96 +413,60 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: from [run].log2term / [site].log2term)"
         ),
     )
+    # Alternative direct execution modes (pcasa-style decoupling from PMR)
+    p.add_argument(
+        "--vis",
+        nargs="+",
+        default=[],
+        help="One or more MeasurementSet or ASDM paths to process directly via recipe reducer",
+    )
+    p.add_argument(
+        "--procedure",
+        default="",
+        help="Pipeline procedure XML filename or path (default: resolved from --recipe)",
+    )
+    p.add_argument(
+        "--script",
+        default="",
+        help="Path to Python/CASA script to execute directly under the CASA environment",
+    )
+    p.add_argument(
+        "--cmd",
+        default="",
+        help="Inline Python command string to execute in CASA (e.g. pytest invocation)",
+    )
+    p.add_argument(
+        "--vla",
+        action="store_true",
+        default=False,
+        help="Use VLA pipeline interface (executevlappr) instead of ALMA (executeppr)",
+    )
+    p.add_argument(
+        "--workdir",
+        default="",
+        help="Working directory for execution (default: working/ or current directory)",
+    )
+    p.add_argument(
+        "-i",
+        "--interactive",
+        action="store_true",
+        default=False,
+        help="Launch an interactive CASA shell session",
+    )
     return p
 
 
-def main(custom_argv: Sequence[str] | None = None) -> None:
-    """Execute a single pipeline run from command-line arguments.
+def build_casarun_prefix(
+    run_opts: envconfig.ResolvedRunOptions,
+    env_spec: envconfig.EnvironmentSpec,
+    env: dict[str, str],
+    site_cfg: dict[str, Any],
+) -> tuple[str, str]:
+    """Assemble base CASA executable command prefix.
 
-    Args:
-        custom_argv: Optional argument sequence. When omitted, the legacy
-            module-level `argv` wrapper is used for compatibility.
+    Returns:
+        tuple of (casarun, casaroot)
     """
-    args_list = custom_argv if custom_argv is not None else argv[1:]
-    parser = build_parser()
-    if not args_list:
-        parser.print_help()
-        sys.exit(0)
-
-    # Support both standard flags and legacy positional mous argument
-    # If the first argument does not start with '-', treat it as --mous
-    filtered_args = []
-    for a in args_list:
-        if (
-            a
-            and not a.startswith("-")
-            and not any(x.startswith("--mous") for x in filtered_args)
-        ):
-            filtered_args.append(f"--mous={a}")
-        else:
-            filtered_args.append(a)
-
-    opts = parser.parse_args(filtered_args)
-
-    mous_uid = opts.mous
-    flag_and_go_dir = opts.flag
-    flag_and_go = bool(flag_and_go_dir)
-    if flag_and_go:
-        flag_and_go_dir = os.path.abspath(flag_and_go_dir)
-        if not os.path.exists(flag_and_go_dir):
-            print(f"Cannot find the --flag directory {flag_and_go_dir}. Does it exist?")
-            sys.exit(0)
-
-    ppr_override = opts.ppr
-    if ppr_override:
-        ppr_override = os.path.abspath(ppr_override)
-        if not os.path.exists(ppr_override):
-            print(f"Cannot find the --PPR file {ppr_override}. Does it exist?")
-            sys.exit(0)
-
-    # Load configuration
-    try:
-        cfg = envconfig.load_merged_config(
-            cli_arg=opts.config,
-            include_site=not getattr(opts, "no_site_config", False),
-        )
-    except envconfig.ConfigError as e:
-        print(f"Configuration error: {e}")
-        sys.exit(1)
-
-    run_opts = envconfig.resolve_run_options(cfg, opts)
-    env_spec = envconfig.resolve_env(cfg, run_opts.env_name)
-    env = envconfig.build_environment(cfg, env_spec, subdir=run_opts.subdir)
-
-    # Update os.environ in process so subprocesses inherit it
-    for k, v in env.items():
-        os.environ[k] = v
-
-    # Isolate CASA from foreign virtualenv (e.g. from `uv run` or activated venv)
-    # to prevent IPython UserWarning and cross-environment sys.path pollution
-    os.environ.pop("VIRTUAL_ENV", None)
-
-    if opts.print_env:
-        print(envconfig.format_shell_exports(env, export=False))
-        return
-
-    # Derive recipe details
-    recipe = run_opts.recipe
-    if recipe == "cal":
-        procedure_short = "hifa_cal"
-    elif recipe in ["calimage", "calimage_selfcal", "calimage_selfcal_nocube"]:
-        procedure_short = "hifa_calimage"
-    elif recipe == "image":
-        procedure_short = "hifa_image"
-    elif recipe == "calsurvey":
-        procedure_short = "hifa_calsurvey"
-    else:
-        procedure_short = f"hifa_{recipe}"
-
-    procedure = f"procedure_{procedure_short}.xml"
-
-    # Build CASA invocation command prefix
-    site_cfg = cfg.get("site", {})
     if env_spec.is_pixi:
         pixi_bin = site_cfg.get("pixi_bin") or shutil.which("pixi") or "pixi"
         pixi_dir = env_spec.pixi_dir
@@ -524,7 +488,9 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
             pixi_parts.append(env_arg)
         pixi_base = " ".join(pixi_parts)
 
-        if run_opts.ncores > 1:
+        if run_opts.interactive:
+            casarun = f"{pixi_base} casa --nocrashreport --notelemetry"
+        elif run_opts.ncores > 1:
             os.environ["CASA_NPROCS"] = str(run_opts.ncores)
             casarun = (
                 f"env CASA_NPROCS={run_opts.ncores} {pixi_base} casampi "
@@ -534,11 +500,59 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
             casarun = (
                 f"{pixi_base} casa --nocrashreport --notelemetry --nogui --agg --nologger"
             )
+        casaroot = ""
     else:
-        casaroot = env["CASA_ROOT"]
-        casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry --nogui --agg"
-        if run_opts.ncores > 1:
-            casarun = f"{casaroot}/bin/mpicasa -n {run_opts.ncores}  {casarun}"
+        casaroot = env.get("CASA_ROOT", "")
+        if run_opts.interactive:
+            casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry"
+        else:
+            casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry --nogui --agg"
+            if run_opts.ncores > 1:
+                casarun = f"{casaroot}/bin/mpicasa -n {run_opts.ncores}  {casarun}"
+
+    return casarun, casaroot
+
+
+def _run_mous(
+    opts: argparse.Namespace,
+    run_opts: envconfig.ResolvedRunOptions,
+    env_spec: envconfig.EnvironmentSpec,
+    env: dict[str, str],
+    casaroot: str,
+    casarun: str,
+    site_cfg: dict[str, Any],
+) -> int:
+    """Execute ALMA Science Pipeline via pipelineMakeRequest (legacy PMR mode)."""
+    mous_uid = opts.mous
+    flag_and_go_dir = opts.flag
+    flag_and_go = bool(flag_and_go_dir)
+    if flag_and_go:
+        flag_and_go_dir = os.path.abspath(flag_and_go_dir)
+        if not os.path.exists(flag_and_go_dir):
+            print(f"Cannot find the --flag directory {flag_and_go_dir}. Does it exist?")
+            sys.exit(0)
+
+    ppr_override = opts.ppr
+    if ppr_override:
+        ppr_override = os.path.abspath(ppr_override)
+        if not os.path.exists(ppr_override):
+            print(f"Cannot find the --PPR file {ppr_override}. Does it exist?")
+            sys.exit(0)
+
+    # Derive recipe details
+    recipe = run_opts.recipe
+    if recipe == "cal":
+        procedure_short = "hifa_cal"
+    elif recipe in ["calimage", "calimage_selfcal", "calimage_selfcal_nocube"]:
+        procedure_short = "hifa_calimage"
+    elif recipe == "image":
+        procedure_short = "hifa_image"
+    elif recipe == "calsurvey":
+        procedure_short = "hifa_calsurvey"
+    else:
+        procedure_short = f"hifa_{recipe}"
+
+    procedure = f"procedure_{procedure_short}.xml"
 
     # Check for pre-existing ASDMs
     oldasdms = []
@@ -732,9 +746,456 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         os.chdir(orig_cwd)
         mylog.close()
 
+    return retcode
+
+
+def _run_recipe_reducer(
+    opts: argparse.Namespace,
+    run_opts: envconfig.ResolvedRunOptions,
+    env_spec: envconfig.EnvironmentSpec,
+    casaroot: str,
+    casarun: str,
+    site_cfg: dict[str, Any],
+) -> int:
+    """Execute pipeline directly via recipereducer.reduce (offline dataset mode)."""
+    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    working_path.mkdir(parents=True, exist_ok=True)
+
+    procedure = opts.procedure
+    if not procedure:
+        recipe = run_opts.recipe
+        if recipe.endswith(".xml"):
+            procedure = recipe
+        else:
+            if recipe == "cal":
+                procedure_short = "hifa_cal"
+            elif recipe in ["calimage", "calimage_selfcal", "calimage_selfcal_nocube"]:
+                procedure_short = "hifa_calimage"
+            elif recipe == "image":
+                procedure_short = "hifa_image"
+            elif recipe == "calsurvey":
+                procedure_short = "hifa_calsurvey"
+            else:
+                procedure_short = f"hifa_{recipe}"
+            procedure = f"procedure_{procedure_short}.xml"
+
+    vis_list = [str(Path(v).resolve()) if Path(v).exists() else v for v in opts.vis]
+
+    now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_name = f"{working_path}/calibpipe.recipe_reduce.{now_ts}"
+    mylog = RunLogger(log_name, print_flag=True)
+
+    if run_opts.use_custom_rcdir:
+        rcdir = working_path / ".casa"
+        rcdir.mkdir(parents=True, exist_ok=True)
+        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_startup(rcdir)
+        if env_spec.is_pixi:
+            rcdir_args = [
+                "--cachedir", str(rcdir),
+                "--configfile", str(rcdir / "config.py"),
+                "--startupfile", str(rcdir / "startup.py"),
+            ]
+        else:
+            rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
+        casarun = f"{casarun} " + " ".join(rcdir_args)
+        mylog.log(f"created isolated CASA rcdir at {rcdir}")
+
+    if env_spec.is_pixi:
+        casa_logfile = working_path / f"casa-{now_ts}.log"
+        casarun = f"{casarun} --logfile {casa_logfile}"
+
+    if run_opts.log2term:
+        casarun = f"{casarun} --log2term"
+
+    piperun_file = (working_path / "casa_piperun.py").resolve()
+    resolved_workdir = str(working_path.resolve())
+    code = (
+        "import os\n"
+        f"os.chdir(r'{resolved_workdir}')\n"
+        "import pipeline\n"
+        "import pipeline.recipereducer\n"
+        f"pipeline.recipereducer.reduce(vis={vis_list!r}, procedure={procedure!r}, loglevel={run_opts.loglevel!r})\n"
+    )
+    piperun_file.write_text(code, encoding="utf-8")
+    cmd = f"xvfb-run -d {casarun} -c {piperun_file}"
+
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(working_path)
+        if run_opts.verbose:
+            retcode = mylog.run(cmd)
+        else:
+            retcode = mylog.runquiet(cmd)
+    finally:
+        if run_opts.symlink_shortcuts:
+            link_weblog(
+                working_path.parent if working_path.name == "working" else working_path,
+                working_path,
+                mylog.log,
+            )
+        os.chdir(orig_cwd)
+        mylog.close()
+
+    return retcode
+
+
+def _run_standalone_ppr(
+    opts: argparse.Namespace,
+    run_opts: envconfig.ResolvedRunOptions,
+    env_spec: envconfig.EnvironmentSpec,
+    casaroot: str,
+    casarun: str,
+    site_cfg: dict[str, Any],
+) -> int:
+    """Execute standalone PPR XML via executeppr / executevlappr without PMR."""
+    ppr_path = Path(opts.ppr).resolve()
+    if not ppr_path.is_file():
+        print(f"ERROR: Cannot find the --PPR file {ppr_path}. Does it exist?", file=sys.stderr)
+        return 1
+
+    working_path = Path(opts.workdir).resolve() if opts.workdir else ppr_path.parent
+    working_path.mkdir(parents=True, exist_ok=True)
+
+    now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_name = f"{working_path}/calibpipe.ppr.{now_ts}"
+    mylog = RunLogger(log_name, print_flag=True)
+
+    if run_opts.use_custom_rcdir:
+        rcdir = working_path / ".casa"
+        rcdir.mkdir(parents=True, exist_ok=True)
+        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_startup(rcdir)
+        if env_spec.is_pixi:
+            rcdir_args = [
+                "--cachedir", str(rcdir),
+                "--configfile", str(rcdir / "config.py"),
+                "--startupfile", str(rcdir / "startup.py"),
+            ]
+        else:
+            rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
+        casarun = f"{casarun} " + " ".join(rcdir_args)
+        mylog.log(f"created isolated CASA rcdir at {rcdir}")
+
+    if env_spec.is_pixi:
+        casa_logfile = working_path / f"casa-{now_ts}.log"
+        casarun = f"{casarun} --logfile {casa_logfile}"
+
+    if run_opts.log2term:
+        casarun = f"{casarun} --log2term"
+
+    piperun_file = (working_path / "casa_piperun.py").resolve()
+    resolved_workdir = str(working_path.resolve())
+    import_module = (
+        "pipeline.infrastructure.executevlappr"
+        if opts.vla
+        else "pipeline.infrastructure.executeppr"
+    )
+    code = (
+        "import os\n"
+        f"os.chdir(r'{resolved_workdir}')\n"
+        "import pipeline\n"
+        f"import {import_module} as eppr\n"
+        f"eppr.executeppr({str(ppr_path)!r}, importonly={run_opts.useresume!r}, loglevel={run_opts.loglevel!r})\n"
+    )
+    piperun_file.write_text(code, encoding="utf-8")
+    cmd = f"xvfb-run -d {casarun} -c {piperun_file}"
+
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(working_path)
+        if run_opts.verbose:
+            retcode = mylog.run(cmd)
+        else:
+            retcode = mylog.runquiet(cmd)
+    finally:
+        if run_opts.symlink_shortcuts:
+            link_weblog(
+                working_path.parent if working_path.name == "working" else working_path,
+                working_path,
+                mylog.log,
+            )
+        os.chdir(orig_cwd)
+        mylog.close()
+
+    return retcode
+
+
+def _run_script(
+    opts: argparse.Namespace,
+    run_opts: envconfig.ResolvedRunOptions,
+    env_spec: envconfig.EnvironmentSpec,
+    casaroot: str,
+    casarun: str,
+    site_cfg: dict[str, Any],
+) -> int:
+    """Execute a Python/CASA script under the managed CASA environment."""
+    script_path = Path(opts.script).resolve()
+    if not script_path.is_file():
+        print(f"ERROR: Cannot find script file {script_path}. Does it exist?", file=sys.stderr)
+        return 1
+
+    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    working_path.mkdir(parents=True, exist_ok=True)
+
+    now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_name = f"{working_path}/calibpipe.script.{now_ts}"
+    mylog = RunLogger(log_name, print_flag=True)
+
+    if run_opts.use_custom_rcdir:
+        rcdir = working_path / ".casa"
+        rcdir.mkdir(parents=True, exist_ok=True)
+        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_startup(rcdir)
+        if env_spec.is_pixi:
+            rcdir_args = [
+                "--cachedir", str(rcdir),
+                "--configfile", str(rcdir / "config.py"),
+                "--startupfile", str(rcdir / "startup.py"),
+            ]
+        else:
+            rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
+        casarun = f"{casarun} " + " ".join(rcdir_args)
+        mylog.log(f"created isolated CASA rcdir at {rcdir}")
+
+    if env_spec.is_pixi:
+        casa_logfile = working_path / f"casa-{now_ts}.log"
+        casarun = f"{casarun} --logfile {casa_logfile}"
+
+    if run_opts.log2term:
+        casarun = f"{casarun} --log2term"
+
+    cmd = f"xvfb-run -d {casarun} -c {script_path}"
+
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(working_path)
+        if run_opts.verbose:
+            retcode = mylog.run(cmd)
+        else:
+            retcode = mylog.runquiet(cmd)
+    finally:
+        os.chdir(orig_cwd)
+        mylog.close()
+
+    return retcode
+
+
+def _run_cmd(
+    opts: argparse.Namespace,
+    run_opts: envconfig.ResolvedRunOptions,
+    env_spec: envconfig.EnvironmentSpec,
+    casaroot: str,
+    casarun: str,
+    site_cfg: dict[str, Any],
+) -> int:
+    """Execute an inline Python command string under the managed CASA environment."""
+    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    working_path.mkdir(parents=True, exist_ok=True)
+
+    now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_name = f"{working_path}/calibpipe.cmd.{now_ts}"
+    mylog = RunLogger(log_name, print_flag=True)
+
+    if run_opts.use_custom_rcdir:
+        rcdir = working_path / ".casa"
+        rcdir.mkdir(parents=True, exist_ok=True)
+        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_startup(rcdir)
+        if env_spec.is_pixi:
+            rcdir_args = [
+                "--cachedir", str(rcdir),
+                "--configfile", str(rcdir / "config.py"),
+                "--startupfile", str(rcdir / "startup.py"),
+            ]
+        else:
+            rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
+        casarun = f"{casarun} " + " ".join(rcdir_args)
+        mylog.log(f"created isolated CASA rcdir at {rcdir}")
+
+    if env_spec.is_pixi:
+        casa_logfile = working_path / f"casa-{now_ts}.log"
+        casarun = f"{casarun} --logfile {casa_logfile}"
+
+    if run_opts.log2term:
+        casarun = f"{casarun} --log2term"
+
+    cmd_file = (working_path / "casa_cmd.py").resolve()
+    resolved_workdir = str(working_path.resolve())
+    code = f"import os\nos.chdir(r'{resolved_workdir}')\n{opts.cmd}\n"
+    cmd_file.write_text(code, encoding="utf-8")
+    cmd = f"xvfb-run -d {casarun} -c {cmd_file}"
+
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(working_path)
+        if run_opts.verbose:
+            retcode = mylog.run(cmd)
+        else:
+            retcode = mylog.runquiet(cmd)
+    finally:
+        os.chdir(orig_cwd)
+        mylog.close()
+
+    return retcode
+
+
+def _run_interactive(
+    opts: argparse.Namespace,
+    run_opts: envconfig.ResolvedRunOptions,
+    env_spec: envconfig.EnvironmentSpec,
+    casaroot: str,
+    casarun: str,
+    site_cfg: dict[str, Any],
+) -> int:
+    """Launch an interactive CASA session under the resolved environment."""
+    working_path = Path(opts.workdir).resolve() if opts.workdir else Path.cwd()
+    working_path.mkdir(parents=True, exist_ok=True)
+
+    if run_opts.use_custom_rcdir:
+        rcdir = working_path / ".casa"
+        rcdir.mkdir(parents=True, exist_ok=True)
+        write_casa_config(rcdir, site_cfg, log2term=run_opts.log2term)
+        write_casa_startup(rcdir)
+        if env_spec.is_pixi:
+            rcdir_args = [
+                "--cachedir", str(rcdir),
+                "--configfile", str(rcdir / "config.py"),
+                "--startupfile", str(rcdir / "startup.py"),
+            ]
+        else:
+            rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
+        casarun = f"{casarun} " + " ".join(rcdir_args)
+
+    orig_cwd = os.getcwd()
+    try:
+        os.chdir(working_path)
+        return subprocess.call(casarun, shell=True)
+    finally:
+        os.chdir(orig_cwd)
+
+
+def main(custom_argv: Sequence[str] | None = None) -> None:
+    """Execute a single pipeline run from command-line arguments.
+
+    Args:
+        custom_argv: Optional argument sequence. When omitted, the legacy
+            module-level `argv` wrapper is used for compatibility.
+    """
+    args_list = custom_argv if custom_argv is not None else argv[1:]
+    parser = build_parser()
+    if not args_list:
+        parser.print_help()
+        sys.exit(0)
+
+    # Support both standard flags and legacy positional mous argument
+    # If no target flags are passed, treat the first bare argument as --mous
+    has_target_flag = any(
+        arg.startswith(
+            (
+                "--vis",
+                "--script",
+                "--cmd",
+                "--interactive",
+                "-i",
+                "--PPR",
+                "--ppr",
+                "--mous",
+            )
+        )
+        for arg in args_list
+    )
+    filtered_args = []
+    for a in args_list:
+        if (
+            a
+            and not a.startswith("-")
+            and not has_target_flag
+            and not any(x.startswith("--mous") for x in filtered_args)
+        ):
+            filtered_args.append(f"--mous={a}")
+        else:
+            filtered_args.append(a)
+
+    opts = parser.parse_args(filtered_args)
+
+    targets = []
+    if opts.mous:
+        targets.append(f"--mous={opts.mous}")
+    if opts.vis:
+        targets.append(f"--vis={' '.join(opts.vis)}")
+    if opts.script:
+        targets.append(f"--script={opts.script}")
+    if opts.cmd:
+        targets.append(f"--cmd={opts.cmd}")
+    if opts.interactive:
+        targets.append("-i/--interactive")
+    if opts.ppr and not opts.mous:
+        targets.append(f"--PPR={opts.ppr}")
+
+    if len(targets) > 1:
+        print(
+            f"ERROR: Conflicting execution targets specified: {', '.join(targets)}. "
+            "Please specify only one target.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not targets and not opts.print_env:
+        print(
+            "ERROR: No execution target specified. Provide --mous, --vis, --script, "
+            "--cmd, --PPR, or -i/--interactive.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Load configuration
+    try:
+        cfg = envconfig.load_merged_config(
+            cli_arg=opts.config,
+            include_site=not getattr(opts, "no_site_config", False),
+        )
+    except envconfig.ConfigError as e:
+        print(f"Configuration error: {e}")
+        sys.exit(1)
+
+    run_opts = envconfig.resolve_run_options(cfg, opts)
+    env_spec = envconfig.resolve_env(cfg, run_opts.env_name)
+    env = envconfig.build_environment(cfg, env_spec, subdir=run_opts.subdir)
+
+    # Update os.environ in process so subprocesses inherit it
+    for k, v in env.items():
+        os.environ[k] = v
+
+    # Isolate CASA from foreign virtualenv (e.g. from `uv run` or activated venv)
+    # to prevent IPython UserWarning and cross-environment sys.path pollution
+    os.environ.pop("VIRTUAL_ENV", None)
+
+    if opts.print_env:
+        print(envconfig.format_shell_exports(env, export=False))
+        return
+
+    site_cfg = cfg.get("site", {})
+    casarun, casaroot = build_casarun_prefix(run_opts, env_spec, env, site_cfg)
+
+    if opts.mous:
+        retcode = _run_mous(opts, run_opts, env_spec, env, casaroot, casarun, site_cfg)
+    elif opts.vis:
+        retcode = _run_recipe_reducer(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+    elif opts.ppr and not opts.mous:
+        retcode = _run_standalone_ppr(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+    elif opts.script:
+        retcode = _run_script(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+    elif opts.cmd:
+        retcode = _run_cmd(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+    elif opts.interactive:
+        retcode = _run_interactive(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+    else:
+        retcode = 0
+
     if retcode != 0:
         sys.exit(retcode)
 
 
 if __name__ == "__main__":
     main()
+

@@ -311,6 +311,14 @@ class ResolvedRunOptions:
     onlysemipass: str = ""
     verbose: bool = False
 
+    vis: list[str] = field(default_factory=list)
+    procedure: str = ""
+    script: str = ""
+    cmd: str = ""
+    vla: bool = False
+    workdir: str = ""
+    interactive: bool = False
+
 
 def resolve_run_options(
     config: CalibpipeConfig | dict[str, Any],
@@ -350,7 +358,7 @@ def resolve_run_options(
     env_name = getattr(cli_opts, "env", None) or cfg.default_env
 
     return ResolvedRunOptions(
-        mous=getattr(cli_opts, "mous", ""),
+        mous=getattr(cli_opts, "mous", "") or "",
         env_name=env_name,
         recipe=recipe,
         ncores=int(ncores),
@@ -362,8 +370,15 @@ def resolve_run_options(
         flag_dir=getattr(cli_opts, "flag", None),
         ppr=getattr(cli_opts, "ppr", None),
         subdir=getattr(cli_opts, "subdir", None),
-        onlysemipass=getattr(cli_opts, "onlysemipass", ""),
+        onlysemipass=getattr(cli_opts, "onlysemipass", "") or "",
         verbose=bool(getattr(cli_opts, "verbose", False)),
+        vis=list(getattr(cli_opts, "vis", []) or []),
+        procedure=getattr(cli_opts, "procedure", "") or "",
+        script=getattr(cli_opts, "script", "") or "",
+        cmd=getattr(cli_opts, "cmd", "") or "",
+        vla=bool(getattr(cli_opts, "vla", False)),
+        workdir=getattr(cli_opts, "workdir", "") or "",
+        interactive=bool(getattr(cli_opts, "interactive", False)),
     )
 
 

@@ -339,18 +339,70 @@ flowchart TD
 
 `calibpipe` provides one CLI with three primary workflows.
 
-### 1. Run a Single MOUS
+### 1. Execute a Pipeline Run (`calibpipe run`)
+
+`calibpipe run` supports multiple execution targets for validation, testing, and offline development:
+
+#### A. Standard ALMA MOUS (PMR Mode)
 
 ```bash
 calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
 ```
 
-This resolves the selected environment, stages the run inputs, and launches the underlying pipeline execution.
+Resolves metadata via `pipelineMakeRequest` (PMR), stages flags/WVR, and executes `executeppr` in an isolated project tree.
 
-The legacy script wrapper still works:
+The legacy script wrapper also remains supported:
 
 ```bash
 ./scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
+```
+
+#### B. Direct Recipe Reduction (Offline Dataset Mode)
+
+Run pipeline recipes directly against local MeasurementSets or ASDMs without querying external metadata services or PMR:
+
+```bash
+calibpipe run --vis /data/test.ms --procedure procedure_hifa_calimage.xml --env=main
+```
+
+Invokes `pipeline.recipereducer.reduce(vis=[...], procedure=...)` directly inside the specified `--workdir` (or current directory).
+
+#### C. Standalone PPR Execution (ALMA or VLA)
+
+Execute pre-generated pipeline processing requests directly:
+
+```bash
+# ALMA PPR
+calibpipe run --PPR /data/PPR.xml --env=main
+
+# VLA PPR
+calibpipe run --PPR /data/PPR.xml --vla --env=main
+```
+
+Invokes `executeppr` (ALMA) or `executevlappr` (VLA) directly without requiring the full PMR directory layout.
+
+#### D. Custom Script Execution
+
+Execute a standalone Python/CASA script inside the managed CASA environment and isolated `.casa` runtime directory:
+
+```bash
+calibpipe run --script scripts/benchmark.py --env=main
+```
+
+#### E. Inline Command & In-CASA Testing
+
+Execute Python code directly inside CASA (ideal for running pytest suites within the CASA interpreter):
+
+```bash
+calibpipe run --cmd "import pytest; pytest.main(['-vv', 'tests/regression/test_fast.py'])" --env=main
+```
+
+#### F. Interactive CASA Session
+
+Launch an interactive CASA shell with all environment variables, paths, and custom configuration pre-loaded:
+
+```bash
+calibpipe run -i --env=main
 ```
 
 ### 2. Submit a Batch to Slurm
