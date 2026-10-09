@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -67,12 +66,12 @@ class RunbatchCaptureCase(unittest.TestCase):
         calls = []
 
         def fake_run(cmd, check=True, **kwargs):
-            if cmd[0] != "sbatch":
+            if cmd[0] not in ("sbatch", "condor_submit"):
                 return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="fake queue output")
-            sbatch_path = cmd[-1]
-            script_content = Path(sbatch_path).read_text()
-            normalized_cmd = " ".join(_normalize(part, sbatch_path) for part in cmd)
-            calls.append((normalized_cmd, _normalize(script_content, sbatch_path)))
+            sub_path = cmd[-1]
+            script_content = Path(sub_path).read_text()
+            normalized_cmd = " ".join(_normalize(part, sub_path) for part in cmd)
+            calls.append((normalized_cmd, _normalize(script_content, sub_path)))
             return subprocess.CompletedProcess(args=cmd, returncode=0)
 
         tmpdir = tempfile.mkdtemp()
@@ -147,8 +146,61 @@ class TestCliFlags(RunbatchCaptureCase):
         command, script = calls[0]
         self.assert_matches_reference("custom_outfile_errfile_mail_type", command, script)
 
+    def test_custom_partition_flag(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
+            "--partition=test_queue",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, script = calls[0]
+        self.assertIn("#SBATCH --partition=test_queue", script)
+
+    def test_batch_profile_flag(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as tf:
+            tf.write("""
+default_env = "main"
+[paths]
+scipipe_rootdir = "/fake/root/{user}"
+scipipe_logdir = "/fake/logs/{user}"
+[envs.main]
+casa_root = "/fake/casa/main"
+
+[batch]
+queue = "plwg"
+cores = 8
+mem = 248
+
+[batches.debug]
+queue = "debug"
+cores = 4
+mem = 32
+walltime = "01:00:00"
+""")
+            tf_path = tf.name
+
+        try:
+            calls = self.run_and_capture([
+                str(PIPEFILE_ONE_LINE), "--env=main", f"--config={tf_path}",
+                "--profile=debug",
+            ])
+            self.assertEqual(len(calls), 1)
+            _, script = calls[0]
+            self.assertIn("#SBATCH --partition=debug", script)
+            self.assertIn("#SBATCH --ntasks=4", script)
+            self.assertIn("#SBATCH --mem=32G", script)
+            self.assertIn("#SBATCH --time=01:00:00", script)
+            self.assertNotIn("--profile=debug", script)
+        finally:
+            Path(tf_path).unlink(missing_ok=True)
+
 
 class TestErrorPaths(RunbatchCaptureCase):
+    def test_unknown_batch_profile_exits_1(self):
+        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+            self.run_and_capture([str(PIPEFILE_ONE_LINE), f"--config={CONFIG}", "--profile=nonexistent"])
+        self.assertEqual(cm.exception.code, 1)
+
     def test_missing_config_exits_1(self):
         with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
             self.run_and_capture([str(PIPEFILE), "--config=/nonexistent/config.toml"])
@@ -175,7 +227,7 @@ class TestScriptRecord(RunbatchCaptureCase):
     """Verify that a .sbatch record file is written alongside each job's logs."""
 
     def test_record_file_is_created_next_to_out_log(self):
-        calls, tmpdir = self._run_in_tmpdir([
+        _, tmpdir = self._run_in_tmpdir([
             str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
         ])
         try:
@@ -187,7 +239,7 @@ class TestScriptRecord(RunbatchCaptureCase):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_record_file_contains_sbatch_directives(self):
-        calls, tmpdir = self._run_in_tmpdir([
+        _, tmpdir = self._run_in_tmpdir([
             str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
         ])
         try:
@@ -222,8 +274,8 @@ class TestSlurmDirectives(RunbatchCaptureCase):
             "--env=main",
             f"--config={CONFIG}",
             "-t", "12:00:00",
-            "--nodelist=cvpost01",
-            "--chdir=/lustre/work",
+            "--nodelist=node01",
+            "--chdir=/scratch/work",
             "--cpus-per-task=4",
             "--ntasks-per-core=1",
             "--hint=nomultithread",
@@ -232,8 +284,8 @@ class TestSlurmDirectives(RunbatchCaptureCase):
         self.assertEqual(len(calls), 1)
         _, script = calls[0]
         self.assertIn("#SBATCH --time=12:00:00", script)
-        self.assertIn("#SBATCH --nodelist=cvpost01", script)
-        self.assertIn("#SBATCH --chdir=/lustre/work", script)
+        self.assertIn("#SBATCH --nodelist=node01", script)
+        self.assertIn("#SBATCH --chdir=/scratch/work", script)
         self.assertIn("#SBATCH --cpus-per-task=4", script)
         self.assertIn("#SBATCH --ntasks-per-core=1", script)
         self.assertIn("#SBATCH --hint=nomultithread", script)
@@ -279,17 +331,185 @@ class TestSlurmDirectives(RunbatchCaptureCase):
         with patch.object(runbatch.shutil, "which", return_value="/usr/bin/squeue"), \
              patch.object(runbatch.subprocess, "run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=0, stdout="  12345 plwg rxue R ..."
+                args=[], returncode=0, stdout="  12345 plwg testuser R ..."
             )
             buf = io.StringIO()
             with redirect_stdout(buf):
-                runbatch.print_queue("rxue")
+                runbatch.print_queue("testuser")
             mock_run.assert_called_once()
             cmd_args = mock_run.call_args[0][0]
             self.assertEqual(cmd_args[0], "/usr/bin/squeue")
             self.assertIn("--format=%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z", cmd_args[1])
-            self.assertIn("rxue", cmd_args)
-            self.assertIn("12345 plwg rxue R", buf.getvalue())
+            self.assertIn("testuser", cmd_args)
+            self.assertIn("12345 plwg testuser R", buf.getvalue())
+
+
+class TestHTCondorDirectives(RunbatchCaptureCase):
+    """Test HTCondor batch submission and directive generation."""
+
+    def test_htcondor_submit_generates_correct_directives(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--scheduler=htcondor",
+            "-c", "4",
+            "-m", "32",
+            "--partition=plwg",
+        ])
+        self.assertEqual(len(calls), 1)
+        cmd, htc_script = calls[0]
+        self.assertTrue(cmd.startswith("condor_submit "))
+        self.assertIn("requirements = ( ( plwg == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ) )", htc_script)
+        self.assertIn("request_cpus = 4", htc_script)
+        self.assertIn("request_memory = 32G", htc_script)
+        self.assertIn('+partition = "plwg"', htc_script)
+        self.assertIn("getenv = true", htc_script)
+        self.assertIn("periodic_remove = JobStatus == 1 && NumJobStarts > 0", htc_script)
+
+    def test_htcondor_nodelist_adds_target_machine(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--scheduler=htcondor",
+            "--nodelist=node01",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, htc_script = calls[0]
+        self.assertIn('( TARGET.Machine == "node01" )', htc_script)
+
+    def test_htcondor_requirements_override_none(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--scheduler=htcondor",
+            "--requirements=none",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, htc_script = calls[0]
+        self.assertIn("requirements = ( NumJobStarts == 0 )", htc_script)
+        self.assertNotIn("HasLustre", htc_script)
+
+    def test_htcondor_requirements_override_custom(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--scheduler=htcondor",
+            "--requirements=( TARGET.Arch == \"X86_64\" )",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, htc_script = calls[0]
+        self.assertIn("requirements = ( ( TARGET.Arch == \"X86_64\" ) )", htc_script)
+
+    def test_htcondor_mem_per_cpu_scales_by_cores(self):
+        calls = self.run_and_capture([
+            str(PIPEFILE_ONE_LINE),
+            "--env=main",
+            f"--config={CONFIG}",
+            "--scheduler=htcondor",
+            "-c", "4",
+            "--mem-per-cpu=8G",
+        ])
+        self.assertEqual(len(calls), 1)
+        _, htc_script = calls[0]
+        self.assertIn("request_cpus = 4", htc_script)
+        self.assertIn("request_memory = 32G", htc_script)
+
+    def test_print_queue_executes_condor_q(self):
+        with patch.object(runbatch.shutil, "which", return_value="/usr/bin/condor_q"), \
+             patch.object(runbatch.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="  123.0  testuser  RUNNING ..."
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                runbatch.print_queue("testuser", scheduler="htcondor")
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            self.assertEqual(cmd_args, ["/usr/bin/condor_q", "testuser"])
+            self.assertIn("123.0  testuser  RUNNING", buf.getvalue())
+
+
+class TestBatchProfiles(RunbatchCaptureCase):
+    """Test named profile resolution in batch submission."""
+
+    def test_batch_profile_sets_scheduler_and_directives(self):
+        from calibpipe.config import ProfileConfig
+
+        cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+        cfg.profiles["htc_profile"] = ProfileConfig(
+            scheduler="htcondor",
+            cores=12,
+            mem=64,
+            queue="batch",
+        )
+        with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
+            calls = self.run_and_capture([
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--profile=htc_profile",
+            ])
+
+            self.assertEqual(len(calls), 1)
+            cmd, htc_script = calls[0]
+            self.assertTrue(cmd.startswith("condor_submit "))
+            self.assertIn("request_cpus = 12", htc_script)
+            self.assertIn("request_memory = 64G", htc_script)
+            self.assertIn('+partition = "batch"', htc_script)
+
+    def test_profile_direct_submission_without_pipefile(self):
+        from calibpipe.config import ProfileConfig
+
+        cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+        cfg.profiles["test_prof"] = ProfileConfig(
+            cores=4,
+            mem=32,
+            queue="test_partition",
+        )
+        with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
+            calls = self.run_and_capture([
+                f"--config={CONFIG}",
+                "-p", "test_prof",
+            ])
+            self.assertEqual(len(calls), 1)
+            cmd, script = calls[0]
+            self.assertTrue(cmd.startswith("sbatch "))
+            self.assertIn("#SBATCH --partition=test_partition", script)
+            self.assertIn("#SBATCH --ntasks=4", script)
+            self.assertIn("#SBATCH --mem=32G", script)
+            self.assertIn("#SBATCH --job-name=test_prof_", script)
+            self.assertIn("calibpipe run -p=test_prof", script)
+
+    def test_batch_dry_run_skips_submission(self):
+        buf = io.StringIO()
+        tmpdir = tempfile.mkdtemp()
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(tmpdir)
+            with (
+                patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF),
+                patch.object(runbatch.subprocess, "run") as mock_run,
+                patch.object(runbatch.time, "strftime", return_value=FAKE_DATE),
+                patch.dict(runbatch.os.environ, {"USER": FAKE_USER}),
+                patch.object(
+                    sys,
+                    "argv",
+                    ["runbatch.py", str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}", "--dry-run"],
+                ),
+                redirect_stdout(buf),
+            ):
+                runbatch.main()
+                mock_run.assert_not_called()
+                out = buf.getvalue()
+                self.assertIn("[DRY RUN] Would execute: sbatch", out)
+                self.assertIn("script saved →", out)
+        finally:
+            os.chdir(orig_cwd)
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 if __name__ == "__main__":
