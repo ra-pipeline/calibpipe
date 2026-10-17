@@ -67,7 +67,9 @@ class RunbatchCaptureCase(unittest.TestCase):
 
         def fake_run(cmd, check=True, **kwargs):
             if cmd[0] not in ("sbatch", "condor_submit"):
-                return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="fake queue output")
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=0, stdout="fake queue output"
+                )
             sub_path = cmd[-1]
             script_content = Path(sub_path).read_text()
             normalized_cmd = " ".join(_normalize(part, sub_path) for part in cmd)
@@ -78,13 +80,15 @@ class RunbatchCaptureCase(unittest.TestCase):
         orig_cwd = os.getcwd()
         try:
             os.chdir(tmpdir)
-            with patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF), \
-                 patch.object(runbatch.subprocess, "run", side_effect=fake_run), \
-                 patch.object(runbatch.time, "strftime", return_value=FAKE_DATE), \
-                 patch.object(runbatch.time, "sleep", return_value=None), \
-                 patch.dict(runbatch.os.environ, {"USER": FAKE_USER}), \
-                 patch.object(sys, "argv", ["runbatch.py"] + argv), \
-                 redirect_stdout(io.StringIO()):
+            with (
+                patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF),
+                patch.object(runbatch.subprocess, "run", side_effect=fake_run),
+                patch.object(runbatch.time, "strftime", return_value=FAKE_DATE),
+                patch.object(runbatch.time, "sleep", return_value=None),
+                patch.dict(runbatch.os.environ, {"USER": FAKE_USER}),
+                patch.object(sys, "argv", ["runbatch.py"] + argv),
+                redirect_stdout(io.StringIO()),
+            ):
                 runbatch.main()
         finally:
             os.chdir(orig_cwd)
@@ -99,16 +103,26 @@ class RunbatchCaptureCase(unittest.TestCase):
 
     def assert_matches_reference(self, name, command, script):
         reference = _load_reference()
-        self.assertIn(name, reference, f"no reference block named {name!r} in {REFERENCE_FILE}")
-        self.assertEqual(command, reference[name]["command"], f"sbatch command mismatch for {name}")
-        self.assertEqual(script, reference[name]["script"], f"sbatch script mismatch for {name}")
+        self.assertIn(
+            name, reference, f"no reference block named {name!r} in {REFERENCE_FILE}"
+        )
+        self.assertEqual(
+            command, reference[name]["command"], f"sbatch command mismatch for {name}"
+        )
+        self.assertEqual(
+            script, reference[name]["script"], f"sbatch script mismatch for {name}"
+        )
 
 
 class TestBasicPipefile(RunbatchCaptureCase):
     def test_two_real_lines_produce_two_matching_submissions(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE), "--env=main", f"--config={CONFIG}",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE),
+                "--env=main",
+                f"--config={CONFIG}",
+            ]
+        )
         self.assertEqual(len(calls), 2, "comment/blank lines should be skipped")
 
         command0, script0 = calls[0]
@@ -120,43 +134,72 @@ class TestBasicPipefile(RunbatchCaptureCase):
 
 class TestCliFlags(RunbatchCaptureCase):
     def test_custom_cores_mem_and_batch2_queue(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
-            "-c", "4", "-m", "32", "-b",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "-c",
+                "4",
+                "-m",
+                "32",
+                "-b",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         command, script = calls[0]
         self.assert_matches_reference("custom_cores_mem_batch2", command, script)
 
     def test_extra_args_and_different_env_are_forwarded(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE), "--env=pl2025", f"--config={CONFIG}",
-            "--extra-arg=--legacy", "--extra-arg=--noupdate",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=pl2025",
+                f"--config={CONFIG}",
+                "--extra-arg=--legacy",
+                "--extra-arg=--noupdate",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         command, script = calls[0]
         self.assert_matches_reference("extra_args_and_pl2025_env", command, script)
 
     def test_custom_outfile_errfile_and_mail_type(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
-            "-o", "my.out", "-e", "my.err", "-M", "FAIL",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "-o",
+                "my.out",
+                "-e",
+                "my.err",
+                "-M",
+                "FAIL",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         command, script = calls[0]
-        self.assert_matches_reference("custom_outfile_errfile_mail_type", command, script)
+        self.assert_matches_reference(
+            "custom_outfile_errfile_mail_type", command, script
+        )
 
     def test_custom_partition_flag(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
-            "--partition=test_queue",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--partition=test_queue",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, script = calls[0]
         self.assertIn("#SBATCH --partition=test_queue", script)
 
     def test_batch_profile_flag(self):
         import tempfile
+
         with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as tf:
             tf.write("""
 default_env = "main"
@@ -180,10 +223,14 @@ walltime = "01:00:00"
             tf_path = tf.name
 
         try:
-            calls = self.run_and_capture([
-                str(PIPEFILE_ONE_LINE), "--env=main", f"--config={tf_path}",
-                "--profile=debug",
-            ])
+            calls = self.run_and_capture(
+                [
+                    str(PIPEFILE_ONE_LINE),
+                    "--env=main",
+                    f"--config={tf_path}",
+                    "--profile=debug",
+                ]
+            )
             self.assertEqual(len(calls), 1)
             _, script = calls[0]
             self.assertIn("#SBATCH --partition=debug", script)
@@ -198,7 +245,9 @@ walltime = "01:00:00"
 class TestErrorPaths(RunbatchCaptureCase):
     def test_unknown_batch_profile_exits_1(self):
         with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
-            self.run_and_capture([str(PIPEFILE_ONE_LINE), f"--config={CONFIG}", "--profile=nonexistent"])
+            self.run_and_capture(
+                [str(PIPEFILE_ONE_LINE), f"--config={CONFIG}", "--profile=nonexistent"]
+            )
         self.assertEqual(cm.exception.code, 1)
 
     def test_missing_config_exits_1(self):
@@ -217,7 +266,9 @@ class TestErrorPaths(RunbatchCaptureCase):
         self.assertEqual(cm.exception.code, 0)
 
     def test_submit_host_mismatch_aborts_before_any_submission(self):
-        with patch.object(runbatch.subprocess, "getoutput", return_value="some-other-host"):
+        with patch.object(
+            runbatch.subprocess, "getoutput", return_value="some-other-host"
+        ):
             with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
                 self.run_and_capture([str(PIPEFILE), f"--config={CONFIG_SUBMIT_HOST}"])
             self.assertEqual(cm.exception.code, 1)
@@ -227,21 +278,31 @@ class TestScriptRecord(RunbatchCaptureCase):
     """Verify that a .sbatch record file is written alongside each job's logs."""
 
     def test_record_file_is_created_next_to_out_log(self):
-        _, tmpdir = self._run_in_tmpdir([
-            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
-        ])
+        _, tmpdir = self._run_in_tmpdir(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+            ]
+        )
         try:
             # Default outfile is batch.<name>.out; record should be batch.<name>.sbatch
             expected_name = f"batch.X3_X3_{FAKE_DATE}.sbatch"
             record_path = Path(tmpdir) / expected_name
-            self.assertTrue(record_path.exists(), f"Expected record file {expected_name} in tmpdir")
+            self.assertTrue(
+                record_path.exists(), f"Expected record file {expected_name} in tmpdir"
+            )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_record_file_contains_sbatch_directives(self):
-        _, tmpdir = self._run_in_tmpdir([
-            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
-        ])
+        _, tmpdir = self._run_in_tmpdir(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+            ]
+        )
         try:
             expected_name = f"batch.X3_X3_{FAKE_DATE}.sbatch"
             content = (Path(tmpdir) / expected_name).read_text()
@@ -254,10 +315,17 @@ class TestScriptRecord(RunbatchCaptureCase):
 
     def test_record_write_failure_does_not_abort_submission(self):
         """If the record file can't be written, the job is still submitted."""
-        calls, tmpdir = self._run_in_tmpdir([
-            str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}",
-            "-o", "/nonexistent/dir/batch.out", "-e", "/nonexistent/dir/batch.err",
-        ])
+        calls, tmpdir = self._run_in_tmpdir(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "-o",
+                "/nonexistent/dir/batch.out",
+                "-e",
+                "/nonexistent/dir/batch.err",
+            ]
+        )
         try:
             # submission should still have happened despite the bad outfile dir
             self.assertEqual(len(calls), 1)
@@ -269,18 +337,21 @@ class TestSlurmDirectives(RunbatchCaptureCase):
     """Verify that advanced Slurm directives render correctly in submitted scripts."""
 
     def test_advanced_directives_rendered_in_sbatch(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "-t", "12:00:00",
-            "--nodelist=node01",
-            "--chdir=/scratch/work",
-            "--cpus-per-task=4",
-            "--ntasks-per-core=1",
-            "--hint=nomultithread",
-            "--distribution=cyclic:cyclic",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "-t",
+                "12:00:00",
+                "--nodelist=node01",
+                "--chdir=/scratch/work",
+                "--cpus-per-task=4",
+                "--ntasks-per-core=1",
+                "--hint=nomultithread",
+                "--distribution=cyclic:cyclic",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, script = calls[0]
         self.assertIn("#SBATCH --time=12:00:00", script)
@@ -294,42 +365,51 @@ class TestSlurmDirectives(RunbatchCaptureCase):
         self.assertIn("#SBATCH --mem=248G", script)
 
     def test_mem_per_cpu_suppresses_mem(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "--mem-per-cpu=30G",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--mem-per-cpu=30G",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, script = calls[0]
         self.assertIn("#SBATCH --mem-per-cpu=30G", script)
         self.assertNotIn("#SBATCH --mem=", script)
 
     def test_requeue_flag_omits_no_requeue(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "--requeue",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--requeue",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, script = calls[0]
         self.assertNotIn("#SBATCH --no-requeue", script)
 
     def test_mem_and_mem_per_cpu_cli_mutual_exclusion(self):
         with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
-            self.run_and_capture([
-                str(PIPEFILE_ONE_LINE),
-                "--env=main",
-                f"--config={CONFIG}",
-                "-m", "100",
-                "--mem-per-cpu=30G",
-            ])
+            self.run_and_capture(
+                [
+                    str(PIPEFILE_ONE_LINE),
+                    "--env=main",
+                    f"--config={CONFIG}",
+                    "-m",
+                    "100",
+                    "--mem-per-cpu=30G",
+                ]
+            )
         self.assertEqual(cm.exception.code, 2)
 
     def test_print_queue_executes_squeue_with_pcasa_format(self):
-        with patch.object(runbatch.shutil, "which", return_value="/usr/bin/squeue"), \
-             patch.object(runbatch.subprocess, "run") as mock_run:
+        with (
+            patch.object(runbatch.shutil, "which", return_value="/usr/bin/squeue"),
+            patch.object(runbatch.subprocess, "run") as mock_run,
+        ):
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="  12345 plwg testuser R ..."
             )
@@ -339,7 +419,10 @@ class TestSlurmDirectives(RunbatchCaptureCase):
             mock_run.assert_called_once()
             cmd_args = mock_run.call_args[0][0]
             self.assertEqual(cmd_args[0], "/usr/bin/squeue")
-            self.assertIn("--format=%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z", cmd_args[1])
+            self.assertIn(
+                "--format=%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z",
+                cmd_args[1],
+            )
             self.assertIn("testuser", cmd_args)
             self.assertIn("12345 plwg testuser R", buf.getvalue())
 
@@ -348,79 +431,99 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
     """Test HTCondor batch submission and directive generation."""
 
     def test_htcondor_submit_generates_correct_directives(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "--scheduler=htcondor",
-            "-c", "4",
-            "-m", "32",
-            "--partition=plwg",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--scheduler=htcondor",
+                "-c",
+                "4",
+                "-m",
+                "32",
+                "--partition=plwg",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         cmd, htc_script = calls[0]
         self.assertTrue(cmd.startswith("condor_submit "))
-        self.assertIn("requirements = ( ( plwg == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ) )", htc_script)
+        self.assertIn(
+            "requirements = ( ( plwg == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ) )",
+            htc_script,
+        )
         self.assertIn("request_cpus = 4", htc_script)
         self.assertIn("request_memory = 32G", htc_script)
         self.assertIn('+partition = "plwg"', htc_script)
         self.assertIn("getenv = true", htc_script)
-        self.assertIn("periodic_remove = JobStatus == 1 && NumJobStarts > 0", htc_script)
+        self.assertIn(
+            "periodic_remove = JobStatus == 1 && NumJobStarts > 0", htc_script
+        )
 
     def test_htcondor_nodelist_adds_target_machine(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "--scheduler=htcondor",
-            "--nodelist=node01",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--scheduler=htcondor",
+                "--nodelist=node01",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, htc_script = calls[0]
         self.assertIn('( TARGET.Machine == "node01" )', htc_script)
 
     def test_htcondor_requirements_override_none(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "--scheduler=htcondor",
-            "--requirements=none",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--scheduler=htcondor",
+                "--requirements=none",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, htc_script = calls[0]
         self.assertIn("requirements = ( NumJobStarts == 0 )", htc_script)
         self.assertNotIn("HasLustre", htc_script)
 
     def test_htcondor_requirements_override_custom(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "--scheduler=htcondor",
-            "--requirements=( TARGET.Arch == \"X86_64\" )",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--scheduler=htcondor",
+                '--requirements=( TARGET.Arch == "X86_64" )',
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, htc_script = calls[0]
-        self.assertIn("requirements = ( ( TARGET.Arch == \"X86_64\" ) )", htc_script)
+        self.assertIn('requirements = ( ( TARGET.Arch == "X86_64" ) )', htc_script)
 
     def test_htcondor_mem_per_cpu_scales_by_cores(self):
-        calls = self.run_and_capture([
-            str(PIPEFILE_ONE_LINE),
-            "--env=main",
-            f"--config={CONFIG}",
-            "--scheduler=htcondor",
-            "-c", "4",
-            "--mem-per-cpu=8G",
-        ])
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--scheduler=htcondor",
+                "-c",
+                "4",
+                "--mem-per-cpu=8G",
+            ]
+        )
         self.assertEqual(len(calls), 1)
         _, htc_script = calls[0]
         self.assertIn("request_cpus = 4", htc_script)
         self.assertIn("request_memory = 32G", htc_script)
 
     def test_print_queue_executes_condor_q(self):
-        with patch.object(runbatch.shutil, "which", return_value="/usr/bin/condor_q"), \
-             patch.object(runbatch.subprocess, "run") as mock_run:
+        with (
+            patch.object(runbatch.shutil, "which", return_value="/usr/bin/condor_q"),
+            patch.object(runbatch.subprocess, "run") as mock_run,
+        ):
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="  123.0  testuser  RUNNING ..."
             )
@@ -447,12 +550,14 @@ class TestBatchProfiles(RunbatchCaptureCase):
             queue="batch",
         )
         with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
-            calls = self.run_and_capture([
-                str(PIPEFILE_ONE_LINE),
-                "--env=main",
-                f"--config={CONFIG}",
-                "--profile=htc_profile",
-            ])
+            calls = self.run_and_capture(
+                [
+                    str(PIPEFILE_ONE_LINE),
+                    "--env=main",
+                    f"--config={CONFIG}",
+                    "--profile=htc_profile",
+                ]
+            )
 
             self.assertEqual(len(calls), 1)
             cmd, htc_script = calls[0]
@@ -471,10 +576,13 @@ class TestBatchProfiles(RunbatchCaptureCase):
             queue="test_partition",
         )
         with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
-            calls = self.run_and_capture([
-                f"--config={CONFIG}",
-                "-p", "test_prof",
-            ])
+            calls = self.run_and_capture(
+                [
+                    f"--config={CONFIG}",
+                    "-p",
+                    "test_prof",
+                ]
+            )
             self.assertEqual(len(calls), 1)
             cmd, script = calls[0]
             self.assertTrue(cmd.startswith("sbatch "))
@@ -498,7 +606,13 @@ class TestBatchProfiles(RunbatchCaptureCase):
                 patch.object(
                     sys,
                     "argv",
-                    ["runbatch.py", str(PIPEFILE_ONE_LINE), "--env=main", f"--config={CONFIG}", "--dry-run"],
+                    [
+                        "runbatch.py",
+                        str(PIPEFILE_ONE_LINE),
+                        "--env=main",
+                        f"--config={CONFIG}",
+                        "--dry-run",
+                    ],
                 ),
                 redirect_stdout(buf),
             ):
@@ -510,6 +624,125 @@ class TestBatchProfiles(RunbatchCaptureCase):
         finally:
             os.chdir(orig_cwd)
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+class TestBatchLogdir(RunbatchCaptureCase):
+    """Test log directory consolidation for batch jobs."""
+
+    def test_cli_logdir_routes_artifacts_and_exports_batch_env(self):
+        tmp_logdir = tempfile.mkdtemp()
+        try:
+            calls, tmpdir = self._run_in_tmpdir(
+                [
+                    str(PIPEFILE_ONE_LINE),
+                    "--env=main",
+                    f"--config={CONFIG}",
+                    f"--logdir={tmp_logdir}",
+                ]
+            )
+            self.assertEqual(len(calls), 1)
+            _, script = calls[0]
+
+            expected_sbatch = Path(tmp_logdir) / f"batch.X3_X3_{FAKE_DATE}.sbatch"
+            self.assertTrue(
+                expected_sbatch.exists(), f"Expected {expected_sbatch} to exist"
+            )
+
+            # Verify submit dir remained clean
+            submit_dir_sbatch = Path(tmpdir) / f"batch.X3_X3_{FAKE_DATE}.sbatch"
+            self.assertFalse(
+                submit_dir_sbatch.exists(),
+                "Submit dir should not contain .sbatch record",
+            )
+
+            # Directives and exports should point to the consolidated logdir
+            expected_out = str(Path(tmp_logdir) / f"batch.X3_X3_{FAKE_DATE}.out")
+            expected_err = str(Path(tmp_logdir) / f"batch.X3_X3_{FAKE_DATE}.err")
+            self.assertIn(f"#SBATCH --output={expected_out}", script)
+            self.assertIn(f"#SBATCH --error={expected_err}", script)
+            self.assertIn(f"export CALIBPIPE_BATCH_OUTFILE={expected_out}", script)
+            self.assertIn(f"export CALIBPIPE_BATCH_ERRFILE={expected_err}", script)
+            self.assertIn(f"export CALIBPIPE_BATCH_SCRIPT={expected_sbatch}", script)
+        finally:
+            shutil.rmtree(tmp_logdir, ignore_errors=True)
+
+    def test_config_logdir_user_placeholder_expanded(self):
+        tmp_base = tempfile.mkdtemp()
+        cfg_path = Path(tmp_base) / "config.toml"
+        logdir_pattern = f"{tmp_base}/logs/{{user}}"
+        cfg_path.write_text(f"""
+default_env = "main"
+[paths]
+scipipe_logdir = "{logdir_pattern}"
+[envs.main]
+casa_root = "/fake/casa/main"
+""")
+        try:
+            calls, _ = self._run_in_tmpdir(
+                [
+                    str(PIPEFILE_ONE_LINE),
+                    "--env=main",
+                    f"--config={cfg_path}",
+                ]
+            )
+            self.assertEqual(len(calls), 1)
+            _, script = calls[0]
+
+            expected_dir = Path(tmp_base) / "logs" / FAKE_USER
+            expected_sbatch = expected_dir / f"batch.X3_X3_{FAKE_DATE}.sbatch"
+            self.assertTrue(expected_sbatch.exists())
+            self.assertIn(str(expected_dir), script)
+        finally:
+            shutil.rmtree(tmp_base, ignore_errors=True)
+
+    def test_build_script_exports_uv_no_sync_when_uv_in_pipejob(self):
+        from calibpipe.batch import build_htcondor_script, build_sbatch_script
+
+        # 1. Slurm with uv in pipejob
+        slurm_script = build_sbatch_script(
+            "uv run calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_uv_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertIn("export UV_NO_SYNC=1", slurm_script)
+
+        # 2. Slurm without uv in pipejob
+        slurm_script_plain = build_sbatch_script(
+            "/usr/bin/python script.py",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_plain_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertNotIn("export UV_NO_SYNC=1", slurm_script_plain)
+
+        # 3. HTCondor with uv in pipejob
+        _, htc_wrapper = build_htcondor_script(
+            "uv run calibpipe run -p=my_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            job_name="test_htc_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertIn("export UV_NO_SYNC=1", htc_wrapper)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ structured, strongly-typed TOML configuration loading.
 
 from __future__ import annotations
 
+import functools
 import os
 import shlex
 import shutil
@@ -40,6 +41,47 @@ def _list_or_empty(value: Any) -> list[str]:
                 s = str(v).strip()
                 if s and s.lower() not in ("none", "null", "false"):
                     result.append(s)
+        return result
+    return []
+
+
+def _ancillary_list(value: Any) -> list[Any]:
+    """Normalize ancillary configuration into path strings or (source, dest) tuples.
+
+    Supports:
+        - 'path/to/file' (staged with original filename)
+        - ['source/path', 'dest_name'] (staged with custom target name)
+        - ('source/path', 'dest_name') (tuple variant)
+        - {'src': '...', 'dest': '...'} (dictionary variant)
+        - 'source/path:dest_name' (CLI colon variant)
+    """
+    if value is None or value is False:
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or s.lower() in ("none", "null", "false"):
+            return []
+        if ":" in s and not Path(s).exists():
+            src_part, dst_part = s.split(":", 1)
+            return [(src_part.strip(), dst_part.strip())]
+        return [s]
+    if isinstance(value, (list, tuple)):
+        result: list[Any] = []
+        for v in value:
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                result.append((str(v[0]), str(v[1])))
+            elif isinstance(v, dict) and "src" in v and "dest" in v:
+                result.append((str(v["src"]), str(v["dest"])))
+            elif isinstance(v, str):
+                s = v.strip()
+                if s and s.lower() not in ("none", "null", "false"):
+                    if ":" in s and not Path(s).exists():
+                        src_part, dst_part = s.split(":", 1)
+                        result.append((src_part.strip(), dst_part.strip()))
+                    else:
+                        result.append(s)
+            elif v is not None and v is not False:
+                result.append(str(v))
         return result
     return []
 
@@ -162,6 +204,7 @@ class BatchConfig:
     scheduler: str = "slurm"  # Batch scheduler backend: "slurm" or "htcondor"
     requirements: str | None = None  # HTCondor requirements expression override
     dry_run: bool = False  # Simulate batch submission without submitting jobs
+    logdir: str | None = None  # Directory for scheduler log and script output
 
     def __init__(
         self,
@@ -183,6 +226,7 @@ class BatchConfig:
         requirements: str | None = None,
         dry_run: bool = False,
         queue: str | None = None,
+        logdir: str | None = None,
     ) -> None:
         self.partition = queue if queue is not None else partition
         self.cores = cores
@@ -201,6 +245,7 @@ class BatchConfig:
         self.scheduler = scheduler
         self.requirements = requirements
         self.dry_run = dry_run
+        self.logdir = logdir
 
     @property
     def queue(self) -> str:
@@ -211,7 +256,9 @@ class BatchConfig:
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
         default_inst = cls()
         return cls(
-            partition=str(data.get("partition", data.get("queue", default_inst.partition))),
+            partition=str(
+                data.get("partition", data.get("queue", default_inst.partition))
+            ),
             cores=int(data.get("cores", default_inst.cores)),
             mem=int(data.get("mem", default_inst.mem)),
             node=str(data.get("node", default_inst.node)),
@@ -232,6 +279,7 @@ class BatchConfig:
             scheduler=str(data.get("scheduler", default_inst.scheduler)),
             requirements=data.get("requirements", default_inst.requirements),
             dry_run=bool(data.get("dry_run", default_inst.dry_run)),
+            logdir=data.get("logdir", default_inst.logdir),
         )
 
 
@@ -240,11 +288,12 @@ class RunConfig:
     """Driver defaults for single-run execution."""
 
     recipe: str = "calimage"
-    ncores: int = 8
+    nprocs: int = 8
     loglevel: str = "debug"
     useresume: bool = False
     symlink_shortcuts: bool = True
     log2term: bool = False
+    verbose: bool = False
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
     omp_max_threads: int | None = None
@@ -259,24 +308,88 @@ class RunConfig:
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
-    ancillary: list[str] = field(default_factory=list)
+    ancillary: list[Any] = field(default_factory=list)
     datapath: list[str] = field(default_factory=list)
     rundata: list[str] = field(default_factory=list)
     dry_run: bool = False
     autoreload: bool = True
 
+    def __init__(
+        self,
+        recipe: str = "calimage",
+        nprocs: int = 8,
+        loglevel: str = "debug",
+        useresume: bool = False,
+        symlink_shortcuts: bool = True,
+        log2term: bool = False,
+        verbose: bool = False,
+        omp_num_threads: int | None = None,
+        openblas_num_threads: int | None = None,
+        omp_max_threads: int | None = None,
+        mem_frac: float | None = None,
+        oversubscribe: bool = False,
+        bind_to: str | None = None,
+        map_by: str | None = None,
+        psrecord: bool = False,
+        memstats: bool = False,
+        pl_psrecord: bool = False,
+        backup: bool = False,
+        cont_dat: str | None = None,
+        jyperk_csv: str | None = None,
+        parameter_list: str | None = None,
+        ancillary: list[Any] | None = None,
+        datapath: list[str] | None = None,
+        rundata: list[str] | None = None,
+        dry_run: bool = False,
+        autoreload: bool = True,
+        ncores: int | None = None,
+    ) -> None:
+        self.recipe = recipe
+        self.nprocs = ncores if ncores is not None else nprocs
+        self.loglevel = loglevel
+        self.useresume = useresume
+        self.symlink_shortcuts = symlink_shortcuts
+        self.log2term = log2term
+        self.verbose = verbose
+        self.omp_num_threads = omp_num_threads
+        self.openblas_num_threads = openblas_num_threads
+        self.omp_max_threads = omp_max_threads
+        self.mem_frac = mem_frac
+        self.oversubscribe = oversubscribe
+        self.bind_to = bind_to
+        self.map_by = map_by
+        self.psrecord = psrecord
+        self.memstats = memstats
+        self.pl_psrecord = pl_psrecord
+        self.backup = backup
+        self.cont_dat = cont_dat
+        self.jyperk_csv = jyperk_csv
+        self.parameter_list = parameter_list
+        self.ancillary = _ancillary_list(ancillary)
+        self.datapath = list(datapath or [])
+        self.rundata = list(rundata or [])
+        self.dry_run = dry_run
+        self.autoreload = autoreload
+
+    @property
+    def ncores(self) -> int:
+        """Backward-compatible alias for nprocs."""
+        return self.nprocs
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
         default_inst = cls()
+        nprocs_val = data.get("nprocs", data.get("ncores", default_inst.nprocs))
         return cls(
             recipe=str(data.get("recipe", default_inst.recipe)),
-            ncores=int(data.get("ncores", default_inst.ncores)),
+            nprocs=int(nprocs_val),
             loglevel=str(data.get("loglevel", default_inst.loglevel)),
             useresume=bool(data.get("useresume", default_inst.useresume)),
             symlink_shortcuts=bool(
                 data.get("symlink_shortcuts", default_inst.symlink_shortcuts)
             ),
             log2term=bool(data.get("log2term", default_inst.log2term)),
+            verbose=bool(data.get("verbose", default_inst.verbose)),
             omp_num_threads=_int_or_none(data.get("omp_num_threads")),
             openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
             omp_max_threads=_int_or_none(data.get("omp_max_threads")),
@@ -291,7 +404,7 @@ class RunConfig:
             cont_dat=_str_or_none(data.get("cont_dat")),
             jyperk_csv=_str_or_none(data.get("jyperk_csv")),
             parameter_list=_str_or_none(data.get("parameter_list")),
-            ancillary=list(data.get("ancillary", default_inst.ancillary) or []),
+            ancillary=_ancillary_list(data.get("ancillary", default_inst.ancillary)),
             datapath=_list_or_empty(data.get("datapath", default_inst.datapath)),
             rundata=_list_or_empty(data.get("rundata", default_inst.rundata)),
             dry_run=bool(data.get("dry_run", default_inst.dry_run)),
@@ -343,11 +456,12 @@ class ProfileConfig:
 
     # Run options
     recipe: str | None = None
-    ncores: int | None = None
+    nprocs: int | None = None
     loglevel: str | None = None
     useresume: bool | None = None
     symlink_shortcuts: bool | None = None
     log2term: bool | None = None
+    verbose: bool | None = None
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
     omp_max_threads: int | None = None
@@ -362,7 +476,7 @@ class ProfileConfig:
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
-    ancillary: list[str] = field(default_factory=list)
+    ancillary: list[Any] = field(default_factory=list)
     workdir: str | None = None
 
     # Batch options
@@ -374,6 +488,7 @@ class ProfileConfig:
     walltime: str | None = None
     nodelist: str | None = None
     chdir: str | None = None
+    logdir: str | None = None
     cpus_per_task: int | None = None
     mem_per_cpu: str | None = None
     hint: str | None = None
@@ -400,6 +515,10 @@ class ProfileConfig:
     def __init__(self, **kwargs: Any) -> None:
         if "queue" in kwargs and "partition" not in kwargs:
             kwargs["partition"] = kwargs.pop("queue")
+        if "ncores" in kwargs and "nprocs" not in kwargs:
+            kwargs["nprocs"] = kwargs.pop("ncores")
+        if "ancillary" in kwargs:
+            kwargs["ancillary"] = _ancillary_list(kwargs["ancillary"])
         for f in fields(self):
             if f.name in kwargs:
                 setattr(self, f.name, kwargs[f.name])
@@ -412,6 +531,11 @@ class ProfileConfig:
     def queue(self) -> str | None:
         """Backward-compatible alias for partition."""
         return self.partition
+
+    @property
+    def ncores(self) -> int | None:
+        """Backward-compatible alias for nprocs."""
+        return self.nprocs
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProfileConfig:
@@ -426,16 +550,21 @@ class ProfileConfig:
         return cls(
             env=_str_or_none(data.get("env")),
             recipe=_str_or_none(data.get("recipe")),
-            ncores=_int_or_none(data.get("ncores")),
+            nprocs=_int_or_none(data.get("nprocs", data.get("ncores"))),
             loglevel=_str_or_none(data.get("loglevel")),
             useresume=bool(data["useresume"]) if "useresume" in data else None,
-            symlink_shortcuts=bool(data["symlink_shortcuts"]) if "symlink_shortcuts" in data else None,
+            symlink_shortcuts=bool(data["symlink_shortcuts"])
+            if "symlink_shortcuts" in data
+            else None,
             log2term=bool(data["log2term"]) if "log2term" in data else None,
+            verbose=bool(data["verbose"]) if "verbose" in data else None,
             omp_num_threads=_int_or_none(data.get("omp_num_threads")),
             openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
             omp_max_threads=_int_or_none(data.get("omp_max_threads")),
             mem_frac=_float_or_none(data.get("mem_frac")),
-            oversubscribe=bool(data["oversubscribe"]) if "oversubscribe" in data else None,
+            oversubscribe=bool(data["oversubscribe"])
+            if "oversubscribe" in data
+            else None,
             bind_to=_str_or_none(data.get("bind_to")),
             map_by=_str_or_none(data.get("map_by")),
             psrecord=bool(data["psrecord"]) if "psrecord" in data else None,
@@ -445,7 +574,7 @@ class ProfileConfig:
             cont_dat=_str_or_none(data.get("cont_dat")),
             jyperk_csv=_str_or_none(data.get("jyperk_csv")),
             parameter_list=_str_or_none(data.get("parameter_list")),
-            ancillary=list(data.get("ancillary", []) or []),
+            ancillary=_ancillary_list(data.get("ancillary", [])),
             workdir=_str_or_none(data.get("workdir")),
             partition=_str_or_none(data.get("partition", data.get("queue"))),
             cores=_int_or_none(data.get("cores")),
@@ -455,6 +584,7 @@ class ProfileConfig:
             walltime=_str_or_none(data.get("walltime")),
             nodelist=_str_or_none(data.get("nodelist")),
             chdir=_str_or_none(data.get("chdir")),
+            logdir=_str_or_none(data.get("logdir")),
             cpus_per_task=_int_or_none(data.get("cpus_per_task")),
             mem_per_cpu=_str_or_none(data.get("mem_per_cpu")),
             hint=_str_or_none(data.get("hint")),
@@ -507,7 +637,9 @@ class CalibpipeConfig(dict):
         self.batches = batches or {}
         self.run = run or RunConfig()
         self.profiles = profiles or {}
-        self.loaded_layers: list[Path] = [Path(p) for p in loaded_layers] if loaded_layers else []
+        self.loaded_layers: list[Path] = (
+            [Path(p) for p in loaded_layers] if loaded_layers else []
+        )
 
         # Synchronize dictionary keys for backwards compatibility
         self["default_env"] = self.default_env
@@ -559,20 +691,26 @@ class CalibpipeConfig(dict):
             if isinstance(env_data, dict):
                 raw_casa_root = env_data.get("casa_root", "")
                 if raw_casa_root and workspaces:
-                    resolved_casa = resolve_workspace_path(raw_casa_root.rstrip("/"), workspaces)
-                    if resolved_casa.exists():
+                    resolved_casa = resolve_workspace_path(
+                        raw_casa_root.rstrip("/"), workspaces
+                    )
+                    if _safe_exists(resolved_casa):
                         raw_casa_root = str(resolved_casa)
 
                 raw_pixi_dir = env_data.get("pixi_dir")
                 if raw_pixi_dir and workspaces:
-                    resolved_pixi = resolve_workspace_path(raw_pixi_dir.rstrip("/"), workspaces)
-                    if resolved_pixi.exists():
+                    resolved_pixi = resolve_workspace_path(
+                        raw_pixi_dir.rstrip("/"), workspaces
+                    )
+                    if _safe_exists(resolved_pixi):
                         raw_pixi_dir = str(resolved_pixi)
 
                 raw_heuristics = env_data.get("heuristics_dir")
                 if raw_heuristics and workspaces and "{" not in raw_heuristics:
-                    resolved_heur = resolve_workspace_path(raw_heuristics.rstrip("/"), workspaces)
-                    if resolved_heur.exists():
+                    resolved_heur = resolve_workspace_path(
+                        raw_heuristics.rstrip("/"), workspaces
+                    )
+                    if _safe_exists(resolved_heur):
                         raw_heuristics = str(resolved_heur)
 
                 envs[env_name] = EnvSpec(
@@ -618,7 +756,7 @@ class ResolvedRunOptions:
     mous: str = ""
     env_name: str = ""
     recipe: str = ""
-    ncores: int = 8
+    nprocs: int = 8
     loglevel: str = "debug"
     useresume: bool = False
     use_custom_rcdir: bool = True
@@ -657,12 +795,128 @@ class ResolvedRunOptions:
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
-    ancillary: list[str] = field(default_factory=list)
+    ancillary: list[Any] = field(default_factory=list)
     datapath: list[str] = field(default_factory=list)
     rundata: list[str] = field(default_factory=list)
     rundata_specified: bool = False
     dry_run: bool = False
     autoreload: bool = True
+
+    def __init__(
+        self,
+        profile: str | None = None,
+        mous: str = "",
+        env_name: str = "",
+        recipe: str = "",
+        nprocs: int = 8,
+        loglevel: str = "debug",
+        useresume: bool = False,
+        use_custom_rcdir: bool = True,
+        symlink_shortcuts: bool = True,
+        log2term: bool = False,
+        flag_dir: str | None = None,
+        ppr: str | None = None,
+        subdir: str | None = None,
+        onlysemipass: str = "",
+        verbose: bool = False,
+        vis: list[str] | None = None,
+        procedure: str = "",
+        script: str = "",
+        cmd: str = "",
+        vla: bool = False,
+        workdir: str = "",
+        interactive: bool = False,
+        omp_num_threads: int | None = None,
+        openblas_num_threads: int | None = None,
+        omp_max_threads: int | None = None,
+        mem_frac: float | None = None,
+        oversubscribe: bool = False,
+        bind_to: str | None = None,
+        map_by: str | None = None,
+        psrecord: bool = False,
+        memstats: bool = False,
+        pl_psrecord: bool = False,
+        backup: bool = False,
+        cont_dat: str | None = None,
+        jyperk_csv: str | None = None,
+        parameter_list: str | None = None,
+        ancillary: list[Any] | None = None,
+        datapath: list[str] | None = None,
+        rundata: list[str] | None = None,
+        rundata_specified: bool = False,
+        dry_run: bool = False,
+        autoreload: bool = True,
+        ncores: int | None = None,
+    ) -> None:
+        self.profile = profile
+        self.mous = mous
+        self.env_name = env_name
+        self.recipe = recipe
+        self.nprocs = ncores if ncores is not None else nprocs
+        self.loglevel = loglevel
+        self.useresume = useresume
+        self.use_custom_rcdir = use_custom_rcdir
+        self.symlink_shortcuts = symlink_shortcuts
+        self.log2term = log2term
+        self.flag_dir = flag_dir
+        self.ppr = ppr
+        self.subdir = subdir
+        self.onlysemipass = onlysemipass
+        self.verbose = verbose
+        self.vis = list(vis or [])
+        self.procedure = procedure
+        self.script = script
+        self.cmd = cmd
+        self.vla = vla
+        self.workdir = workdir
+        self.interactive = interactive
+        self.omp_num_threads = omp_num_threads
+        self.openblas_num_threads = openblas_num_threads
+        self.omp_max_threads = omp_max_threads
+        self.mem_frac = mem_frac
+        self.oversubscribe = oversubscribe
+        self.bind_to = bind_to
+        self.map_by = map_by
+        self.psrecord = psrecord
+        self.memstats = memstats
+        self.pl_psrecord = pl_psrecord
+        self.backup = backup
+        self.cont_dat = cont_dat
+        self.jyperk_csv = jyperk_csv
+        self.parameter_list = parameter_list
+        self.ancillary = _ancillary_list(ancillary)
+        self.datapath = list(datapath or [])
+        self.rundata = list(rundata or [])
+        self.rundata_specified = rundata_specified
+        self.dry_run = dry_run
+        self.autoreload = autoreload
+
+    @property
+    def ncores(self) -> int:
+        """Backward-compatible alias for nprocs."""
+        return self.nprocs
+
+
+def _safe_exists(path: Path) -> bool:
+    """Check if path exists without raising OSError on permission errors or broken mounts."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _safe_is_dir(path: Path) -> bool:
+    """Check if path is a directory without raising OSError on permission errors or broken mounts."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_is_dir(path_str: str) -> bool:
+    """Cached directory check to minimize repeated stat calls on network filesystems."""
+    return _safe_is_dir(Path(path_str))
 
 
 def resolve_workspace_path(
@@ -686,15 +940,20 @@ def resolve_workspace_path(
     if not path_str:
         return Path("")
     p = Path(path_str).expanduser()
-    if p.exists() or p.is_absolute():
+    if p.is_absolute() or _safe_exists(p):
         return p
     for ws in workspaces:
         if not ws:
             continue
         ws_path = Path(ws).expanduser()
+        if not _cached_is_dir(str(ws_path)):
+            continue
         candidate = ws_path / p
-        if candidate.exists():
-            return candidate.resolve()
+        if _safe_exists(candidate):
+            try:
+                return candidate.resolve()
+            except OSError:
+                return candidate
     return p
 
 
@@ -739,12 +998,31 @@ def resolve_run_options(
 
     symlink_shortcuts = _val("symlink_shortcuts", cfg.run.symlink_shortcuts)
     log2term = _val("log2term", cfg.run.log2term or cfg.site.log2term)
+    verbose = _val("verbose", cfg.run.verbose)
     recipe = _val("recipe", cfg.run.recipe)
-    ncores = _val("ncores", cfg.run.ncores)
+    cli_nprocs = (
+        getattr(cli_opts, "nprocs", None)
+        if getattr(cli_opts, "nprocs", None) is not None
+        else getattr(cli_opts, "ncores", None)
+    )
+    prof_nprocs = profile.nprocs if profile else None
+    nprocs = (
+        cli_nprocs
+        if cli_nprocs is not None
+        else (prof_nprocs if prof_nprocs is not None else cfg.run.nprocs)
+    )
     loglevel = _val("loglevel", cfg.run.loglevel)
     useresume = _val("useresume", cfg.run.useresume)
-    env_name = getattr(cli_opts, "env", None) or (profile.env if profile and profile.env else None) or cfg.default_env
-    workdir = getattr(cli_opts, "workdir", "") or (profile.workdir if profile and profile.workdir else "") or ""
+    env_name = (
+        getattr(cli_opts, "env", None)
+        or (profile.env if profile and profile.env else None)
+        or cfg.default_env
+    )
+    workdir = (
+        getattr(cli_opts, "workdir", "")
+        or (profile.workdir if profile and profile.workdir else "")
+        or ""
+    )
 
     omp_num_threads = _val("omp_num_threads", cfg.run.omp_num_threads)
     openblas_num_threads = _val("openblas_num_threads", cfg.run.openblas_num_threads)
@@ -760,7 +1038,7 @@ def resolve_run_options(
     cont_dat = _val("cont_dat", cfg.run.cont_dat)
     jyperk_csv = _val("jyperk_csv", cfg.run.jyperk_csv)
     parameter_list = _val("parameter_list", cfg.run.parameter_list)
-    ancillary = _val("ancillary", cfg.run.ancillary)
+    ancillary = _ancillary_list(_val("ancillary", cfg.run.ancillary))
 
     # Execution target resolution: CLI flags > profile targets > default empty
     cli_mous = getattr(cli_opts, "mous", "") or ""
@@ -812,7 +1090,9 @@ def resolve_run_options(
         script = profile.script or ""
         cmd = profile.cmd or ""
         ppr = profile.ppr
-        interactive = bool(profile.interactive) if profile.interactive is not None else False
+        interactive = (
+            bool(profile.interactive) if profile.interactive is not None else False
+        )
     else:
         mous = ""
         vis = []
@@ -885,57 +1165,109 @@ def resolve_run_options(
     # Dynamic workspace search path resolution
     workspaces = cfg.paths.workspaces
     if workspaces:
+        accessible_workspaces = [
+            ws for ws in workspaces if ws and _cached_is_dir(str(Path(ws).expanduser()))
+        ]
+        search_workspaces = (
+            accessible_workspaces if accessible_workspaces else list(workspaces)
+        )
+        preferred_ws: str | None = None
+
+        def _resolve_one(item: str | Path) -> Path:
+            nonlocal preferred_ws
+            ordered = (
+                [preferred_ws] + [w for w in search_workspaces if w != preferred_ws]
+                if preferred_ws
+                else search_workspaces
+            )
+            res = resolve_workspace_path(item, ordered)
+            if not preferred_ws and res != Path(item):
+                res_str = str(res)
+                for ws in search_workspaces:
+                    if res_str.startswith(str(Path(ws).expanduser())):
+                        preferred_ws = ws
+                        break
+            return res
+
         if vis:
-            vis = [str(resolve_workspace_path(v, workspaces)) for v in vis]
+            vis = [str(_resolve_one(v)) for v in vis]
         if procedure:
-            procedure = str(resolve_workspace_path(procedure, workspaces))
+            procedure = str(_resolve_one(procedure))
         if script:
-            script = str(resolve_workspace_path(script, workspaces))
+            script = str(_resolve_one(script))
         if ppr:
-            ppr = str(resolve_workspace_path(ppr, workspaces))
+            ppr = str(_resolve_one(ppr))
         if cont_dat:
-            cont_dat = str(resolve_workspace_path(cont_dat, workspaces))
+            cont_dat = str(_resolve_one(cont_dat))
         if jyperk_csv:
-            jyperk_csv = str(resolve_workspace_path(jyperk_csv, workspaces))
+            jyperk_csv = str(_resolve_one(jyperk_csv))
         if parameter_list:
-            parameter_list = str(resolve_workspace_path(parameter_list, workspaces))
+            parameter_list = str(_resolve_one(parameter_list))
         if ancillary:
-            ancillary = [str(resolve_workspace_path(a, workspaces)) for a in ancillary]
+            resolved_anc: list[Any] = []
+            for a in ancillary:
+                if isinstance(a, (list, tuple)) and len(a) == 2:
+                    src_resolved = str(_resolve_one(a[0]))
+                    resolved_anc.append((src_resolved, str(a[1])))
+                elif isinstance(a, dict) and "src" in a and "dest" in a:
+                    src_resolved = str(_resolve_one(a["src"]))
+                    resolved_anc.append((src_resolved, str(a["dest"])))
+                elif isinstance(a, str) and ":" in a and not Path(a).exists():
+                    src_part, dst_part = a.split(":", 1)
+                    src_resolved = str(_resolve_one(src_part))
+                    resolved_anc.append((src_resolved, str(dst_part)))
+                else:
+                    resolved_anc.append(str(_resolve_one(a)))
+            ancillary = resolved_anc
         if resolved_datapath:
-            resolved_datapath = [str(resolve_workspace_path(d, workspaces)) for d in resolved_datapath]
+            resolved_datapath = [str(_resolve_one(d)) for d in resolved_datapath]
         if resolved_rundata:
-            resolved_rundata = [str(resolve_workspace_path(r, workspaces)) for r in resolved_rundata]
+            resolved_rundata = [str(_resolve_one(r)) for r in resolved_rundata]
 
     if resolved_datapath:
         resolved_datapath = [
-            str(Path(p).expanduser().resolve()) if Path(p).expanduser().exists() else str(Path(p).expanduser())
+            str(Path(p).expanduser().resolve())
+            if _safe_exists(Path(p).expanduser())
+            else str(Path(p).expanduser())
             for p in resolved_datapath
         ]
     if resolved_rundata:
         resolved_rundata = [
-            str(Path(p).expanduser().resolve()) if Path(p).expanduser().exists() else str(Path(p).expanduser())
+            str(Path(p).expanduser().resolve())
+            if _safe_exists(Path(p).expanduser())
+            else str(Path(p).expanduser())
             for p in resolved_rundata
         ]
 
     if workdir:
         workdir_search = []
-        if cfg.paths.scipipe_rootdir:
-            workdir_search.append(cfg.paths.scipipe_rootdir)
+        user_name = os.environ.get("USER", "")
+        root_dir = (
+            Path(cfg.paths.scipipe_rootdir.replace("{user}", user_name)).expanduser()
+            if cfg.paths.scipipe_rootdir
+            else None
+        )
+        if root_dir is not None:
+            workdir_search.append(str(root_dir))
         if workspaces:
             workdir_search.extend(workspaces)
         if workdir_search:
             resolved_wd = resolve_workspace_path(workdir, workdir_search)
-            if resolved_wd.exists():
+            if _safe_exists(resolved_wd):
                 workdir = str(resolved_wd)
-            elif cfg.paths.scipipe_rootdir and not Path(workdir).is_absolute() and not workdir.startswith("~"):
-                workdir = str(Path(cfg.paths.scipipe_rootdir).expanduser() / workdir)
+            elif (
+                root_dir is not None
+                and not Path(workdir).is_absolute()
+                and not workdir.startswith("~")
+            ):
+                workdir = str(root_dir / workdir)
 
     return ResolvedRunOptions(
         profile=profile_name,
         mous=mous,
         env_name=env_name,
         recipe=recipe,
-        ncores=int(ncores),
+        nprocs=int(nprocs),
         loglevel=loglevel,
         useresume=bool(useresume),
         use_custom_rcdir=use_custom_rcdir,
@@ -945,7 +1277,7 @@ def resolve_run_options(
         ppr=ppr,
         subdir=getattr(cli_opts, "subdir", None),
         onlysemipass=getattr(cli_opts, "onlysemipass", "") or "",
-        verbose=bool(getattr(cli_opts, "verbose", False)),
+        verbose=bool(verbose),
         vis=vis,
         procedure=procedure,
         script=script,
@@ -954,7 +1286,9 @@ def resolve_run_options(
         workdir=workdir,
         interactive=interactive,
         omp_num_threads=int(omp_num_threads) if omp_num_threads is not None else None,
-        openblas_num_threads=int(openblas_num_threads) if openblas_num_threads is not None else None,
+        openblas_num_threads=int(openblas_num_threads)
+        if openblas_num_threads is not None
+        else None,
         omp_max_threads=int(omp_max_threads) if omp_max_threads is not None else None,
         mem_frac=float(mem_frac) if mem_frac is not None else None,
         oversubscribe=bool(oversubscribe),
@@ -1004,6 +1338,7 @@ class ResolvedBatchOptions:
     requirements: str | None = None
     profile: str | None = None
     dry_run: bool = False
+    logdir: str | None = None
 
     @property
     def queue(self) -> str:
@@ -1039,8 +1374,8 @@ def resolve_batch_options(
                 for k, v in asdict(profile).items()
                 if v is not None and hasattr(cfg.batch, k)
             }
-            if "cores" not in prof_dict and profile.ncores is not None:
-                prof_dict["cores"] = profile.ncores
+            if "cores" not in prof_dict and profile.nprocs is not None:
+                prof_dict["cores"] = profile.nprocs
             if "partition" not in prof_dict and profile.partition is not None:
                 prof_dict["partition"] = profile.partition
             merged_dict = asdict(cfg.batch)
@@ -1058,7 +1393,9 @@ def resolve_batch_options(
         or cfg.default_env
     )
 
-    cli_partition = getattr(cli_args, "partition", None) or getattr(cli_args, "queue", None)
+    cli_partition = getattr(cli_args, "partition", None) or getattr(
+        cli_args, "queue", None
+    )
     partition = cli_partition if cli_partition else active_batch.partition
 
     cores = getattr(cli_args, "cores", None)
@@ -1081,7 +1418,9 @@ def resolve_batch_options(
     walltime = _cli_or_cfg("walltime", active_batch.walltime)
     nodelist = _cli_or_cfg("nodelist", active_batch.nodelist)
     chdir = _cli_or_cfg("chdir", active_batch.chdir)
-    cpus_per_task = _int_or_none(_cli_or_cfg("cpus_per_task", active_batch.cpus_per_task))
+    cpus_per_task = _int_or_none(
+        _cli_or_cfg("cpus_per_task", active_batch.cpus_per_task)
+    )
     mem_per_cpu = _cli_or_cfg("mem_per_cpu", active_batch.mem_per_cpu)
     hint = _cli_or_cfg("hint", active_batch.hint)
     ntasks_per_core = _int_or_none(
@@ -1091,12 +1430,19 @@ def resolve_batch_options(
 
     # no_requeue: CLI flag takes precedence; default True (safe default)
     cli_no_requeue = getattr(cli_args, "no_requeue", None)
-    no_requeue = cli_no_requeue if cli_no_requeue is not None else active_batch.no_requeue
+    no_requeue = (
+        cli_no_requeue if cli_no_requeue is not None else active_batch.no_requeue
+    )
 
     cli_dry_run = getattr(cli_args, "dry_run", None)
     dry_run = bool(cli_dry_run if cli_dry_run is not None else active_batch.dry_run)
 
-    requirements = _cli_or_cfg("requirements", getattr(active_batch, "requirements", None))
+    requirements = _cli_or_cfg(
+        "requirements", getattr(active_batch, "requirements", None)
+    )
+    logdir = _cli_or_cfg(
+        "logdir", active_batch.logdir or cfg.paths.scipipe_logdir or None
+    )
 
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
@@ -1122,6 +1468,7 @@ def resolve_batch_options(
         requirements=requirements,
         profile=profile_name,
         dry_run=dry_run,
+        logdir=logdir,
     )
 
 
@@ -1173,7 +1520,9 @@ def find_site_config() -> Path | None:
     if etc_config.is_file():
         return etc_config.resolve()
 
-    repo_site_config = Path(__file__).resolve().parent.parent.parent / "config.site.toml"
+    repo_site_config = (
+        Path(__file__).resolve().parent.parent.parent / "config.site.toml"
+    )
     if repo_site_config.is_file():
         return repo_site_config.resolve()
 
@@ -1297,7 +1646,11 @@ def find_config_layers(
         ConfigError: If an explicit path does not exist, or if no configuration file
             can be found at any layer.
     """
-    no_site_env = os.environ.get("CALIBPIPE_NO_SITE_CONFIG", "").lower() in ("1", "true", "yes")
+    no_site_env = os.environ.get("CALIBPIPE_NO_SITE_CONFIG", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     should_include_site = include_site and not no_site_env
 
     layers: list[Path] = []
@@ -1333,7 +1686,9 @@ def find_config_layers(
 
         # Fallback to repo root config.toml if no user or project config was found
         if not user_cfgs and not proj_cfg:
-            repo_root_config = Path(__file__).resolve().parent.parent.parent / "config.toml"
+            repo_root_config = (
+                Path(__file__).resolve().parent.parent.parent / "config.toml"
+            )
             if repo_root_config.is_file():
                 layers.append(repo_root_config.resolve())
             else:
@@ -1608,11 +1963,13 @@ def format_config_overview(
         for b_name in sorted(cfg.batches.keys()):
             b_cfg = cfg.batches[b_name]
             mem_display = (
-                f"{b_cfg.mem_per_cpu}/CPU"
-                if b_cfg.mem_per_cpu
-                else f"{b_cfg.mem} GB"
+                f"{b_cfg.mem_per_cpu}/CPU" if b_cfg.mem_per_cpu else f"{b_cfg.mem} GB"
             )
-            details = [f"partition={b_cfg.partition}", f"cores={b_cfg.cores}", f"mem={mem_display}"]
+            details = [
+                f"partition={b_cfg.partition}",
+                f"cores={b_cfg.cores}",
+                f"mem={mem_display}",
+            ]
             if b_cfg.walltime:
                 details.append(f"time={b_cfg.walltime}")
             if b_cfg.nodelist:
@@ -1624,7 +1981,7 @@ def format_config_overview(
             "",
             "Pipeline Run Defaults ([run]):",
             f"  Recipe:          {cfg.run.recipe}",
-            f"  Cores:           {cfg.run.ncores}",
+            f"  Processes:       {cfg.run.nprocs}",
             f"  Log Level:       {cfg.run.loglevel}",
             f"  Use Resume:      {cfg.run.useresume}",
         ]
@@ -1653,8 +2010,8 @@ def format_config_overview(
                 pdetails.append(f"env={p.env}")
             if p.recipe:
                 pdetails.append(f"recipe={p.recipe}")
-            if p.ncores:
-                pdetails.append(f"ncores={p.ncores}")
+            if p.nprocs:
+                pdetails.append(f"nprocs={p.nprocs}")
             if p.scheduler:
                 pdetails.append(f"scheduler={p.scheduler}")
             detail_str = f" ({', '.join(pdetails)})" if pdetails else ""
@@ -1710,8 +2067,8 @@ def format_profile_list(config: CalibpipeConfig | dict[str, Any]) -> str:
 
             if p.env:
                 pdetails.append(f"env={p.env}")
-            if p.ncores:
-                pdetails.append(f"cores={p.ncores}")
+            if p.nprocs:
+                pdetails.append(f"nprocs={p.nprocs}")
             if p.psrecord:
                 pdetails.append("psrecord=True")
             if p.backup:
@@ -1719,7 +2076,9 @@ def format_profile_list(config: CalibpipeConfig | dict[str, Any]) -> str:
             if p.workdir:
                 pdetails.append(f"workdir={p.workdir}")
 
-            detail_str = f"  [{target_str}]".ljust(18) + (f"({', '.join(pdetails)})" if pdetails else "")
+            detail_str = f"  [{target_str}]".ljust(18) + (
+                f"({', '.join(pdetails)})" if pdetails else ""
+            )
             lines.append(f"  {pname:<28} {detail_str}")
 
     lines.append("\nBatch Profiles ([batches.<name>]):")
@@ -1787,7 +2146,9 @@ def format_profile_details(config: CalibpipeConfig | dict[str, Any], name: str) 
     if not found:
         available = sorted(set(cfg.profiles.keys()) | set(cfg.batches.keys()))
         avail_str = ", ".join(available) or "none defined"
-        raise ConfigError(f"Profile '{name}' not found. Available profiles: {avail_str}")
+        raise ConfigError(
+            f"Profile '{name}' not found. Available profiles: {avail_str}"
+        )
 
     lines.append("=" * 80)
     return "\n".join(lines)
@@ -1829,19 +2190,19 @@ def resolve_env(config: dict[str, Any], env_name: str | None = None) -> EnvSpec:
     casa_root = table.get("casa_root", "")
     if casa_root and workspaces:
         resolved_casa = resolve_workspace_path(casa_root.rstrip("/"), workspaces)
-        if resolved_casa.exists():
+        if _safe_exists(resolved_casa):
             casa_root = str(resolved_casa)
 
     pixi_dir = table.get("pixi_dir")
     if pixi_dir and workspaces:
         resolved_pixi = resolve_workspace_path(pixi_dir.rstrip("/"), workspaces)
-        if resolved_pixi.exists():
+        if _safe_exists(resolved_pixi):
             pixi_dir = str(resolved_pixi)
 
     heuristics_dir = table.get("heuristics_dir")
     if heuristics_dir and workspaces and "{" not in heuristics_dir:
         resolved_heur = resolve_workspace_path(heuristics_dir.rstrip("/"), workspaces)
-        if resolved_heur.exists():
+        if _safe_exists(resolved_heur):
             heuristics_dir = str(resolved_heur)
 
     return EnvSpec(
@@ -1928,13 +2289,17 @@ def build_environment(
             heur_raw = spec.heuristics_dir.format(pixi_dir=pixi_dir, branch=branch)
             if workspaces:
                 p = resolve_workspace_path(heur_raw, workspaces)
-                heuristics = str(p.expanduser().resolve() if p.exists() else p.expanduser())
+                heuristics = str(
+                    p.expanduser().resolve() if p.exists() else p.expanduser()
+                )
             else:
                 heuristics = os.path.expanduser(heur_raw)
         else:
             heuristics_root = paths.get("heuristics_root")
             if heuristics_root:
-                heuristics = os.path.expanduser(f"{heuristics_root.rstrip('/')}/{branch}")
+                heuristics = os.path.expanduser(
+                    f"{heuristics_root.rstrip('/')}/{branch}"
+                )
             else:
                 heuristics = pixi_dir
 
@@ -1960,13 +2325,17 @@ def build_environment(
             heur_raw = spec.heuristics_dir.format(casa_root=casa_root, branch=branch)
             if workspaces:
                 p = resolve_workspace_path(heur_raw, workspaces)
-                heuristics = str(p.expanduser().resolve() if p.exists() else p.expanduser())
+                heuristics = str(
+                    p.expanduser().resolve() if p.exists() else p.expanduser()
+                )
             else:
                 heuristics = os.path.expanduser(heur_raw)
         else:
             heuristics_root = paths.get("heuristics_root")
             if heuristics_root:
-                heuristics = os.path.expanduser(f"{heuristics_root.rstrip('/')}/{branch}")
+                heuristics = os.path.expanduser(
+                    f"{heuristics_root.rstrip('/')}/{branch}"
+                )
             else:
                 heuristics = str(Path(__file__).resolve().parent.parent.parent)
 
@@ -1987,7 +2356,7 @@ def build_environment(
             if required:
                 raise ConfigError(f"[paths].{key} is required")
             continue
-        resolved = template.format(user=user)
+        resolved = os.path.expanduser(template.format(user=user))
         if var == "SCIPIPE_ROOTDIR" and subdir:
             resolved = str(Path(resolved) / subdir)
         try:

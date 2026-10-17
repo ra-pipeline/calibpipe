@@ -89,10 +89,14 @@ class RunLogger:
 
     def runquiet(self, command: str) -> int:
         """Run a shell command without streaming stdout line by line."""
-        self.log(f"running '{command}' quietly.")
+        self.log(
+            f"running '{command}' quietly (use -v/--verbose to stream output to terminal)."
+        )
         retcode = subprocess.call(command, shell=True)
         if retcode > 0:
             self.log(f"nonzero exit code = {retcode}")
+        else:
+            self.log("command completed successfully (exit code 0).")
         return retcode
 
     def close(self) -> None:
@@ -182,12 +186,14 @@ def write_ipython_config(
         "c.HistoryManager.enabled = False",
     ]
     if autoreload:
-        lines.extend([
-            "c.InteractiveShellApp.exec_lines = [",
-            "    '%load_ext autoreload',",
-            "    '%autoreload 2',",
-            "]",
-        ])
+        lines.extend(
+            [
+                "c.InteractiveShellApp.exec_lines = [",
+                "    '%load_ext autoreload',",
+                "    '%autoreload 2',",
+                "]",
+            ]
+        )
     ipython_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return ipython_file
 
@@ -254,14 +260,14 @@ def link_weblog(
     work = Path(working_dir).resolve()
     html_dirs = sorted(
         work.glob("pipeline-*/html"),
-        key=lambda p: (p.stat().st_mtime if p.exists() else 0),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
     )
     if not html_dirs:
         products_dir = work.parent / "products"
         if products_dir.is_dir():
             html_dirs = sorted(
                 products_dir.glob("pipeline-*/html"),
-                key=lambda p: (p.stat().st_mtime if p.exists() else 0),
+                key=lambda p: p.stat().st_mtime if p.exists() else 0,
             )
     if not html_dirs:
         return None
@@ -356,6 +362,140 @@ def create_project_symlinks(
     return created
 
 
+def link_batch_job_files_start(
+    working_dir: str | Path,
+    log_fn: Callable[[str], None] | None = None,
+) -> None:
+    """Link live batch logs and copy the batch submission script into the working directory.
+
+    At job startup, this function:
+    1. Detects batch stdout/stderr paths and submission script path from
+       `CALIBPIPE_BATCH_*` environment variables, or falls back to Slurm/HTCondor
+       scheduler variables (e.g. `SLURM_SUBMIT_DIR` and `SLURM_JOB_NAME`).
+    2. Copies the batch submission script (e.g. `*.sbatch`, `*.sh`, `*.htc`) directly
+       into `working_dir` so a static record is preserved.
+    3. Creates live symlinks `working_dir / "batch.out"` and `working_dir / "batch.err"`
+       pointing to the scheduler's active output files so operators can tail logs in real time.
+
+    Args:
+        working_dir: Target working execution directory (e.g. `.../working`).
+        log_fn: Optional logger callable for status messages.
+    """
+
+    def _log(msg: str) -> None:
+        if log_fn:
+            log_fn(msg)
+
+    work = Path(working_dir).resolve()
+    work.mkdir(parents=True, exist_ok=True)
+
+    # 1. Resolve batch output/error/script paths
+    env_out = os.environ.get("CALIBPIPE_BATCH_OUTFILE")
+    env_err = os.environ.get("CALIBPIPE_BATCH_ERRFILE")
+    env_script = os.environ.get("CALIBPIPE_BATCH_SCRIPT")
+
+    submit_dir_str = os.environ.get("SLURM_SUBMIT_DIR") or os.environ.get("SUBMIT_DIR")
+    submit_dir = Path(submit_dir_str).resolve() if submit_dir_str else Path.cwd()
+
+    job_name = os.environ.get("SLURM_JOB_NAME")
+
+    # Fallbacks if environment variables not explicitly set
+    if not env_out and job_name:
+        candidate_out = submit_dir / f"batch.{job_name}.out"
+        if candidate_out.exists():
+            env_out = str(candidate_out)
+    if not env_err and job_name:
+        candidate_err = submit_dir / f"batch.{job_name}.err"
+        if candidate_err.exists():
+            env_err = str(candidate_err)
+    if not env_script and job_name:
+        for suffix in [".sbatch", ".sh", ".htc"]:
+            candidate_script = submit_dir / f"batch.{job_name}{suffix}"
+            if candidate_script.is_file():
+                env_script = str(candidate_script)
+                break
+
+    # 2. Copy submission script into working directory
+    if env_script:
+        script_path = Path(env_script)
+        if not script_path.is_absolute():
+            script_path = (submit_dir / script_path).resolve()
+        if script_path.is_file():
+            dest_script = work / script_path.name
+            try:
+                if script_path.resolve() != dest_script.resolve():
+                    shutil.copy2(script_path, dest_script)
+                    _log(f"saved batch script record → {dest_script.name}")
+            except OSError as exc:
+                _log(f"warning: could not copy batch script {script_path}: {exc}")
+
+    # 3. Create live symlinks for stdout and stderr
+    for env_path_str, link_name in [(env_out, "batch.out"), (env_err, "batch.err")]:
+        if not env_path_str:
+            continue
+        target_path = Path(env_path_str)
+        if not target_path.is_absolute():
+            target_path = (submit_dir / target_path).resolve()
+        symlink_file = work / link_name
+        try:
+            # If target_path is already the destination file, do not unlink it
+            if not symlink_file.is_symlink() and symlink_file.exists():
+                try:
+                    if symlink_file.resolve() == target_path.resolve():
+                        continue
+                except OSError:
+                    pass
+            if symlink_file.is_symlink() or symlink_file.exists():
+                symlink_file.unlink()
+            symlink_file.symlink_to(target_path)
+            _log(f"symlinked live batch log: {link_name} -> {target_path}")
+        except OSError as exc:
+            _log(f"warning: could not symlink {link_name} to {target_path}: {exc}")
+
+
+def finalize_batch_job_logs(
+    working_dir: str | Path,
+    log_fn: Callable[[str], None] | None = None,
+) -> None:
+    """Replace live batch log symlinks in working_dir with finalized file copies.
+
+    At job termination (in `finally:` blocks), this function flushes standard
+    streams and replaces the symlinks `batch.out` and `batch.err` in `working_dir`
+    with standalone file copies so the working directory is completely self-contained.
+
+    Args:
+        working_dir: Target working execution directory.
+        log_fn: Optional logger callable for status messages.
+    """
+
+    def _log(msg: str) -> None:
+        if log_fn:
+            log_fn(msg)
+
+    work = Path(working_dir).resolve()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except OSError:
+        pass
+
+    for log_name in ["batch.out", "batch.err"]:
+        link_path = work / log_name
+        try:
+            if link_path.is_symlink():
+                real_target = link_path.resolve()
+                link_path.unlink()
+                if real_target.is_file():
+                    shutil.copy2(real_target, link_path)
+                    _log(
+                        f"finalized {log_name} (replaced symlink with copy of {real_target})"
+                    )
+                else:
+                    link_path.touch()
+        except OSError as exc:
+            _log(f"warning: could not finalize {log_name}: {exc}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the parser for the `calibpipe run` workflow.
 
@@ -406,10 +546,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--ebwfile", default="", help="File with effective bandwidth information"
     )
     p.add_argument(
+        "-n",
+        "--nprocs",
         "--ncores",
+        dest="nprocs",
         type=int,
         default=None,
-        help="Number of cores (default: from [run].ncores or 8)",
+        help="Number of MPI processes (default: from [run].nprocs or 8)",
     )
     p.add_argument(
         "--loglevel",
@@ -444,7 +587,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--noupdate", action="store_true", default=True, help="Don't update CASA IERS"
     )
     p.add_argument(
-        "--verbose", action="store_true", help="Verbose subprocess output logging"
+        "-v",
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Verbose subprocess output logging (default: from [run].verbose)",
     )
     p.add_argument("--semipass", default="", help="Comma-delimited EB UIDs to process")
     p.add_argument("--onlysemipass", default="", help="Process only the specified EBs")
@@ -685,9 +832,7 @@ def build_piperun_preamble(run_opts: envconfig.ResolvedRunOptions) -> str:
                 f"        casalog.ompSetNumThreads({run_opts.omp_max_threads})"
             )
         if run_opts.mem_frac is not None:
-            preamble_lines.append(
-                f"    casalog.setMemoryFraction({run_opts.mem_frac})"
-            )
+            preamble_lines.append(f"    casalog.setMemoryFraction({run_opts.mem_frac})")
         preamble_lines.append("except Exception as exc:")
         preamble_lines.append(
             "    print(f'Warning: Failed to apply casalog tuning: {exc}')"
@@ -735,7 +880,12 @@ def wrap_cmd(
             plot_file = f"{rec_prefix}.rec.png"
             extra_flags = ["--include-children", "--include-io", "--include-cache"]
             try:
-                help_out = subprocess.run([psrecord_exe, "--help"], capture_output=True, text=True, check=False).stdout
+                help_out = subprocess.run(
+                    [psrecord_exe, "--help"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                ).stdout
                 if "--use-timestamp" in help_out:
                     extra_flags.append("--use-timestamp")
             except Exception:
@@ -789,16 +939,14 @@ def build_casarun_prefix(
 
         if run_opts.interactive:
             casarun = f"{pixi_base} casa --nocrashreport --notelemetry"
-        elif run_opts.ncores > 1:
-            os.environ["CASA_NPROCS"] = str(run_opts.ncores)
+        elif run_opts.nprocs > 1:
+            os.environ["CASA_NPROCS"] = str(run_opts.nprocs)
             casarun = (
-                f"env CASA_NPROCS={run_opts.ncores} {pixi_base} casampi "
+                f"env CASA_NPROCS={run_opts.nprocs} {pixi_base} casampi "
                 "--nocrashreport --notelemetry --nogui --agg --nologger"
             )
         else:
-            casarun = (
-                f"{pixi_base} casa --nocrashreport --notelemetry --nogui --agg --nologger"
-            )
+            casarun = f"{pixi_base} casa --nocrashreport --notelemetry --nogui --agg --nologger"
         casaroot = ""
     else:
         casaroot = env.get("CASA_ROOT", "")
@@ -806,7 +954,7 @@ def build_casarun_prefix(
             casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry"
         else:
             casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry --nogui --agg"
-            if run_opts.ncores > 1:
+            if run_opts.nprocs > 1:
                 mpi_flags: list[str] = []
                 if run_opts.oversubscribe:
                     mpi_flags.append("--oversubscribe")
@@ -816,7 +964,9 @@ def build_casarun_prefix(
                     mpi_flags.append(f"--map-by {run_opts.map_by}")
 
                 extra_mpi = f" {' '.join(mpi_flags)}" if mpi_flags else ""
-                casarun = f"{casaroot}/bin/mpicasa -n {run_opts.ncores}{extra_mpi}  {casarun}"
+                casarun = (
+                    f"{casaroot}/bin/mpicasa -n {run_opts.nprocs}{extra_mpi}  {casarun}"
+                )
 
     return casarun, casaroot
 
@@ -959,7 +1109,9 @@ def _run_mous(
             rcdir,
             site_cfg,
             log2term=run_opts.log2term,
-            casadata=env.get("CASADATA") or os.environ.get("CASADATA") or site_cfg.get("casadata"),
+            casadata=env.get("CASADATA")
+            or os.environ.get("CASADATA")
+            or site_cfg.get("casadata"),
             datapath=run_opts.datapath,
             rundata=run_opts.rundata,
             rundata_specified=run_opts.rundata_specified,
@@ -980,7 +1132,9 @@ def _run_mous(
         log_message(f"created isolated CASA rcdir at {rcdir}")
 
     if env_spec.is_pixi:
-        casa_logfile = working_path / f"casa-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        casa_logfile = (
+            working_path / f"casa-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        )
         casarun = f"{casarun} --logfile {casa_logfile}"
 
     if run_opts.log2term:
@@ -988,6 +1142,7 @@ def _run_mous(
 
     # Prepare working execution directory and fixes script
     working_path.mkdir(parents=True, exist_ok=True)
+    link_batch_job_files_start(working_path, log_message)
     stage_ancillary_files(
         working_path,
         cont_dat=run_opts.cont_dat,
@@ -1102,6 +1257,7 @@ def _run_mous(
         else:
             retcode = mylog.runquiet(cmd)
     finally:
+        finalize_batch_job_logs(working_path, log_message)
         if run_opts.symlink_shortcuts:
             link_weblog(ppmr_dir, working_path, log_message)
         os.chdir(orig_cwd)
@@ -1133,14 +1289,15 @@ def _run_recipe_reducer(
     products_path = project_root / "products"
     rawdata_path = project_root / "rawdata"
 
-    if run_opts.backup and not run_opts.dry_run:
-        for sub_p in (working_path, products_path, rawdata_path):
-            if sub_p.exists() and (sub_p.is_symlink() or any(sub_p.iterdir())):
-                rotate_directory(sub_p)
+    if not run_opts.dry_run:
+        if run_opts.backup:
+            for sub_p in (working_path, products_path, rawdata_path):
+                if sub_p.exists() and (sub_p.is_symlink() or any(sub_p.iterdir())):
+                    rotate_directory(sub_p)
 
-    working_path.mkdir(parents=True, exist_ok=True)
-    products_path.mkdir(parents=True, exist_ok=True)
-    rawdata_path.mkdir(parents=True, exist_ok=True)
+        working_path.mkdir(parents=True, exist_ok=True)
+        products_path.mkdir(parents=True, exist_ok=True)
+        rawdata_path.mkdir(parents=True, exist_ok=True)
 
     procedure = run_opts.procedure or opts.procedure
     if not procedure:
@@ -1183,42 +1340,57 @@ def _run_recipe_reducer(
                     pass
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_name = f"{working_path}/calibpipe.recipe_reduce.{now_ts}"
-    mylog = RunLogger(log_name, print_flag=True)
+    mylog: RunLogger | None = None
+    if not run_opts.dry_run:
+        log_name = f"{working_path}/calibpipe.recipe_reduce.{now_ts}"
+        mylog = RunLogger(log_name, print_flag=True)
+        link_batch_job_files_start(working_path, mylog.log)
+        mylog.log(
+            f"starting recipe_reducer for target: "
+            f"{working_path.parent.name if working_path.name == 'working' else working_path.name}"
+        )
+        mylog.log(f"working directory: {working_path}")
+        mylog.log(f"procedure: {procedure}")
+        mylog.log(f"log file: {mylog.fd.name}")
 
-    stage_ancillary_files(
-        working_path,
-        cont_dat=run_opts.cont_dat,
-        jyperk_csv=run_opts.jyperk_csv,
-        parameter_list=run_opts.parameter_list,
-        ancillary=run_opts.ancillary,
-        recipe=procedure,
-        log_func=mylog.log,
-    )
+        stage_ancillary_files(
+            working_path,
+            cont_dat=run_opts.cont_dat,
+            jyperk_csv=run_opts.jyperk_csv,
+            parameter_list=run_opts.parameter_list,
+            ancillary=run_opts.ancillary,
+            recipe=procedure,
+            log_func=mylog.log,
+        )
 
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
-        rcdir.mkdir(parents=True, exist_ok=True)
-        write_casa_config(
-            rcdir,
-            site_cfg,
-            log2term=run_opts.log2term,
-            casadata=os.environ.get("CASADATA") or site_cfg.get("casadata"),
-            datapath=run_opts.datapath,
-            rundata=run_opts.rundata,
-            rundata_specified=run_opts.rundata_specified,
-        )
-        write_casa_startup(rcdir)
+        if not run_opts.dry_run:
+            rcdir.mkdir(parents=True, exist_ok=True)
+            write_casa_config(
+                rcdir,
+                site_cfg,
+                log2term=run_opts.log2term,
+                casadata=os.environ.get("CASADATA") or site_cfg.get("casadata"),
+                datapath=run_opts.datapath,
+                rundata=run_opts.rundata,
+                rundata_specified=run_opts.rundata_specified,
+            )
+            write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
-                "--cachedir", str(rcdir),
-                "--configfile", str(rcdir / "config.py"),
-                "--startupfile", str(rcdir / "startup.py"),
+                "--cachedir",
+                str(rcdir),
+                "--configfile",
+                str(rcdir / "config.py"),
+                "--startupfile",
+                str(rcdir / "startup.py"),
             ]
         else:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
         casarun = f"{casarun} " + " ".join(rcdir_args)
-        mylog.log(f"created isolated CASA rcdir at {rcdir}")
+        if mylog:
+            mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
     if env_spec.is_pixi:
         casa_logfile = working_path / f"casa-{now_ts}.log"
@@ -1227,8 +1399,8 @@ def _run_recipe_reducer(
     if run_opts.log2term:
         casarun = f"{casarun} --log2term"
 
-    piperun_file = (working_path / "casa_piperun.py").resolve()
-    resolved_workdir = str(working_path.resolve())
+    piperun_file = working_path / "casa_piperun.py"
+    resolved_workdir = str(working_path)
     preamble = build_piperun_preamble(run_opts)
     code = (
         "import os\n"
@@ -1238,13 +1410,14 @@ def _run_recipe_reducer(
         "import pipeline.recipereducer\n"
         f"pipeline.recipereducer.reduce(vis={vis_list!r}, procedure={procedure!r}, loglevel={run_opts.loglevel!r})\n"
     )
-    piperun_file.write_text(code, encoding="utf-8")
+    if not run_opts.dry_run:
+        piperun_file.write_text(code, encoding="utf-8")
     cmd = wrap_cmd(
         f"{casarun} -c {piperun_file}",
         workdir=working_path,
         rec_prefix=f"{working_path}/calibpipe.recipe_reduce.{now_ts}",
         run_opts=run_opts,
-        logger_fn=mylog.log,
+        logger_fn=mylog.log if mylog else None,
     )
 
     if run_opts.dry_run:
@@ -1254,7 +1427,6 @@ def _run_recipe_reducer(
         print(f"[DRY RUN] Vis list: {vis_list}")
         print(f"[DRY RUN] Generated script: {piperun_file}")
         print(f"[DRY RUN] Command to execute:\n    {cmd}")
-        mylog.close()
         return 0
 
     orig_cwd = os.getcwd()
@@ -1265,6 +1437,7 @@ def _run_recipe_reducer(
         else:
             retcode = mylog.runquiet(cmd)
     finally:
+        finalize_batch_job_logs(working_path, mylog.log)
         if run_opts.symlink_shortcuts:
             link_weblog(
                 working_path.parent if working_path.name == "working" else working_path,
@@ -1289,18 +1462,27 @@ def _run_standalone_ppr(
     ppr_str = run_opts.ppr or opts.ppr
     ppr_path = Path(ppr_str).resolve()
     if not ppr_path.is_file():
-        print(f"ERROR: Cannot find the --PPR file {ppr_path}. Does it exist?", file=sys.stderr)
+        print(
+            f"ERROR: Cannot find the --PPR file {ppr_path}. Does it exist?",
+            file=sys.stderr,
+        )
         return 1
 
     working_path = (
         Path(run_opts.workdir).expanduser().resolve()
         if run_opts.workdir
-        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else ppr_path.parent)
+        else (
+            Path(opts.workdir).expanduser().resolve()
+            if opts.workdir
+            else ppr_path.parent
+        )
     )
     if run_opts.backup and working_path.exists() and any(working_path.iterdir()):
         if (run_opts.workdir or opts.workdir) and working_path != ppr_path.parent:
             rotate_directory(working_path)
-        elif (working_path / "working").exists() and any((working_path / "working").iterdir()):
+        elif (working_path / "working").exists() and any(
+            (working_path / "working").iterdir()
+        ):
             rotate_directory(working_path / "working")
 
     working_path.mkdir(parents=True, exist_ok=True)
@@ -1308,6 +1490,7 @@ def _run_standalone_ppr(
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.ppr.{now_ts}"
     mylog = RunLogger(log_name, print_flag=True)
+    link_batch_job_files_start(working_path, mylog.log)
 
     stage_ancillary_files(
         working_path,
@@ -1334,9 +1517,12 @@ def _run_standalone_ppr(
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
-                "--cachedir", str(rcdir),
-                "--configfile", str(rcdir / "config.py"),
-                "--startupfile", str(rcdir / "startup.py"),
+                "--cachedir",
+                str(rcdir),
+                "--configfile",
+                str(rcdir / "config.py"),
+                "--startupfile",
+                str(rcdir / "startup.py"),
             ]
         else:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
@@ -1392,6 +1578,7 @@ def _run_standalone_ppr(
         else:
             retcode = mylog.runquiet(cmd)
     finally:
+        finalize_batch_job_logs(working_path, mylog.log)
         if run_opts.symlink_shortcuts:
             link_weblog(
                 working_path.parent if working_path.name == "working" else working_path,
@@ -1416,7 +1603,10 @@ def _run_script(
     script_str = run_opts.script or opts.script
     script_path = Path(script_str).resolve()
     if not script_path.is_file():
-        print(f"ERROR: Cannot find script file {script_path}. Does it exist?", file=sys.stderr)
+        print(
+            f"ERROR: Cannot find script file {script_path}. Does it exist?",
+            file=sys.stderr,
+        )
         return 1
 
     working_path = (
@@ -1424,7 +1614,12 @@ def _run_script(
         if run_opts.workdir
         else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
     )
-    if run_opts.backup and (run_opts.workdir or opts.workdir) and working_path.exists() and any(working_path.iterdir()):
+    if (
+        run_opts.backup
+        and (run_opts.workdir or opts.workdir)
+        and working_path.exists()
+        and any(working_path.iterdir())
+    ):
         rotate_directory(working_path)
 
     working_path.mkdir(parents=True, exist_ok=True)
@@ -1432,6 +1627,7 @@ def _run_script(
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.script.{now_ts}"
     mylog = RunLogger(log_name, print_flag=True)
+    link_batch_job_files_start(working_path, mylog.log)
 
     stage_ancillary_files(
         working_path,
@@ -1458,9 +1654,12 @@ def _run_script(
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
-                "--cachedir", str(rcdir),
-                "--configfile", str(rcdir / "config.py"),
-                "--startupfile", str(rcdir / "startup.py"),
+                "--cachedir",
+                str(rcdir),
+                "--configfile",
+                str(rcdir / "config.py"),
+                "--startupfile",
+                str(rcdir / "startup.py"),
             ]
         else:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
@@ -1498,6 +1697,7 @@ def _run_script(
         else:
             retcode = mylog.runquiet(cmd)
     finally:
+        finalize_batch_job_logs(working_path, mylog.log)
         os.chdir(orig_cwd)
         mylog.close()
 
@@ -1518,7 +1718,12 @@ def _run_cmd(
         if run_opts.workdir
         else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
     )
-    if run_opts.backup and (run_opts.workdir or opts.workdir) and working_path.exists() and any(working_path.iterdir()):
+    if (
+        run_opts.backup
+        and (run_opts.workdir or opts.workdir)
+        and working_path.exists()
+        and any(working_path.iterdir())
+    ):
         rotate_directory(working_path)
 
     working_path.mkdir(parents=True, exist_ok=True)
@@ -1526,6 +1731,7 @@ def _run_cmd(
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.cmd.{now_ts}"
     mylog = RunLogger(log_name, print_flag=True)
+    link_batch_job_files_start(working_path, mylog.log)
 
     stage_ancillary_files(
         working_path,
@@ -1552,9 +1758,12 @@ def _run_cmd(
         write_casa_startup(rcdir)
         if env_spec.is_pixi:
             rcdir_args = [
-                "--cachedir", str(rcdir),
-                "--configfile", str(rcdir / "config.py"),
-                "--startupfile", str(rcdir / "startup.py"),
+                "--cachedir",
+                str(rcdir),
+                "--configfile",
+                str(rcdir / "config.py"),
+                "--startupfile",
+                str(rcdir / "startup.py"),
             ]
         else:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
@@ -1597,6 +1806,7 @@ def _run_cmd(
         else:
             retcode = mylog.runquiet(cmd)
     finally:
+        finalize_batch_job_logs(working_path, mylog.log)
         os.chdir(orig_cwd)
         mylog.close()
 
@@ -1618,6 +1828,7 @@ def _run_interactive(
         else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
     )
     working_path.mkdir(parents=True, exist_ok=True)
+    link_batch_job_files_start(working_path)
 
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
@@ -1635,9 +1846,12 @@ def _run_interactive(
         write_ipython_config(rcdir, autoreload=run_opts.autoreload)
         if env_spec.is_pixi:
             rcdir_args = [
-                "--cachedir", str(rcdir),
-                "--configfile", str(rcdir / "config.py"),
-                "--startupfile", str(rcdir / "startup.py"),
+                "--cachedir",
+                str(rcdir),
+                "--configfile",
+                str(rcdir / "config.py"),
+                "--startupfile",
+                str(rcdir / "startup.py"),
             ]
         else:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
@@ -1654,6 +1868,7 @@ def _run_interactive(
         os.chdir(working_path)
         return subprocess.call(casarun, shell=True)
     finally:
+        finalize_batch_job_logs(working_path)
         os.chdir(orig_cwd)
 
 
@@ -1782,12 +1997,12 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     # Configure OpenMP and OpenBLAS threading
     if run_opts.omp_num_threads is not None:
         os.environ["OMP_NUM_THREADS"] = str(run_opts.omp_num_threads)
-    elif run_opts.ncores > 1:
+    elif run_opts.nprocs > 1:
         os.environ.setdefault("OMP_NUM_THREADS", "1")
 
     if run_opts.openblas_num_threads is not None:
         os.environ["OPENBLAS_NUM_THREADS"] = str(run_opts.openblas_num_threads)
-    elif run_opts.ncores > 1:
+    elif run_opts.nprocs > 1:
         os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
     if opts.print_env:
@@ -1800,15 +2015,21 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     if run_opts.mous:
         retcode = _run_mous(opts, run_opts, env_spec, env, casaroot, casarun, site_cfg)
     elif run_opts.vis:
-        retcode = _run_recipe_reducer(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+        retcode = _run_recipe_reducer(
+            opts, run_opts, env_spec, casaroot, casarun, site_cfg
+        )
     elif run_opts.ppr and not run_opts.mous:
-        retcode = _run_standalone_ppr(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+        retcode = _run_standalone_ppr(
+            opts, run_opts, env_spec, casaroot, casarun, site_cfg
+        )
     elif run_opts.script:
         retcode = _run_script(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
     elif run_opts.cmd:
         retcode = _run_cmd(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
     elif run_opts.interactive:
-        retcode = _run_interactive(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+        retcode = _run_interactive(
+            opts, run_opts, env_spec, casaroot, casarun, site_cfg
+        )
     else:
         retcode = 0
 
@@ -1818,4 +2039,3 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

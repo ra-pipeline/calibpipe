@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -516,17 +517,28 @@ class TestStagingAndDirectoryRotation(DriverModesTestCase):
         extra_dir = self.tmp / "extra_dir"
         extra_dir.mkdir()
         (extra_dir / "nested.txt").write_text("nested")
+        renamed_src = self.tmp / "test_orig.list"
+        renamed_src.write_text("orig list")
+        dict_src = self.tmp / "dict_orig.txt"
+        dict_src.write_text("dict content")
+        colon_src = self.tmp / "colon_orig.txt"
+        colon_src.write_text("colon content")
 
         staged = stage_ancillary_files(
             workdir,
             cont_dat=cont,
             jyperk_csv=jyperk,
             parameter_list=param,
-            ancillary=[str(extra_dir)],
+            ancillary=[
+                str(extra_dir),
+                [str(renamed_src), "renamed_target.list"],
+                {"src": str(dict_src), "dest": "renamed_from_dict.txt"},
+                f"{colon_src}:renamed_from_colon.txt",
+            ],
             recipe="SEIP_workflow",
         )
 
-        self.assertEqual(len(staged), 4)
+        self.assertEqual(len(staged), 7)
         self.assertTrue((workdir / "cont.dat").is_file())
         self.assertEqual((workdir / "cont.dat").read_text(), "cont ranges")
         self.assertTrue((workdir / "jyperk.csv").is_file())
@@ -536,6 +548,12 @@ class TestStagingAndDirectoryRotation(DriverModesTestCase):
         self.assertEqual((workdir / "SEIP_parameter.list").read_text(), "param list")
         self.assertTrue((workdir / "extra_dir" / "nested.txt").is_file())
         self.assertEqual((workdir / "extra_dir" / "nested.txt").read_text(), "nested")
+        self.assertTrue((workdir / "renamed_target.list").is_file())
+        self.assertEqual((workdir / "renamed_target.list").read_text(), "orig list")
+        self.assertTrue((workdir / "renamed_from_dict.txt").is_file())
+        self.assertEqual((workdir / "renamed_from_dict.txt").read_text(), "dict content")
+        self.assertTrue((workdir / "renamed_from_colon.txt").is_file())
+        self.assertEqual((workdir / "renamed_from_colon.txt").read_text(), "colon content")
 
     def test_stage_ancillary_files_same_source_and_target_no_error(self) -> None:
         from calibpipe.steps.staging import stage_ancillary_files
@@ -766,8 +784,137 @@ class TestNamedProfiles(DriverModesTestCase):
         self.assertIn("_rundata_specified = True", content)
 
 
+class TestBatchJobColocation(unittest.TestCase):
+    """Test colocation of batch submission script and live log symlinks replaced by final copies."""
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self.tmp = Path(self._tmpdir.name)
+        self.working = self.tmp / "working"
+        self.working.mkdir()
+        self.logs_dir = self.tmp / "central_logs"
+        self.logs_dir.mkdir()
+
+    def test_batch_colocation_lifecycle_and_finalization(self) -> None:
+        out_file = self.logs_dir / "batch.testjob.out"
+        err_file = self.logs_dir / "batch.testjob.err"
+        script_file = self.logs_dir / "batch.testjob.sbatch"
+
+        out_file.write_text("INITIAL STDOUT\n")
+        err_file.write_text("INITIAL STDERR\n")
+        script_file.write_text("#!/bin/sh\n#SBATCH --job-name=testjob\n")
+
+        with patch.dict(
+            os.environ,
+            {
+                "CALIBPIPE_BATCH_OUTFILE": str(out_file),
+                "CALIBPIPE_BATCH_ERRFILE": str(err_file),
+                "CALIBPIPE_BATCH_SCRIPT": str(script_file),
+            },
+        ):
+            # Job start: script should be copied, logs should be symlinked
+            driver.link_batch_job_files_start(self.working)
+
+            copied_script = self.working / "batch.testjob.sbatch"
+            self.assertTrue(copied_script.is_file())
+            self.assertFalse(copied_script.is_symlink())
+            self.assertIn("#SBATCH --job-name=testjob", copied_script.read_text())
+
+            sym_out = self.working / "batch.out"
+            sym_err = self.working / "batch.err"
+            self.assertTrue(sym_out.is_symlink())
+            self.assertTrue(sym_err.is_symlink())
+            self.assertEqual(sym_out.resolve(), out_file.resolve())
+            self.assertEqual(sym_err.resolve(), err_file.resolve())
+            self.assertEqual(sym_out.read_text(), "INITIAL STDOUT\n")
+
+            # Simulate scheduler appending execution logs while job runs
+            with open(out_file, "a") as f:
+                f.write("TASK COMPLETED IN CASA\n")
+            with open(err_file, "a") as f:
+                f.write("SOME WARNING IN CASA\n")
+
+            # Operator reading symlink sees live output
+            self.assertIn("TASK COMPLETED IN CASA", sym_out.read_text())
+
+            # Job finish: symlinks are unlinked and replaced with real file copies
+            driver.finalize_batch_job_logs(self.working)
+
+            final_out = self.working / "batch.out"
+            final_err = self.working / "batch.err"
+            self.assertFalse(final_out.is_symlink(), "batch.out should be a real file after finalization")
+            self.assertFalse(final_err.is_symlink(), "batch.err should be a real file after finalization")
+            self.assertTrue(final_out.is_file())
+            self.assertTrue(final_err.is_file())
+            self.assertIn("TASK COMPLETED IN CASA", final_out.read_text())
+            self.assertIn("SOME WARNING IN CASA", final_err.read_text())
+
+            # Simulate external cleanup of logs_dir; working/ retains full standalone records
+            shutil.rmtree(self.logs_dir)
+            self.assertTrue(final_out.is_file())
+            self.assertIn("TASK COMPLETED IN CASA", final_out.read_text())
+            self.assertTrue(copied_script.is_file())
+
+    def test_batch_colocation_slurm_env_fallback(self) -> None:
+        submit_dir = self.tmp / "submit"
+        submit_dir.mkdir()
+        job_name = "fallback_job_123"
+        (submit_dir / f"batch.{job_name}.out").write_text("FALLBACK STDOUT\n")
+        (submit_dir / f"batch.{job_name}.err").write_text("FALLBACK STDERR\n")
+        (submit_dir / f"batch.{job_name}.sbatch").write_text("#!/bin/sh\n#SBATCH ...\n")
+
+        env_clean = {k: v for k, v in os.environ.items() if not k.startswith("CALIBPIPE_BATCH_")}
+        env_clean["SLURM_SUBMIT_DIR"] = str(submit_dir)
+        env_clean["SLURM_JOB_NAME"] = job_name
+
+        with patch.dict(os.environ, env_clean, clear=True):
+            driver.link_batch_job_files_start(self.working)
+            self.assertTrue((self.working / f"batch.{job_name}.sbatch").is_file())
+            self.assertTrue((self.working / "batch.out").is_symlink())
+            self.assertEqual((self.working / "batch.out").read_text(), "FALLBACK STDOUT\n")
+
+            driver.finalize_batch_job_logs(self.working)
+            self.assertFalse((self.working / "batch.out").is_symlink())
+            self.assertEqual((self.working / "batch.out").read_text(), "FALLBACK STDOUT\n")
+
+    def test_batch_colocation_non_batch_noop(self) -> None:
+        env_clean = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("CALIBPIPE_BATCH_") and not k.startswith("SLURM_")
+        }
+        with patch.dict(os.environ, env_clean, clear=True):
+            driver.link_batch_job_files_start(self.working)
+            self.assertFalse((self.working / "batch.out").exists())
+            self.assertFalse((self.working / "batch.err").exists())
+            driver.finalize_batch_job_logs(self.working)
+            self.assertFalse((self.working / "batch.out").exists())
+
+    def test_batch_colocation_same_destination_file_guard(self) -> None:
+        # If output files already exist inside working directory itself
+        existing_out = self.working / "batch.out"
+        existing_out.write_text("DIRECT OUTPUT\n")
+        existing_script = self.working / "batch.job.sbatch"
+        existing_script.write_text("#!/bin/sh\n")
+
+        with patch.dict(
+            os.environ,
+            {
+                "CALIBPIPE_BATCH_OUTFILE": str(existing_out),
+                "CALIBPIPE_BATCH_SCRIPT": str(existing_script),
+            },
+        ):
+            # Should not unlink the real file or raise an error trying to copy onto itself
+            driver.link_batch_job_files_start(self.working)
+            self.assertFalse(existing_out.is_symlink())
+            self.assertEqual(existing_out.read_text(), "DIRECT OUTPUT\n")
+            self.assertEqual(existing_script.read_text(), "#!/bin/sh\n")
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

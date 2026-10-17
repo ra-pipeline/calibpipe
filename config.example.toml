@@ -154,6 +154,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # scheduler = "slurm"                     # Batch cluster scheduler ("slurm" or "htcondor", default: "slurm")
 # requirements = "none"                   # HTCondor ClassAd requirements override ("none", "default", or custom expression)
 # dry_run = false                         # Simulate batch submission without submitting jobs (default: false)
+# logdir = "~/Workspace/logs"             # Directory for batch scheduler log (.out, .err) and script (.sbatch) records
 #
 # Named batch profiles override baseline [batch] settings and are selectable via
 # 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):
@@ -177,11 +178,12 @@ pixi_dir = "/data/pipeline/branches/main"
 #
 # [run]
 # recipe = "calimage"                     # Pipeline recipe (cal, calimage, image, etc.)
-# ncores = 8                              # Number of cores for CASA/mpicasa
+# nprocs = 8                              # Number of MPI processes for CASA/mpicasa (alias: ncores)
 # loglevel = "debug"                      # Pipeline log level
 # useresume = false                       # Use break/resume instead of two contexts
 # symlink_shortcuts = true                # Create convenience symlinks (working, products, rawdata, weblog) in project root
 # log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
+# verbose = false                         # Stream verbose subprocess output to terminal (default: false)
 # omp_num_threads = 1                     # OMP_NUM_THREADS environment variable override
 # openblas_num_threads = 1                # OPENBLAS_NUM_THREADS environment variable override
 # omp_max_threads = 8                     # Upper bound for casalog.ompSetNumThreads
@@ -196,7 +198,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # cont_dat = "cont.dat"                   # Path to continuum ranges file to stage into working directory
 # jyperk_csv = "jyperk.csv"               # Path to Single-Dish Jy/K conversion table to stage into working directory
 # parameter_list = "parameter.list"       # Path to pipeline parameter override list to stage into working directory
-# ancillary = ["extra.txt"]               # List of additional files or directories to stage into working directory
+# ancillary = ["extra.txt", ["source.list", "target.list"]] # Additional files/directories or [source, dest] pairs to stage
 # datapath = ["/data/casa/data"]          # List of directories for CASA datapath
 # rundata = ["/data/casa/data"]           # Candidate measures/rundata directories (or "none" to disable)
 # dry_run = false                         # Simulate execution without running subprocess commands (default: false)
@@ -218,7 +220,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # [profiles.vlass_seip]
 # env = "main"
 # recipe = "SEIP"
-# ncores = 16
+# nprocs = 16
 # parameter_list = "vlass.param"
 # backup = true
 # partition = "plwg"
@@ -226,9 +228,10 @@ pixi_dir = "/data/pipeline/branches/main"
 #
 # [profiles.fast_debug]
 # env = "dev"
-# ncores = 2
+# nprocs = 2
 # loglevel = "debug"
 # log2term = true
+# verbose = true
 # psrecord = true
 # scheduler = "slurm"
 #
@@ -236,7 +239,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # env = "main"
 # workdir = "/scratch/tests/fast_reg"
 # cmd = "import pytest; pytest.main(['-vv', 'tests/regression/test_fast.py'])"
-# ncores = 4
+# nprocs = 4
 # backup = true
 # autoreload = true
 

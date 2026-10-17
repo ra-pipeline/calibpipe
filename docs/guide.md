@@ -340,13 +340,14 @@ calibpipe submit quick.run --profile=debug --env=main
 Configures single-run driver execution defaults for `calibpipe run`:
 
 - `recipe`: Default pipeline reduction recipe (default: `calimage`).
-- `ncores`: Default CPU core count passed to `mpicasa` (default: `8`).
+- `nprocs`: Default worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS` (default: `8`; backward-compatible alias: `ncores`).
 - `loglevel`: Default pipeline log level (default: `debug`).
 - `useresume`: Use breakpoint / resume execution instead of two sequential CASA contexts (default: `false`).
 - `symlink_shortcuts`: Automatically create convenience symlinks (`working`, `products`, `rawdata`) in the project run root (default: `true`; override via `--symlink-shortcuts` / `--no-symlink-shortcuts`).
 - `log2term`: Mirror CASA log messages to stdout / terminal in real time (default: `false`; override via `--log2term` / `--no-log2term`).
-- `omp_num_threads`: `OMP_NUM_THREADS` environment variable override (default: `1` when `ncores > 1`).
-- `openblas_num_threads`: `OPENBLAS_NUM_THREADS` environment variable override (default: `1` when `ncores > 1`).
+- `verbose`: Stream full subprocess output line-by-line to terminal and execution logs (default: `false`; override via `-v` / `--verbose` / `--no-verbose`).
+- `omp_num_threads`: `OMP_NUM_THREADS` environment variable override (default: `1` when `nprocs > 1`).
+- `openblas_num_threads`: `OPENBLAS_NUM_THREADS` environment variable override (default: `1` when `nprocs > 1`).
 - `omp_max_threads`: Restrict maximum OpenMP thread count via `casalog.ompSetNumThreads`.
 - `mem_frac`: CASA memory fraction limit via `casalog.setMemoryFraction` (e.g. `0.8`).
 - `oversubscribe`: OpenMPI `--oversubscribe` flag for `mpicasa` (default: `false`).
@@ -359,7 +360,7 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `cont_dat`: File path to `cont.dat` staged into the working execution directory.
 - `jyperk_csv`: File path to `jyperk.csv` staged into the working execution directory.
 - `parameter_list`: File path to parameter list override staged into the working execution directory (automatically prefixed with `SEIP_` or `QLIP_` for matching recipes).
-- `ancillary`: List of additional paths (files or directories) staged into the working execution directory.
+- `ancillary`: List of additional paths (files or directories) or `['source', 'target']` pairs staged into the working execution directory.
 - `datapath`: Default list of directories populated in CASA's `datapath`.
 - `rundata`: Default list of candidate measures directories for runs.
 - `dry_run`: If `true`, formats and displays generated execution scripts, resolved working directories, and exact commands without launching CASA / MPI subprocesses (default: `false`; override via `--dry-run`).
@@ -381,20 +382,20 @@ vis = "regression/fast_vis.ms"
 procedure = "procedure_hifa_calimage.xml"
 datapath = ["casa-data", "pipeline-testdata"]
 rundata = ["casa-data"]
-ncores = 8
+nprocs = 8
 workdir = "runs/regression_fast"
 dry_run = false
 
 [profiles.unit_tests]
 desc = "Run unit test suite inside CASA interpreter"
 cmd = "import pytest; pytest.main(['-vv', 'tests/unit'])"
-ncores = 1
+nprocs = 1
 
 [profiles.interactive_dev]
 desc = "Interactive CASA debugging session with autoreload"
 interactive = true
 autoreload = true
-ncores = 4
+nprocs = 4
 ```
 
 Supported profile target fields:
@@ -411,6 +412,7 @@ Supported profile target fields:
 - `workdir`: Working directory override (resolved against `scipipe_rootdir` or `paths.workspaces` if relative).
 - `dry_run`: Preview execution without subprocess calls (`true`/`false`).
 - `autoreload`: Configure IPython autoreload extensions in interactive mode (`true`/`false`).
+- `verbose`: Stream full subprocess output to terminal and execution logs (`true`/`false`).
 
 Precedence order when resolving parameters is strictly hierarchical:
 `CLI flag > -p / --profile=<name> > [run] / [batch] base config > built-in defaults`.
@@ -541,14 +543,15 @@ Fine-tune CPU threading, OpenMPI bindings, memory caps, and resource profiling a
 calibpipe run --vis /data/test.ms --omp-num-threads=4 --openblas-num-threads=2 --mem-frac=0.8 --env=main
 
 # MPI process placement and oversubscription
-calibpipe run --vis /data/test.ms --ncores=16 --oversubscribe --bind-to=core --map-by=socket --env=main
+calibpipe run --vis /data/test.ms --nprocs=16 --oversubscribe --bind-to=core --map-by=socket --env=main
 
 # Resource telemetry sampling with psrecord and pipeline memory statistics
 calibpipe run --vis /data/test.ms --psrecord --memstats --pl-psrecord --env=main
 ```
 
-- `--omp-num-threads <int>`: Sets `OMP_NUM_THREADS` in subprocess environment (defaults to `1` when `ncores > 1`).
-- `--openblas-num-threads <int>`: Sets `OPENBLAS_NUM_THREADS` in subprocess environment (defaults to `1` when `ncores > 1`).
+- `-n <int>`, `--nprocs <int>`: Worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS` (backward-compatible alias: `--ncores`).
+- `--omp-num-threads <int>`: Sets `OMP_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
+- `--openblas-num-threads <int>`: Sets `OPENBLAS_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
 - `--omp-max-threads <int>`: Calls `casalog.ompSetNumThreads(...)` if current thread count exceeds the limit.
 - `--mem-frac <float>`: Calls `casalog.setMemoryFraction(...)` to set CASA memory fraction (e.g. `0.8`).
 - `--oversubscribe`: Passes `--oversubscribe` to OpenMPI `mpicasa` execution.
@@ -577,7 +580,7 @@ calibpipe run --vis /data/vlass.ms --procedure=procedure_hifv_vlassSEIP.xml --pa
 - `--cont-dat <path>`: Copies continuum frequency selection file to `cont.dat` in the execution directory.
 - `--jyperk-csv <path>`: Copies Single-Dish Kelvin-to-Jansky conversion factors to `jyperk.csv`.
 - `--parameter-list <path>`: Copies parameter override file to `parameter.list` (or `SEIP_parameter.list` / `QLIP_parameter.list` when matching VLASS recipe names).
-- `--ancillary <path...>`: Copies additional files or directory trees directly into the target execution directory.
+- `--ancillary <path...>`: Copies additional files or directory trees directly into the target execution directory (supports `source:dest` syntax for destination renaming).
 - `--datapath <dir...>`: Sets explicit search directories for CASA `datapath` in `.casa/config.py`.
 - `--rundata <dir...>`: Sets candidate measures directories for `rundata` / `measurespath` in `.casa/config.py` (or `--rundata none` to disable).
 
@@ -593,7 +596,7 @@ calibpipe run --vis /data/test.ms -p fast_turnaround
 calibpipe run -p regression/pipeline_fast
 
 # CLI options override any settings defined in the profile
-calibpipe run -p regression/pipeline_fast --ncores=16 --vis=/data/custom.ms
+calibpipe run -p regression/pipeline_fast --nprocs=16 --vis=/data/custom.ms
 ```
 
 When a profile specifies relative dataset paths or scripts, `calibpipe` resolves them against the search directories defined in `[paths].workspaces`.
@@ -846,7 +849,7 @@ Profile: regression/pipeline_fast
 Type: Execution Profile ([profiles])
 Description: Fast interferometry calibration regression test
   env                   : dev
-  ncores                : 8
+  nprocs                : 8
   vis                   : ['regression/fast_vis.ms']
   procedure             : procedure_hifa_calimage.xml
   workdir               : runs/regression_fast

@@ -33,6 +33,11 @@ def render_template(template_name: str, **kwargs: Any) -> str:
         defaults = {
             "partition": p,
             "queue": p,
+            "batch_env_exports": "",
+        }
+    elif template_name == "htcondor_job.sh.in":
+        defaults = {
+            "batch_env_exports": "",
         }
     str_kwargs = {**defaults, **{k: str(v) for k, v in kwargs.items()}}
     return Template(raw).safe_substitute(str_kwargs)

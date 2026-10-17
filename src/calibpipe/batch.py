@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -20,7 +21,9 @@ from calibpipe import config as envconfig
 from calibpipe.templates import render_template
 
 # Fallback path to calibPipeIF executable (can be overridden or patched)
-_candidate = Path(__file__).resolve().parent.parent.parent / "scripts" / "calibPipeIF.py"
+_candidate = (
+    Path(__file__).resolve().parent.parent.parent / "scripts" / "calibPipeIF.py"
+)
 if _candidate.is_file():
     CALIBPIPEIF = _candidate
 else:
@@ -40,7 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional pipefile with one '<mous_uid> [recipe]' per line",
     )
-    p.add_argument("--config", help="Path to TOML config (default: resolved config.toml)")
+    p.add_argument(
+        "--config", help="Path to TOML config (default: resolved config.toml)"
+    )
     p.add_argument(
         "--no-site-config",
         action="store_true",
@@ -48,43 +53,125 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not load site-level configuration",
     )
     p.add_argument("--env", help="[envs.<name>] to use; default: config's default_env")
-    p.add_argument("-c", "--cores", type=int, default=None, dest="cores",
-                   help="Tasks/cores per job (--ntasks) (default: from [batch].cores or 8)")
-    p.add_argument("-M", "--mail-type", default=None, dest="mail_type",
-                   help="Slurm --mail-type (default: from [batch].mail_type or ALL)")
-    p.add_argument("-n", "--node", default=None, dest="node",
-                   help="Number of nodes --nodes (default: from [batch].node or 1)")
-    p.add_argument("-o", "--outfile", dest="outfile", help="Slurm stdout file (default: batch.<job>.out)")
-    p.add_argument("-e", "--errfile", dest="errfile", help="Slurm stderr file (default: batch.<job>.err)")
+    p.add_argument(
+        "-c",
+        "--cores",
+        type=int,
+        default=None,
+        dest="cores",
+        help="Tasks/cores per job (--ntasks) (default: from [batch].cores or 8)",
+    )
+    p.add_argument(
+        "-M",
+        "--mail-type",
+        default=None,
+        dest="mail_type",
+        help="Slurm --mail-type (default: from [batch].mail_type or ALL)",
+    )
+    p.add_argument(
+        "-n",
+        "--node",
+        default=None,
+        dest="node",
+        help="Number of nodes --nodes (default: from [batch].node or 1)",
+    )
+    p.add_argument(
+        "-o",
+        "--outfile",
+        dest="outfile",
+        help="Slurm stdout file (default: batch.<job>.out)",
+    )
+    p.add_argument(
+        "-e",
+        "--errfile",
+        dest="errfile",
+        help="Slurm stderr file (default: batch.<job>.err)",
+    )
+    p.add_argument(
+        "--logdir",
+        default=None,
+        dest="logdir",
+        help="Directory for scheduler log and script output (default: from [batch].logdir or [paths].scipipe_logdir)",
+    )
     # Memory options (mutually exclusive)
     mem_group = p.add_mutually_exclusive_group()
-    mem_group.add_argument("-m", "--mem", type=int, default=None, dest="mem",
-                           help="GB total memory per job (default: from [batch].mem or 248); "
-                                "mutually exclusive with --mem-per-cpu")
-    mem_group.add_argument("--mem-per-cpu", default=None, dest="mem_per_cpu",
-                           help="Memory per CPU (e.g. '30G'); mutually exclusive with --mem")
+    mem_group.add_argument(
+        "-m",
+        "--mem",
+        type=int,
+        default=None,
+        dest="mem",
+        help="GB total memory per job (default: from [batch].mem or 248); "
+        "mutually exclusive with --mem-per-cpu",
+    )
+    mem_group.add_argument(
+        "--mem-per-cpu",
+        default=None,
+        dest="mem_per_cpu",
+        help="Memory per CPU (e.g. '30G'); mutually exclusive with --mem",
+    )
     # Walltime / scheduling
-    p.add_argument("-t", "--walltime", default=None, dest="walltime",
-                   help="Slurm --time walltime limit (e.g. '24:00:00'); omitted if unset")
-    p.add_argument("--nodelist", default=None, dest="nodelist",
-                   help="Pin job to a specific node or node list (--nodelist)")
-    p.add_argument("--chdir", default=None, dest="chdir",
-                   help="Slurm --chdir working directory override")
+    p.add_argument(
+        "-t",
+        "--walltime",
+        default=None,
+        dest="walltime",
+        help="Slurm --time walltime limit (e.g. '24:00:00'); omitted if unset",
+    )
+    p.add_argument(
+        "--nodelist",
+        default=None,
+        dest="nodelist",
+        help="Pin job to a specific node or node list (--nodelist)",
+    )
+    p.add_argument(
+        "--chdir",
+        default=None,
+        dest="chdir",
+        help="Slurm --chdir working directory override",
+    )
     # CPU topology
-    p.add_argument("--cpus-per-task", type=int, default=None, dest="cpus_per_task",
-                   help="CPUs per MPI task (--cpus-per-task); useful for mpicasa "
-                        "(total cores = ntasks × cpus-per-task)")
-    p.add_argument("--ntasks-per-core", type=int, default=None, dest="ntasks_per_core",
-                   help="Tasks per physical core; set to 1 to disable hyperthreading")
-    p.add_argument("--hint", default=None, dest="hint",
-                   help="Slurm scheduling hint (e.g. 'nomultithread')")
-    p.add_argument("--distribution", default=None, dest="distribution",
-                   help="Task distribution across nodes/sockets (e.g. 'cyclic:cyclic')")
+    p.add_argument(
+        "--cpus-per-task",
+        type=int,
+        default=None,
+        dest="cpus_per_task",
+        help="CPUs per MPI task (--cpus-per-task); useful for mpicasa "
+        "(total cores = ntasks × cpus-per-task)",
+    )
+    p.add_argument(
+        "--ntasks-per-core",
+        type=int,
+        default=None,
+        dest="ntasks_per_core",
+        help="Tasks per physical core; set to 1 to disable hyperthreading",
+    )
+    p.add_argument(
+        "--hint",
+        default=None,
+        dest="hint",
+        help="Slurm scheduling hint (e.g. 'nomultithread')",
+    )
+    p.add_argument(
+        "--distribution",
+        default=None,
+        dest="distribution",
+        help="Task distribution across nodes/sockets (e.g. 'cyclic:cyclic')",
+    )
     # Requeue
-    p.add_argument("--no-requeue", dest="no_requeue", action="store_true", default=None,
-                   help="Add --no-requeue directive (default: on; prevents silent resubmission)")
-    p.add_argument("--requeue", dest="no_requeue", action="store_false",
-                   help="Allow Slurm to requeue job on node failure")
+    p.add_argument(
+        "--no-requeue",
+        dest="no_requeue",
+        action="store_true",
+        default=None,
+        help="Add --no-requeue directive (default: on; prevents silent resubmission)",
+    )
+    p.add_argument(
+        "--requeue",
+        dest="no_requeue",
+        action="store_false",
+        help="Allow Slurm to requeue job on node failure",
+    )
     # Batch profile selection
     p.add_argument(
         "-p",
@@ -96,12 +183,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     # Queue / partition selection
     queue = p.add_mutually_exclusive_group()
-    queue.add_argument("-b", dest="partition", action="store_const", const="batch2", default=None,
-                       help="Submit to the batch2 partition")
-    queue.add_argument("--partition", "--queue", dest="partition", default=None,
-                       help="Slurm / HTCondor partition name (overrides [batch].partition or profile)")
-    p.add_argument("--extra-arg", action="append", default=[], dest="extra_args",
-                   help="Extra flag passed through to calibpipe driver, repeatable")
+    queue.add_argument(
+        "-b",
+        dest="partition",
+        action="store_const",
+        const="batch2",
+        default=None,
+        help="Submit to the batch2 partition",
+    )
+    queue.add_argument(
+        "--partition",
+        "--queue",
+        dest="partition",
+        default=None,
+        help="Slurm / HTCondor partition name (overrides [batch].partition or profile)",
+    )
+    p.add_argument(
+        "--extra-arg",
+        action="append",
+        default=[],
+        dest="extra_args",
+        help="Extra flag passed through to calibpipe driver, repeatable",
+    )
     p.add_argument(
         "--log2term",
         action=argparse.BooleanOptionalAction,
@@ -195,6 +298,8 @@ def build_sbatch_script(
     ntasks_per_core: int | None = None,
     distribution: str | None = None,
     no_requeue: bool = True,
+    script_record_path: str | None = None,
+    batch_env_exports: str | None = None,
 ) -> str:
     """Create the shell script body submitted to Slurm.
 
@@ -225,6 +330,8 @@ def build_sbatch_script(
         ntasks_per_core: Tasks per physical core (e.g. ``1`` to disable HT).
         distribution: Task distribution policy (e.g. ``"cyclic:cyclic"``).
         no_requeue: Emit ``--no-requeue`` to prevent silent resubmission.
+        script_record_path: Optional path to the saved submission script for environment export.
+        batch_env_exports: Optional explicit export block to embed in the script.
 
     Returns:
         Rendered shell script contents.
@@ -243,15 +350,31 @@ def build_sbatch_script(
         _sbatch_directive("hint", hint),
         _sbatch_directive("distribution", distribution),
         # mem and mem-per-cpu are mutually exclusive; mem-per-cpu wins
-        _sbatch_directive("mem-per-cpu", mem_per_cpu) if mem_per_cpu else _sbatch_directive("mem", mem),
+        _sbatch_directive("mem-per-cpu", mem_per_cpu)
+        if mem_per_cpu
+        else _sbatch_directive("mem", mem),
     ]:
         if line is not None:
             optional_lines.append(line)
 
     extra_directives = "\n".join(optional_lines)
 
+    if batch_env_exports is None and script_record_path is not None:
+        env_lines = [
+            f"export CALIBPIPE_BATCH_OUTFILE={shlex.quote(str(outfile))}",
+            f"export CALIBPIPE_BATCH_ERRFILE={shlex.quote(str(errfile))}",
+            f"export CALIBPIPE_BATCH_SCRIPT={shlex.quote(str(script_record_path))}",
+        ]
+        if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
+            env_lines.append("export UV_NO_SYNC=1")
+        active_env_exports = "\n" + "\n".join(env_lines)
+    elif batch_env_exports:
+        active_env_exports = "\n" + batch_env_exports.strip()
+    else:
+        active_env_exports = ""
+
     return render_template(
-        'slurm_job.sh.in',
+        "slurm_job.sh.in",
         pipejob=pipejob,
         partition=active_partition,
         queue=active_partition,
@@ -263,6 +386,7 @@ def build_sbatch_script(
         outfile=outfile,
         errfile=errfile,
         extra_directives=extra_directives,
+        batch_env_exports=active_env_exports,
     )
 
 
@@ -281,6 +405,8 @@ def build_htcondor_script(
     chdir: str | None = None,
     nodelist: str | None = None,
     requirements: str | None = None,
+    script_record_path: str | None = None,
+    batch_env_exports: str | None = None,
 ) -> tuple[str, str]:
     """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
 
@@ -298,11 +424,31 @@ def build_htcondor_script(
         chdir: Initial working directory (initialdir).
         nodelist: Optional pinned machine name (TARGET.Machine == "<nodelist>").
         requirements: Optional custom ClassAd requirements expression.
+        script_record_path: Optional path to the saved submission script for environment export.
+        batch_env_exports: Optional explicit export block to embed in the script.
 
     Returns:
         Tuple of (submit_file_content, wrapper_script_content).
     """
-    runner_script = render_template("htcondor_job.sh.in", pipejob=pipejob)
+    if batch_env_exports is None and script_record_path is not None:
+        env_lines = [
+            f"export CALIBPIPE_BATCH_OUTFILE={shlex.quote(str(outfile))}",
+            f"export CALIBPIPE_BATCH_ERRFILE={shlex.quote(str(errfile))}",
+            f"export CALIBPIPE_BATCH_SCRIPT={shlex.quote(str(script_record_path))}",
+        ]
+        if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
+            env_lines.append("export UV_NO_SYNC=1")
+        active_env_exports = "\n" + "\n".join(env_lines)
+    elif batch_env_exports:
+        active_env_exports = "\n" + batch_env_exports.strip()
+    else:
+        active_env_exports = ""
+
+    runner_script = render_template(
+        "htcondor_job.sh.in",
+        pipejob=pipejob,
+        batch_env_exports=active_env_exports,
+    )
 
     if mem_per_cpu:
         val_str = mem_per_cpu.strip()
@@ -439,8 +585,30 @@ def _dispatch_job(
         True if the job was submitted (or dry-run simulated), False on error.
     """
     print(f"job name = {name}")
-    outfile = batch_opts.outfile or f"batch.{name}.out"
-    errfile = batch_opts.errfile or f"batch.{name}.err"
+    if batch_opts.logdir:
+        raw_logdir = batch_opts.logdir.replace("{user}", user)
+        expanded_logdir = Path(os.path.expanduser(raw_logdir)).resolve()
+        try:
+            expanded_logdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(
+                f"    WARNING: could not create batch logdir {expanded_logdir}: {exc}"
+            )
+        out_name = batch_opts.outfile or f"batch.{name}.out"
+        err_name = batch_opts.errfile or f"batch.{name}.err"
+        outfile = (
+            str(expanded_logdir / out_name)
+            if not Path(out_name).is_absolute()
+            else out_name
+        )
+        errfile = (
+            str(expanded_logdir / err_name)
+            if not Path(err_name).is_absolute()
+            else err_name
+        )
+    else:
+        outfile = batch_opts.outfile or f"batch.{name}.out"
+        errfile = batch_opts.errfile or f"batch.{name}.err"
 
     if batch_opts.scheduler == "htcondor":
         script_record_sh = str(Path(outfile).with_suffix(".sh"))
@@ -461,6 +629,7 @@ def _dispatch_job(
             chdir=batch_opts.chdir,
             nodelist=batch_opts.nodelist,
             requirements=batch_opts.requirements,
+            script_record_path=script_record_htc,
         )
 
         script_record_sh_path = Path(script_record_sh).resolve()
@@ -500,6 +669,7 @@ def _dispatch_job(
     else:
         # Slurm
         mem_str = None if batch_opts.mem_per_cpu else f"{batch_opts.mem}G"
+        script_record_path = str(Path(outfile).with_suffix(".sbatch"))
         script_body = build_sbatch_script(
             pipejob,
             partition=batch_opts.partition,
@@ -520,15 +690,18 @@ def _dispatch_job(
             ntasks_per_core=batch_opts.ntasks_per_core,
             distribution=batch_opts.distribution,
             no_requeue=batch_opts.no_requeue,
+            script_record_path=script_record_path,
         )
 
-        script_record_path = Path(outfile).with_suffix(".sbatch").resolve()
+        script_record_path_obj = Path(script_record_path).resolve()
         try:
-            with open(script_record_path, "w", encoding="utf-8") as f:
+            with open(script_record_path_obj, "w", encoding="utf-8") as f:
                 f.write(script_body)
-            print(f"    script saved → {script_record_path}")
+            print(f"    script saved → {script_record_path_obj}")
         except OSError as exc:
-            print(f"    WARNING: could not save script record {script_record_path}: {exc}")
+            print(
+                f"    WARNING: could not save script record {script_record_path_obj}: {exc}"
+            )
 
         with tempfile.NamedTemporaryFile(
             mode="w", prefix=f"{user}_sbatch.", suffix=".sh", delete=False

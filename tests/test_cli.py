@@ -91,7 +91,7 @@ ncores = 4
             with redirect_stdout(buf):
                 cli.main(["profile", "show", "fast_test", f"--config={cfg_path}"])
             self.assertIn("Profile: fast_test", buf.getvalue())
-            self.assertIn("ncores                : 4", buf.getvalue())
+            self.assertIn("nprocs                : 4", buf.getvalue())
 
             # Missing profile exits with 1
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:

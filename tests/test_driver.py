@@ -376,6 +376,32 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertIn(f"-c {piperun.resolve()}", cmd)
         self.assertTrue(piperun.is_file())
 
+    def test_pixi_mpi_execution_with_nprocs_flags(self):
+        # Verify --nprocs flag
+        calls = self.run_and_capture(
+            [
+                f"--config={self.pixi_config}",
+                "--env=modular",
+                "--nprocs=16",
+            ]
+        )
+        casa_calls = [c[1] for c in calls if c[0] == "casa"]
+        self.assertEqual(len(casa_calls), 1)
+        self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", casa_calls[0])
+
+        # Verify -n flag
+        calls_short = self.run_and_capture(
+            [
+                f"--config={self.pixi_config}",
+                "--env=modular",
+                "-n",
+                "16",
+            ]
+        )
+        casa_calls_short = [c[1] for c in calls_short if c[0] == "casa"]
+        self.assertEqual(len(casa_calls_short), 1)
+        self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", casa_calls_short[0])
+
     def test_pixi_custom_env(self):
         custom_cfg = self.tmp / "custom_pixi.toml"
         _write_pixi_config(

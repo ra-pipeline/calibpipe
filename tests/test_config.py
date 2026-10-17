@@ -16,6 +16,8 @@ from calibpipe.config import (
     CalibpipeConfig,
     ConfigError,
     EnvSpec,
+    ProfileConfig,
+    RunConfig,
     _deep_merge_dict,
     build_environment,
     check_paths,
@@ -23,8 +25,6 @@ from calibpipe.config import (
     find_config_path,
     find_site_config,
     find_user_configs,
-    format_profile_details,
-    format_profile_list,
     format_shell_exports,
     load_config,
     load_merged_config,
@@ -99,6 +99,27 @@ class TestEnvironmentBuilding(unittest.TestCase):
         self.assertEqual(env["CASA_PATH"], "/stor/casa/main/bin")
         self.assertIn("/stor/casa/main/bin", env["PATH"])
         self.assertTrue(env["SCIPIPE_ROOTDIR"].endswith("/sub1"))
+
+    def test_build_environment_tilde_expansion(self):
+        cfg = {
+            "default_env": "main",
+            "paths": {
+                "scipipe_rootdir": "~/my_tests/projs",
+                "scipipe_logdir": "~/my_tests/logs",
+            },
+            "envs": {
+                "main": {
+                    "casa_root": "/stor/casa/main",
+                }
+            },
+        }
+        spec = resolve_env(cfg, "main")
+        env = build_environment(cfg, spec, validate_paths=False)
+        expected_home = str(Path.home())
+        self.assertTrue(env["SCIPIPE_ROOTDIR"].startswith(expected_home))
+        self.assertFalse(env["SCIPIPE_ROOTDIR"].startswith("~"))
+        self.assertTrue(env["SCIPIPE_LOGDIR"].startswith(expected_home))
+        self.assertFalse(env["SCIPIPE_LOGDIR"].startswith("~"))
 
     def test_format_shell_exports(self):
         env = {
@@ -555,7 +576,9 @@ class TestCascadingConfig(unittest.TestCase):
                 found = find_site_config()
                 self.assertEqual(found, site_file.resolve())
 
-            with patch.dict(os.environ, {"CALIBPIPE_SITE_CONFIG": str(Path(td) / "missing.toml")}):
+            with patch.dict(
+                os.environ, {"CALIBPIPE_SITE_CONFIG": str(Path(td) / "missing.toml")}
+            ):
                 with self.assertRaises(ConfigError):
                     find_site_config()
 
@@ -607,7 +630,9 @@ class TestCascadingConfig(unittest.TestCase):
             dot_file.touch()
 
             with patch("pathlib.Path.home", return_value=fake_home):
-                with patch.dict(os.environ, {"XDG_CONFIG_HOME": str(fake_home / ".config")}):
+                with patch.dict(
+                    os.environ, {"XDG_CONFIG_HOME": str(fake_home / ".config")}
+                ):
                     cfgs = find_user_configs()
                     self.assertEqual(cfgs, [xdg_file.resolve(), dot_file.resolve()])
 
@@ -667,7 +692,9 @@ pixi_dir = "/user/ws"
             self.assertEqual(cfg.envs["main"].casa_root, "/opt/casa/main")
             self.assertEqual(cfg.envs["custom_pixi"].pixi_dir, "/user/ws")
             # Provenance tracking
-            self.assertEqual(cfg.loaded_layers, [site_file.resolve(), user_file.resolve()])
+            self.assertEqual(
+                cfg.loaded_layers, [site_file.resolve(), user_file.resolve()]
+            )
 
     def test_load_merged_config(self):
         import tempfile
@@ -689,14 +716,19 @@ scipipe_rootdir = "/tmp/root"
                 cfg = load_merged_config(cli_arg=cli_file)
                 self.assertEqual(cfg.site.submit_host, "submit01")
                 self.assertEqual(cfg.paths.scipipe_rootdir, "/tmp/root")
-                self.assertEqual(cfg.loaded_layers, [site_file.resolve(), cli_file.resolve()])
+                self.assertEqual(
+                    cfg.loaded_layers, [site_file.resolve(), cli_file.resolve()]
+                )
 
     def test_format_config_overview_multiple_layers(self):
         from calibpipe.config import CalibpipeConfig, format_config_overview
 
         cfg = CalibpipeConfig(
             default_env="main",
-            loaded_layers=[Path("/etc/calibpipe/config.toml"), Path("/home/user/.config/calibpipe/config.toml")],
+            loaded_layers=[
+                Path("/etc/calibpipe/config.toml"),
+                Path("/home/user/.config/calibpipe/config.toml"),
+            ],
         )
         overview = format_config_overview(cfg)
         self.assertIn("Configuration Layers (lowest to highest priority):", overview)
@@ -756,13 +788,28 @@ class TestBatchProfiles(unittest.TestCase):
 
         from calibpipe.config import CalibpipeConfig
 
-        cfg = CalibpipeConfig.from_dict({
-            "batch": {"queue": "plwg", "cores": 8, "mem": 248},
-            "batches": {
-                "debug": {"queue": "debug", "cores": 4, "mem": 32, "walltime": "01:00:00"},
-            },
-        })
-        cli_args = Namespace(pipefile="jobs.txt", profile="debug", queue=None, cores=None, mem=None, node=None, mail_type=None)
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "batch": {"queue": "plwg", "cores": 8, "mem": 248},
+                "batches": {
+                    "debug": {
+                        "queue": "debug",
+                        "cores": 4,
+                        "mem": 32,
+                        "walltime": "01:00:00",
+                    },
+                },
+            }
+        )
+        cli_args = Namespace(
+            pipefile="jobs.txt",
+            profile="debug",
+            queue=None,
+            cores=None,
+            mem=None,
+            node=None,
+            mail_type=None,
+        )
         opts = resolve_batch_options(cfg, cli_args)
         self.assertEqual(opts.profile, "debug")
         self.assertEqual(opts.queue, "debug")
@@ -775,13 +822,23 @@ class TestBatchProfiles(unittest.TestCase):
 
         from calibpipe.config import CalibpipeConfig
 
-        cfg = CalibpipeConfig.from_dict({
-            "batch": {"queue": "plwg", "cores": 8, "mem": 248},
-            "batches": {
-                "debug": {"queue": "debug", "cores": 4, "mem": 32},
-            },
-        })
-        cli_args = Namespace(pipefile="jobs.txt", profile="debug", queue="custom_queue", cores=16, mem=None, node=None, mail_type=None)
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "batch": {"queue": "plwg", "cores": 8, "mem": 248},
+                "batches": {
+                    "debug": {"queue": "debug", "cores": 4, "mem": 32},
+                },
+            }
+        )
+        cli_args = Namespace(
+            pipefile="jobs.txt",
+            profile="debug",
+            queue="custom_queue",
+            cores=16,
+            mem=None,
+            node=None,
+            mail_type=None,
+        )
         opts = resolve_batch_options(cfg, cli_args)
         self.assertEqual(opts.profile, "debug")
         self.assertEqual(opts.queue, "custom_queue")
@@ -793,11 +850,21 @@ class TestBatchProfiles(unittest.TestCase):
 
         from calibpipe.config import CalibpipeConfig
 
-        cfg = CalibpipeConfig.from_dict({
-            "batch": {"queue": "plwg"},
-            "batches": {"debug": {"queue": "debug"}},
-        })
-        cli_args = Namespace(pipefile="jobs.txt", profile="nonexistent", queue=None, cores=None, mem=None, node=None, mail_type=None)
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "batch": {"queue": "plwg"},
+                "batches": {"debug": {"queue": "debug"}},
+            }
+        )
+        cli_args = Namespace(
+            pipefile="jobs.txt",
+            profile="nonexistent",
+            queue=None,
+            cores=None,
+            mem=None,
+            node=None,
+            mail_type=None,
+        )
         with self.assertRaises(ConfigError) as cm:
             resolve_batch_options(cfg, cli_args)
         self.assertIn("Unknown batch profile 'nonexistent'", str(cm.exception))
@@ -806,12 +873,14 @@ class TestBatchProfiles(unittest.TestCase):
     def test_format_config_overview_shows_profiles(self):
         from calibpipe.config import CalibpipeConfig, format_config_overview
 
-        cfg = CalibpipeConfig.from_dict({
-            "batch": {"queue": "plwg", "cores": 8, "mem": 248},
-            "batches": {
-                "debug": {"queue": "debug", "cores": 4, "mem": 32},
-            },
-        })
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "batch": {"queue": "plwg", "cores": 8, "mem": 248},
+                "batches": {
+                    "debug": {"queue": "debug", "cores": 4, "mem": 32},
+                },
+            }
+        )
         overview = format_config_overview(cfg)
         self.assertIn("Slurm Batch Profiles ([batches.<name>]):", overview)
         self.assertIn("[debug] partition=debug, cores=4, mem=32 GB", overview)
@@ -833,7 +902,9 @@ class TestConfigExampleSchemaDrift(unittest.TestCase):
         )
 
         example_path = Path(__file__).resolve().parent.parent / "config.example.toml"
-        self.assertTrue(example_path.is_file(), f"config.example.toml not found at {example_path}")
+        self.assertTrue(
+            example_path.is_file(), f"config.example.toml not found at {example_path}"
+        )
 
         # 1. Ensure config.example.toml parses cleanly without syntax or type errors
         cfg = load_config(example_path)
@@ -878,7 +949,9 @@ class TestWorkspacePathResolution(unittest.TestCase):
                 os.chdir(td)
                 rel_f = Path("local.ms")
                 rel_f.touch()
-                resolved = resolve_workspace_path("local.ms", workspaces=["/some/other/path"])
+                resolved = resolve_workspace_path(
+                    "local.ms", workspaces=["/some/other/path"]
+                )
                 self.assertEqual(resolved, Path("local.ms"))
             finally:
                 os.chdir(orig)
@@ -895,8 +968,28 @@ class TestWorkspacePathResolution(unittest.TestCase):
             self.assertEqual(resolved, target.resolve())
 
     def test_resolve_workspace_path_not_found(self):
-        resolved = resolve_workspace_path("nonexistent/item.ms", workspaces=["/path1", "/path2"])
+        resolved = resolve_workspace_path(
+            "nonexistent/item.ms", workspaces=["/path1", "/path2"]
+        )
         self.assertEqual(resolved, Path("nonexistent/item.ms"))
+
+    def test_resolve_workspace_path_permission_denied_skipped(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "app"
+            target.touch()
+
+            orig_stat = Path.stat
+
+            def mock_stat(self, *args, **kwargs):
+                if "/inaccessible" in str(self):
+                    raise PermissionError(13, "Permission denied")
+                return orig_stat(self, *args, **kwargs)
+
+            with patch.object(Path, "stat", autospec=True, side_effect=mock_stat):
+                resolved = resolve_workspace_path(
+                    "app", workspaces=["/inaccessible/path", td]
+                )
+                self.assertEqual(resolved, target.resolve())
 
 
 class TestSelfContainedProfilesAndTargets(unittest.TestCase):
@@ -906,19 +999,21 @@ class TestSelfContainedProfilesAndTargets(unittest.TestCase):
         from argparse import Namespace
         from calibpipe.config import CalibpipeConfig
 
-        cfg = CalibpipeConfig.from_dict({
-            "paths": {"workspaces": ["/ws1"]},
-            "run": {"ncores": 8},
-            "profiles": {
-                "regression_test": {
-                    "vis": "target.ms",
-                    "procedure": "procedure_test.xml",
-                    "ncores": 4,
-                    "dry_run": True,
-                    "autoreload": False,
-                }
-            },
-        })
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "paths": {"workspaces": ["/ws1"]},
+                "run": {"ncores": 8},
+                "profiles": {
+                    "regression_test": {
+                        "vis": "target.ms",
+                        "procedure": "procedure_test.xml",
+                        "ncores": 4,
+                        "dry_run": True,
+                        "autoreload": False,
+                    }
+                },
+            }
+        )
         cli_args = Namespace(
             profile="regression_test",
             mous=None,
@@ -946,13 +1041,15 @@ class TestSelfContainedProfilesAndTargets(unittest.TestCase):
         from argparse import Namespace
         from calibpipe.config import CalibpipeConfig
 
-        cfg = CalibpipeConfig.from_dict({
-            "profiles": {
-                "script_prof": {
-                    "script": "run_analysis.py",
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "profiles": {
+                    "script_prof": {
+                        "script": "run_analysis.py",
+                    }
                 }
             }
-        })
+        )
         cli_args = Namespace(
             profile="script_prof",
             mous=None,
@@ -976,14 +1073,16 @@ class TestSelfContainedProfilesAndTargets(unittest.TestCase):
         from argparse import Namespace
         from calibpipe.config import CalibpipeConfig
 
-        cfg = CalibpipeConfig.from_dict({
-            "profiles": {
-                "bad_prof": {
-                    "vis": "data.ms",
-                    "mous": "uid://A001/X1/X1",
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "profiles": {
+                    "bad_prof": {
+                        "vis": "data.ms",
+                        "mous": "uid://A001/X1/X1",
+                    }
                 }
             }
-        })
+        )
         cli_args = Namespace(
             profile="bad_prof",
             mous=None,
@@ -1001,18 +1100,22 @@ class TestSelfContainedProfilesAndTargets(unittest.TestCase):
         )
         with self.assertRaises(ConfigError) as cm:
             resolve_run_options(cfg, cli_args)
-        self.assertIn("Conflicting execution targets specified in profile", str(cm.exception))
+        self.assertIn(
+            "Conflicting execution targets specified in profile", str(cm.exception)
+        )
 
     def test_dry_run_batch_resolution(self):
         from argparse import Namespace
         from calibpipe.config import CalibpipeConfig
 
-        cfg = CalibpipeConfig.from_dict({
-            "batch": {"queue": "plwg", "cores": 8, "dry_run": False},
-            "batches": {
-                "dry_batch": {"dry_run": True},
-            },
-        })
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "batch": {"queue": "plwg", "cores": 8, "dry_run": False},
+                "batches": {
+                    "dry_batch": {"dry_run": True},
+                },
+            }
+        )
         cli_args = Namespace(
             pipefile="jobs.txt",
             profile="dry_batch",
@@ -1038,22 +1141,24 @@ class TestProfileInspection(unittest.TestCase):
     def test_format_profile_list(self):
         from calibpipe.config import CalibpipeConfig, format_profile_list
 
-        cfg = CalibpipeConfig.from_dict({
-            "profiles": {
-                "fast_regression": {
-                    "desc": "Fast regression test profile",
-                    "vis": "data/test.ms",
-                    "ncores": 4,
-                }
-            },
-            "batches": {
-                "heavy_batch": {
-                    "desc": "Heavy HPC queue submission",
-                    "cores": 32,
-                    "mem": 512,
-                }
-            },
-        })
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "profiles": {
+                    "fast_regression": {
+                        "desc": "Fast regression test profile",
+                        "vis": "data/test.ms",
+                        "ncores": 4,
+                    }
+                },
+                "batches": {
+                    "heavy_batch": {
+                        "desc": "Heavy HPC queue submission",
+                        "cores": 32,
+                        "mem": 512,
+                    }
+                },
+            }
+        )
         output = format_profile_list(cfg)
         self.assertIn("calibpipe Profiles", output)
         self.assertIn("fast_regression", output)
@@ -1062,22 +1167,24 @@ class TestProfileInspection(unittest.TestCase):
     def test_format_profile_details(self):
         from calibpipe.config import CalibpipeConfig, format_profile_details
 
-        cfg = CalibpipeConfig.from_dict({
-            "profiles": {
-                "fast_regression": {
-                    "desc": "Fast regression test profile",
-                    "vis": "data/test.ms",
-                    "procedure": "proc.xml",
-                    "ncores": 4,
-                    "dry_run": True,
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "profiles": {
+                    "fast_regression": {
+                        "desc": "Fast regression test profile",
+                        "vis": "data/test.ms",
+                        "procedure": "proc.xml",
+                        "ncores": 4,
+                        "dry_run": True,
+                    }
                 }
             }
-        })
+        )
         details = format_profile_details(cfg, "fast_regression")
         self.assertIn("Profile: fast_regression", details)
         self.assertIn("vis                   : ['data/test.ms']", details)
         self.assertIn("procedure             : proc.xml", details)
-        self.assertIn("ncores                : 4", details)
+        self.assertIn("nprocs                : 4", details)
         self.assertIn("dry_run               : True", details)
 
         with self.assertRaises(ConfigError) as cm:
@@ -1113,7 +1220,9 @@ class TestWorkspaceDiscoveryExtensions(unittest.TestCase):
 
             cfg = CalibpipeConfig.from_dict(cfg_dict)
             self.assertEqual(cfg.envs["proj101"].casa_root, str(casa_dir.resolve()))
-            self.assertEqual(cfg.envs["proj101"].heuristics_dir, str(pipe_dir.resolve()))
+            self.assertEqual(
+                cfg.envs["proj101"].heuristics_dir, str(pipe_dir.resolve())
+            )
 
             spec = resolve_env(cfg_dict, "proj101")
             self.assertEqual(spec.casa_root, str(casa_dir.resolve()))
@@ -1133,18 +1242,20 @@ class TestWorkspaceDiscoveryExtensions(unittest.TestCase):
             proj_dir = Path(td) / "projs" / "MY_PROJ"
             proj_dir.mkdir(parents=True)
 
-            cfg = CalibpipeConfig.from_dict({
-                "paths": {
-                    "workspaces": [str(Path(td) / "tickets")],
-                    "scipipe_rootdir": str(Path(td) / "projs"),
-                },
-                "profiles": {
-                    "test_prof": {
-                        "procedure": "PROJ-202/custom_proc.xml",
-                        "workdir": "MY_PROJ",
-                    }
+            cfg = CalibpipeConfig.from_dict(
+                {
+                    "paths": {
+                        "workspaces": [str(Path(td) / "tickets")],
+                        "scipipe_rootdir": str(Path(td) / "projs"),
+                    },
+                    "profiles": {
+                        "test_prof": {
+                            "procedure": "PROJ-202/custom_proc.xml",
+                            "workdir": "MY_PROJ",
+                        }
+                    },
                 }
-            })
+            )
 
             opts = Namespace(
                 profile="test_prof",
@@ -1176,35 +1287,193 @@ class TestWorkspaceDiscoveryExtensions(unittest.TestCase):
             testdata = Path(td) / "datasets" / "testdata"
             testdata.mkdir(parents=True)
 
-            cfg = CalibpipeConfig.from_dict({
-                "paths": {
-                    "workspaces": [str(ws_dir), str(Path(td) / "datasets")],
-                },
-                "profiles": {
-                    "prof_with_paths": {
-                        "datapath": ["casa-data", "testdata"],
-                        "rundata": ["casa-data"],
+            cfg = CalibpipeConfig.from_dict(
+                {
+                    "paths": {
+                        "workspaces": [str(ws_dir), str(Path(td) / "datasets")],
                     },
-                    "prof_disabled_rundata": {
-                        "rundata": "none",
+                    "profiles": {
+                        "prof_with_paths": {
+                            "datapath": ["casa-data", "testdata"],
+                            "rundata": ["casa-data"],
+                        },
+                        "prof_disabled_rundata": {
+                            "rundata": "none",
+                        },
                     },
                 }
-            })
+            )
 
             # 1. Profile with relative datapath/rundata resolved via workspaces
             opts1 = Namespace(profile="prof_with_paths", datapath=None, rundata=None)
             res1 = resolve_run_options(cfg, opts1)
-            self.assertEqual(res1.datapath, [str(casa_data.resolve()), str(testdata.resolve())])
+            self.assertEqual(
+                res1.datapath, [str(casa_data.resolve()), str(testdata.resolve())]
+            )
             self.assertEqual(res1.rundata, [str(casa_data.resolve())])
             self.assertTrue(res1.rundata_specified)
 
             # 2. Profile disabling rundata explicitly
-            opts2 = Namespace(profile="prof_disabled_rundata", datapath=None, rundata=None)
+            opts2 = Namespace(
+                profile="prof_disabled_rundata", datapath=None, rundata=None
+            )
             res2 = resolve_run_options(cfg, opts2)
             self.assertEqual(res2.rundata, [])
             self.assertTrue(res2.rundata_specified)
 
 
+class TestNprocsBackwardCompatibility(unittest.TestCase):
+    """Test nprocs primary field and ncores backward compatibility."""
+
+    def test_run_config_nprocs_and_ncores(self):
+        rc1 = RunConfig(nprocs=16)
+        self.assertEqual(rc1.nprocs, 16)
+        self.assertEqual(rc1.ncores, 16)
+
+        rc2 = RunConfig(ncores=12)
+        self.assertEqual(rc2.nprocs, 12)
+        self.assertEqual(rc2.ncores, 12)
+
+        rc3 = RunConfig.from_dict({"nprocs": 10})
+        self.assertEqual(rc3.nprocs, 10)
+        self.assertEqual(rc3.ncores, 10)
+
+        rc4 = RunConfig.from_dict({"ncores": 6})
+        self.assertEqual(rc4.nprocs, 6)
+        self.assertEqual(rc4.ncores, 6)
+
+    def test_profile_config_nprocs_and_ncores(self):
+        pc1 = ProfileConfig(nprocs=4)
+        self.assertEqual(pc1.nprocs, 4)
+        self.assertEqual(pc1.ncores, 4)
+
+        pc2 = ProfileConfig(ncores=8)
+        self.assertEqual(pc2.nprocs, 8)
+        self.assertEqual(pc2.ncores, 8)
+
+        pc3 = ProfileConfig.from_dict({"nprocs": 14})
+        self.assertEqual(pc3.nprocs, 14)
+        self.assertEqual(pc3.ncores, 14)
+
+        pc4 = ProfileConfig.from_dict({"ncores": 2})
+        self.assertEqual(pc4.nprocs, 2)
+        self.assertEqual(pc4.ncores, 2)
+
+    def test_resolve_run_options_cli_flags(self):
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "run": {"nprocs": 8},
+                "profiles": {"test_prof": {"nprocs": 4}},
+            }
+        )
+
+        # CLI --nprocs takes precedence
+        opts1 = Namespace(profile=None, nprocs=16, ncores=None)
+        res1 = resolve_run_options(cfg, opts1)
+        self.assertEqual(res1.nprocs, 16)
+        self.assertEqual(res1.ncores, 16)
+
+        # CLI legacy --ncores fallback takes precedence
+        opts2 = Namespace(profile=None, nprocs=None, ncores=12)
+        res2 = resolve_run_options(cfg, opts2)
+        self.assertEqual(res2.nprocs, 12)
+        self.assertEqual(res2.ncores, 12)
+
+        # Profile cascades
+        opts3 = Namespace(profile="test_prof", nprocs=None, ncores=None)
+        res3 = resolve_run_options(cfg, opts3)
+        self.assertEqual(res3.nprocs, 4)
+        self.assertEqual(res3.ncores, 4)
+
+    def test_ancillary_pair_and_custom_destination_resolution(self):
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td) / "datasets"
+            ws.mkdir()
+            src_file = ws / "CCIP_sg16.list"
+            src_file.write_text("dummy sg16")
+            single_file = ws / "resource.tgz"
+            single_file.write_text("dummy tgz")
+
+            cfg_dict = {
+                "paths": {"workspaces": [str(ws)]},
+                "profiles": {
+                    "vlass_test": {
+                        "ancillary": [
+                            "resource.tgz",
+                            ["CCIP_sg16.list", "CCIP_parameter.list"],
+                            {"src": "CCIP_sg16.list", "dest": "from_dict.list"},
+                        ]
+                    }
+                },
+            }
+            cfg = CalibpipeConfig.from_dict(cfg_dict)
+            opts = Namespace(profile="vlass_test", ancillary=None)
+            res = resolve_run_options(cfg, opts)
+
+            self.assertEqual(len(res.ancillary), 3)
+            self.assertEqual(res.ancillary[0], str(single_file.resolve()))
+            self.assertEqual(
+                res.ancillary[1], (str(src_file.resolve()), "CCIP_parameter.list")
+            )
+            self.assertEqual(
+                res.ancillary[2], (str(src_file.resolve()), "from_dict.list")
+            )
+
+    def test_verbose_hierarchy_resolution(self):
+        # 1. Default is False
+        cfg = CalibpipeConfig()
+        opts = Namespace(verbose=None)
+        res = resolve_run_options(cfg, opts)
+        self.assertFalse(res.verbose)
+
+        # 2. Config run.verbose = True
+        cfg_run = CalibpipeConfig.from_dict({"run": {"verbose": True}})
+        res_run = resolve_run_options(cfg_run, opts)
+        self.assertTrue(res_run.verbose)
+
+        # 3. Profile overrides run.verbose
+        cfg_prof = CalibpipeConfig.from_dict(
+            {
+                "run": {"verbose": False},
+                "profiles": {"debug": {"verbose": True}},
+            }
+        )
+        res_prof = resolve_run_options(
+            cfg_prof, Namespace(profile="debug", verbose=None)
+        )
+        self.assertTrue(res_prof.verbose)
+
+        # 4. CLI flag overrides both
+        res_cli_false = resolve_run_options(
+            cfg_prof, Namespace(profile="debug", verbose=False)
+        )
+        self.assertFalse(res_cli_false.verbose)
+        res_cli_true = resolve_run_options(cfg, Namespace(verbose=True))
+        self.assertTrue(res_cli_true.verbose)
+
+    def test_workspace_skips_inaccessible_roots_fast(self):
+        with tempfile.TemporaryDirectory() as td:
+            valid_ws = Path(td) / "valid"
+            valid_ws.mkdir()
+            target_file = valid_ws / "target.txt"
+            target_file.write_text("ok")
+
+            # Include unmounted / nonexistent roots
+            workspaces = [
+                "/nonexistent/mount/one",
+                "/nonexistent/mount/two",
+                str(valid_ws),
+                "/nonexistent/mount/three",
+            ]
+            cfg = CalibpipeConfig.from_dict(
+                {
+                    "paths": {"workspaces": workspaces},
+                    "profiles": {"test": {"vis": ["target.txt"]}},
+                }
+            )
+            res = resolve_run_options(cfg, Namespace(profile="test"))
+            self.assertEqual(res.vis, [str(target_file.resolve())])
+
+
 if __name__ == "__main__":
     unittest.main()
-

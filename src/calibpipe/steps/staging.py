@@ -7,6 +7,7 @@ import os
 import shutil
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 
 def find_files(pattern: str, path: str | Path) -> list[str]:
@@ -115,7 +116,7 @@ def stage_ancillary_files(
     cont_dat: str | Path | None = None,
     jyperk_csv: str | Path | None = None,
     parameter_list: str | Path | None = None,
-    ancillary: list[str | Path] | None = None,
+    ancillary: list[Any] | None = None,
     recipe: str = "",
     log_func: Callable[[str], None] | None = None,
 ) -> list[Path]:
@@ -193,13 +194,30 @@ def stage_ancillary_files(
     # 4. Arbitrary additional ancillary files / directories
     if ancillary:
         for item in ancillary:
-            src = Path(item).expanduser().resolve()
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                src_raw, dst_raw = item
+                src = Path(src_raw).expanduser().resolve()
+                target = dest_dir / str(dst_raw)
+            elif isinstance(item, dict) and "src" in item and "dest" in item:
+                src = Path(item["src"]).expanduser().resolve()
+                target = dest_dir / str(item["dest"])
+            elif isinstance(item, str) and ":" in item and not Path(item).exists():
+                src_raw, dst_raw = item.split(":", 1)
+                src = Path(src_raw).expanduser().resolve()
+                target = dest_dir / str(dst_raw)
+            else:
+                src = Path(item).expanduser().resolve()
+                target = dest_dir / src.name
+
             if not src.exists():
                 if log_func:
                     log_func(f"Warning: Ancillary path {src} not found, skipping.")
                 continue
-            target = dest_dir / src.name
+
+            target.parent.mkdir(parents=True, exist_ok=True)
             if src != target:
+                if target.exists() and log_func:
+                    log_func(f"Notice: Overwriting existing ancillary destination: {target}")
                 if src.is_dir():
                     if target.exists():
                         shutil.rmtree(target)
