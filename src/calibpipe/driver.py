@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -45,11 +46,17 @@ class RunLogger:
     """Logger tracking command execution and formatted outputs for a pipeline run."""
 
     def __init__(self, filename: str, print_flag: bool = False) -> None:
-        """Open a timestamped log file for a pipeline run."""
-        now = datetime.now().isoformat().replace(":", "-")
-        self.filename = filename
+        """Open a log file for a pipeline run."""
         self.print_flag = print_flag
-        self.fd = open(f"{filename}.{now}.log", "w", encoding="utf-8")
+        if filename.endswith(".log"):
+            target_path = filename
+        elif re.search(r"\.\d{8}-\d{6}$", filename):
+            target_path = f"{filename}.log"
+        else:
+            now = datetime.now().strftime("%Y%m%d-%H%M%S")
+            target_path = f"{filename}.{now}.log"
+        self.filename = target_path
+        self.fd = open(target_path, "w", encoding="utf-8")
 
     def __enter__(self) -> RunLogger:
         return self
@@ -524,6 +531,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not load site-level configuration",
     )
     p.add_argument("--env", help="[envs.<name>] table to use from config")
+    p.add_argument(
+        "--casa-root",
+        "--casa-dir",
+        "--casa-ver",
+        dest="casa_root",
+        default=None,
+        help="Override CASA installation root directory",
+    )
+    p.add_argument(
+        "--heuristics-dir",
+        "--heuristics-root",
+        "--pipe-dir",
+        "--pl-ver",
+        dest="heuristics_dir",
+        default=None,
+        help="Override pipeline heuristics directory",
+    )
+    p.add_argument(
+        "--pixi-dir",
+        default=None,
+        help="Override Pixi project root directory",
+    )
+    p.add_argument(
+        "--pixi-env",
+        default=None,
+        help="Override Pixi environment name (default: default)",
+    )
+    p.add_argument(
+        "--branch",
+        default=None,
+        help="Override pipeline branch / checkout name",
+    )
+    p.add_argument(
+        "--casadata",
+        default=None,
+        help="Override casadata runtime measures directory",
+    )
     p.add_argument("--subdir", help="Extra subdirectory appended to SCIPIPE_ROOTDIR")
     p.add_argument(
         "--print-env", action="store_true", help="Print resolved environment and exit"
@@ -955,7 +999,7 @@ def build_casarun_prefix(
         else:
             casarun = f"{casaroot}/bin/casa --nocrashreport --notelemetry --nogui --agg"
             if run_opts.nprocs > 1:
-                mpi_flags: list[str] = []
+                mpi_flags: list[str] = ["--display-allocation", "--display-map"]
                 if run_opts.oversubscribe:
                     mpi_flags.append("--oversubscribe")
                 if run_opts.bind_to:
@@ -1031,6 +1075,11 @@ def _run_mous(
         if (recipe in ["image", "image_selfcal"] and not flag_and_go)
         else "false"
     )
+
+    # Verify PMR and support tool dependencies before launching pipelineMakeRequest
+    if not os.environ.get("CALIBPIPE_SKIP_PATH_CHECK"):
+        strict = bool(site_cfg.get("strict_paths", False))
+        envconfig.check_paths(env, site_config=site_cfg, strict=strict, check_pmr=True)
 
     pmr_cmd = f"pipelineMakeRequest {asdms_arg}{mous_uid} {intents_xml} {procedure} {dl_asdms} {dl_cal}"
     if run_opts.dry_run:
@@ -1342,7 +1391,7 @@ def _run_recipe_reducer(
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     mylog: RunLogger | None = None
     if not run_opts.dry_run:
-        log_name = f"{working_path}/calibpipe.recipe_reduce.{now_ts}"
+        log_name = f"{working_path}/calibpipe.recipe_reduce.{now_ts}.log"
         mylog = RunLogger(log_name, print_flag=True)
         link_batch_job_files_start(working_path, mylog.log)
         mylog.log(
@@ -1488,7 +1537,7 @@ def _run_standalone_ppr(
     working_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_name = f"{working_path}/calibpipe.ppr.{now_ts}"
+    log_name = f"{working_path}/calibpipe.ppr.{now_ts}.log"
     mylog = RunLogger(log_name, print_flag=True)
     link_batch_job_files_start(working_path, mylog.log)
 
@@ -1625,7 +1674,7 @@ def _run_script(
     working_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_name = f"{working_path}/calibpipe.script.{now_ts}"
+    log_name = f"{working_path}/calibpipe.script.{now_ts}.log"
     mylog = RunLogger(log_name, print_flag=True)
     link_batch_job_files_start(working_path, mylog.log)
 
@@ -1729,7 +1778,7 @@ def _run_cmd(
     working_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log_name = f"{working_path}/calibpipe.cmd.{now_ts}"
+    log_name = f"{working_path}/calibpipe.cmd.{now_ts}.log"
     mylog = RunLogger(log_name, print_flag=True)
     link_batch_job_files_start(working_path, mylog.log)
 
@@ -1978,8 +2027,29 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         )
         sys.exit(1)
 
-    env_spec = envconfig.resolve_env(cfg, run_opts.env_name)
-    env = envconfig.build_environment(cfg, env_spec, subdir=run_opts.subdir)
+    cfg_effective = dict(cfg)
+    paths_effective = dict(cfg.get("paths", {}))
+    if run_opts.workspaces:
+        paths_effective["workspaces"] = run_opts.workspaces
+    if run_opts.scipipe_rootdir:
+        paths_effective["scipipe_rootdir"] = run_opts.scipipe_rootdir
+    if run_opts.scipipe_logdir:
+        paths_effective["scipipe_logdir"] = run_opts.scipipe_logdir
+    if run_opts.casadata:
+        paths_effective["casadata"] = run_opts.casadata
+    cfg_effective["paths"] = paths_effective
+
+    env_spec = envconfig.resolve_env(
+        cfg_effective,
+        run_opts.env_name,
+        casa_root=run_opts.casa_root,
+        heuristics_dir=run_opts.heuristics_dir,
+        pixi_dir=run_opts.pixi_dir,
+        pixi_env=run_opts.pixi_env,
+        branch=run_opts.branch,
+        workspaces=run_opts.workspaces,
+    )
+    env = envconfig.build_environment(cfg_effective, env_spec, subdir=run_opts.subdir)
 
     # Update os.environ in process so subprocesses inherit it
     for k, v in env.items():

@@ -314,6 +314,26 @@ class TestRunLoggerContextManager(unittest.TestCase):
                 self.assertFalse(l.fd.closed)
             self.assertTrue(l.fd.closed)
 
+    def test_run_logger_filename_exact_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "calibpipe.recipe_reduce.20261016-225521.log"
+            with calibPipeIF.RunLogger(str(log_path)) as l:
+                l.log("running recipe")
+            self.assertTrue(log_path.is_file())
+            # Ensure no double-timestamp file was created
+            created_files = [p.name for p in Path(tmpdir).iterdir()]
+            self.assertEqual(created_files, ["calibpipe.recipe_reduce.20261016-225521.log"])
+
+    def test_run_logger_filename_avoids_duplicate_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "calibpipe.recipe_reduce.20261016-225521"
+            with calibPipeIF.RunLogger(str(log_path)) as l:
+                l.log("running recipe")
+            expected_file = Path(tmpdir) / "calibpipe.recipe_reduce.20261016-225521.log"
+            self.assertTrue(expected_file.is_file())
+            created_files = [p.name for p in Path(tmpdir).iterdir()]
+            self.assertEqual(created_files, ["calibpipe.recipe_reduce.20261016-225521.log"])
+
 
 class TestPixiExecution(CalibPipeIFCaptureCase):
     def setUp(self):

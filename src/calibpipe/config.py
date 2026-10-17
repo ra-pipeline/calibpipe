@@ -111,7 +111,11 @@ class PathsConfig:
             obscaldir=data.get("obscaldir"),
             aUdir=data.get("aUdir"),
             validation_dir=data.get("validation_dir"),
-            heuristics_root=data.get("heuristics_root"),
+            heuristics_root=(
+                data.get("heuristics_root")
+                or data.get("pipe_dir")
+                or data.get("pl_ver")
+            ),
             workspaces=list(data.get("workspaces", []) or []),
             casadata=data.get("casadata"),
             datapath=_list_or_empty(data.get("datapath")),
@@ -182,29 +186,59 @@ def _str_or_none(value: Any) -> str | None:
 
 @dataclass
 class BatchConfig:
-    """Slurm batch cluster resource submission defaults."""
+    """Batch cluster resource submission defaults (Slurm and HTCondor).
 
-    partition: str = "plwg"
-    cores: int = 8
-    mem: int = 248
-    node: str = "1"
-    mail_type: str = "ALL"
-    # Optional Slurm directives — None means the directive is omitted entirely.
-    walltime: str | None = None  # --time  (e.g. "24:00:00")
-    nodelist: str | None = None  # --nodelist  (pin to a specific node)
-    chdir: str | None = None  # --chdir  (Slurm working directory)
-    cpus_per_task: int | None = (
-        None  # --cpus-per-task  (for mpicasa: ntasks × cpus-per-task)
-    )
-    mem_per_cpu: str | None = None  # --mem-per-cpu  (mutually exclusive with mem)
-    hint: str | None = None  # --hint  (e.g. "nomultithread")
-    ntasks_per_core: int | None = None  # --ntasks-per-core  (e.g. 1 to disable HT)
-    distribution: str | None = None  # --distribution  (e.g. "cyclic:cyclic")
-    no_requeue: bool = True  # --no-requeue  (prevent silent resubmission)
+    Scheduler Compatibility:
+      - Both Slurm & HTCondor:
+          - scheduler: "slurm" or "htcondor".
+          - partition / queue: Slurm partition (--partition) or HTCondor (+partition).
+          - cores / ntasks: Slurm tasks (--ntasks) or HTCondor CPUs (request_cpus).
+          - mem: Total memory in GB (Slurm: --mem; HTCondor: request_memory).
+          - mem_per_cpu: Memory per CPU (Slurm: --mem-per-cpu; HTCondor: request_memory = cores × mem_per_cpu).
+          - mail_type: Notification setting (Slurm: --mail-type; HTCondor: notification).
+          - chdir: Working directory (Slurm: --chdir; HTCondor: initialdir).
+          - nodelist: Pinned host (Slurm: --nodelist; HTCondor: TARGET.Machine == "<nodelist>").
+          - logdir: Output directory for script records and scheduler logs.
+          - dry_run: Preview submit scripts without submitting.
+      - Slurm only (ignored by HTCondor):
+          - node: Number of nodes (--nodes).
+          - walltime: Job runtime limit (--time).
+          - cpus_per_task: Logical CPUs/threads per task (--cpus-per-task; total allocated = ntasks × cpus_per_task).
+          - ntasks_per_core: Tasks per physical silicon core (--ntasks-per-core; 1 to avoid HT sharing).
+          - hint: Placement hint (--hint, e.g. "nomultithread").
+          - distribution: Task distribution across nodes/sockets (--distribution).
+          - no_requeue: Prevent silent job requeuing on failure (--no-requeue).
+      - HTCondor only (ignored by Slurm):
+          - requirements: Custom ClassAd requirements expression override.
+    """
+
+    # --- Shared [Slurm & HTCondor] ---
+    partition: str = "plwg"  # Slurm: --partition; HTCondor: +partition (alias: queue)
+    cores: int = 8  # Slurm: --ntasks; HTCondor: request_cpus (alias: ntasks)
+    mem: int = 248  # Total RAM in GB (Slurm: --mem; HTCondor: request_memory)
+    mem_per_cpu: str | None = None  # RAM per CPU (Slurm: --mem-per-cpu; HTCondor: scaled into request_memory)
+    mail_type: str = "ALL"  # Slurm: --mail-type; HTCondor: notification
+    chdir: str | None = None  # Slurm: --chdir; HTCondor: initialdir
+    nodelist: str | None = None  # Slurm: --nodelist; HTCondor: TARGET.Machine
     scheduler: str = "slurm"  # Batch scheduler backend: "slurm" or "htcondor"
-    requirements: str | None = None  # HTCondor requirements expression override
     dry_run: bool = False  # Simulate batch submission without submitting jobs
     logdir: str | None = None  # Directory for scheduler log and script output
+
+    # --- Slurm-specific Directives [Slurm only] ---
+    node: str = "1"  # Slurm: --nodes
+    walltime: str | None = None  # Slurm: --time (e.g. "24:00:00")
+    cpus_per_task: int | None = (
+        None  # Slurm: --cpus-per-task (logical CPUs/threads per task; total = ntasks × cpus_per_task)
+    )
+    ntasks_per_core: int | None = (
+        None  # Slurm: --ntasks-per-core (tasks per physical core; 1 prevents HT sharing)
+    )
+    hint: str | None = None  # Slurm: --hint (e.g. "nomultithread")
+    distribution: str | None = None  # Slurm: --distribution (e.g. "cyclic:cyclic")
+    no_requeue: bool = True  # Slurm: --no-requeue (prevent silent resubmission)
+
+    # --- HTCondor-specific Directives [HTCondor only] ---
+    requirements: str | None = None  # HTCondor: requirements expression override
 
     def __init__(
         self,
@@ -227,9 +261,10 @@ class BatchConfig:
         dry_run: bool = False,
         queue: str | None = None,
         logdir: str | None = None,
+        ntasks: int | None = None,
     ) -> None:
         self.partition = queue if queue is not None else partition
-        self.cores = cores
+        self.cores = ntasks if ntasks is not None else cores
         self.mem = mem
         self.node = node
         self.mail_type = mail_type
@@ -252,6 +287,11 @@ class BatchConfig:
         """Backward-compatible alias for partition."""
         return self.partition
 
+    @property
+    def ntasks(self) -> int:
+        """Backward-compatible and Slurm-native alias for cores."""
+        return self.cores
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
         default_inst = cls()
@@ -259,7 +299,7 @@ class BatchConfig:
             partition=str(
                 data.get("partition", data.get("queue", default_inst.partition))
             ),
-            cores=int(data.get("cores", default_inst.cores)),
+            cores=int(data.get("cores", data.get("ntasks", default_inst.cores))),
             mem=int(data.get("mem", default_inst.mem)),
             node=str(data.get("node", default_inst.node)),
             mail_type=str(data.get("mail_type", default_inst.mail_type)),
@@ -298,7 +338,7 @@ class RunConfig:
     openblas_num_threads: int | None = None
     omp_max_threads: int | None = None
     mem_frac: float | None = None
-    oversubscribe: bool = False
+    oversubscribe: bool = True
     bind_to: str | None = None
     map_by: str | None = None
     psrecord: bool = False
@@ -327,7 +367,7 @@ class RunConfig:
         openblas_num_threads: int | None = None,
         omp_max_threads: int | None = None,
         mem_frac: float | None = None,
-        oversubscribe: bool = False,
+        oversubscribe: bool = True,
         bind_to: str | None = None,
         map_by: str | None = None,
         psrecord: bool = False,
@@ -479,24 +519,49 @@ class ProfileConfig:
     ancillary: list[Any] = field(default_factory=list)
     workdir: str | None = None
 
-    # Batch options
-    partition: str | None = None
-    cores: int | None = None
-    mem: int | None = None
-    node: str | None = None
-    mail_type: str | None = None
-    walltime: str | None = None
-    nodelist: str | None = None
-    chdir: str | None = None
-    logdir: str | None = None
-    cpus_per_task: int | None = None
-    mem_per_cpu: str | None = None
-    hint: str | None = None
-    ntasks_per_core: int | None = None
-    distribution: str | None = None
-    no_requeue: bool | None = None
-    scheduler: str | None = None
-    requirements: str | None = None
+    # Batch options - Shared [Slurm & HTCondor]
+    partition: str | None = None  # Slurm: --partition; HTCondor: +partition (alias: queue)
+    cores: int | None = None  # Slurm: --ntasks; HTCondor: request_cpus (alias: ntasks)
+    mem: int | None = None  # Total RAM in GB (Slurm: --mem; HTCondor: request_memory)
+    mem_per_cpu: str | None = None  # RAM per CPU (Slurm: --mem-per-cpu; HTCondor: scaled into request_memory)
+    mail_type: str | None = None  # Slurm: --mail-type; HTCondor: notification
+    chdir: str | None = None  # Slurm: --chdir; HTCondor: initialdir
+    nodelist: str | None = None  # Slurm: --nodelist; HTCondor: TARGET.Machine
+    logdir: str | None = None  # Output directory for script records and logs
+    scheduler: str | None = None  # "slurm" or "htcondor"
+
+    # Batch options - Slurm only
+    node: str | None = None  # Slurm: --nodes
+    walltime: str | None = None  # Slurm: --time (e.g. "24:00:00")
+    cpus_per_task: int | None = (
+        None  # Slurm: --cpus-per-task (logical CPUs/threads per task; total = ntasks × cpus_per_task)
+    )
+    ntasks_per_core: int | None = (
+        None  # Slurm: --ntasks-per-core (tasks per physical core; 1 prevents HT sharing)
+    )
+    hint: str | None = None  # Slurm: --hint (e.g. "nomultithread")
+    distribution: str | None = None  # Slurm: --distribution (e.g. "cyclic:cyclic")
+    no_requeue: bool | None = None  # Slurm: --no-requeue
+
+    # Batch options - HTCondor only
+    requirements: str | None = None  # HTCondor: requirements expression override
+
+    # Environment overrides
+    casa_root: str | None = None
+    heuristics_dir: str | None = None
+    pixi_dir: str | None = None
+    pixi_env: str | None = None
+    branch: str | None = None
+
+    # Paths overrides
+    workspaces: list[str] | None = None
+    scipipe_rootdir: str | None = None
+    scipipe_logdir: str | None = None
+    casadata: str | None = None
+    pickle_dir: str | None = None
+    obscaldir: str | None = None
+    aUdir: str | None = None
+    validation_dir: str | None = None
 
     # Execution targets & modes
     mous: str | None = None
@@ -515,8 +580,22 @@ class ProfileConfig:
     def __init__(self, **kwargs: Any) -> None:
         if "queue" in kwargs and "partition" not in kwargs:
             kwargs["partition"] = kwargs.pop("queue")
+        if "ntasks" in kwargs and "cores" not in kwargs:
+            kwargs["cores"] = kwargs.pop("ntasks")
         if "ncores" in kwargs and "nprocs" not in kwargs:
             kwargs["nprocs"] = kwargs.pop("ncores")
+        if "work_path" in kwargs and "workdir" not in kwargs:
+            kwargs["workdir"] = kwargs.pop("work_path")
+        if "casa_ver" in kwargs and "casa_root" not in kwargs:
+            kwargs["casa_root"] = kwargs.pop("casa_ver")
+        if "casa_dir" in kwargs and "casa_root" not in kwargs:
+            kwargs["casa_root"] = kwargs.pop("casa_dir")
+        if "pl_ver" in kwargs and "heuristics_dir" not in kwargs:
+            kwargs["heuristics_dir"] = kwargs.pop("pl_ver")
+        if "pipe_dir" in kwargs and "heuristics_dir" not in kwargs:
+            kwargs["heuristics_dir"] = kwargs.pop("pipe_dir")
+        if "heuristics_root" in kwargs and "heuristics_dir" not in kwargs:
+            kwargs["heuristics_dir"] = kwargs.pop("heuristics_root")
         if "ancillary" in kwargs:
             kwargs["ancillary"] = _ancillary_list(kwargs["ancillary"])
         for f in fields(self):
@@ -533,13 +612,64 @@ class ProfileConfig:
         return self.partition
 
     @property
+    def ntasks(self) -> int | None:
+        """Backward-compatible and Slurm-native alias for cores."""
+        return self.cores
+
+    @property
     def ncores(self) -> int | None:
         """Backward-compatible alias for nprocs."""
         return self.nprocs
 
+    @property
+    def work_path(self) -> str | None:
+        """Backward-compatible alias for workdir."""
+        return self.workdir
+
+    @property
+    def casa_ver(self) -> str | None:
+        """Backward-compatible alias for casa_root."""
+        return self.casa_root
+
+    @property
+    def casa_dir(self) -> str | None:
+        """Backward-compatible alias for casa_root."""
+        return self.casa_root
+
+    @property
+    def pl_ver(self) -> str | None:
+        """Backward-compatible alias for heuristics_dir."""
+        return self.heuristics_dir
+
+    @property
+    def pipe_dir(self) -> str | None:
+        """Backward-compatible alias for heuristics_dir."""
+        return self.heuristics_dir
+
+    @property
+    def heuristics_root(self) -> str | None:
+        """Backward-compatible alias for heuristics_dir."""
+        return self.heuristics_dir
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProfileConfig:
-        vis_raw = data.get("vis")
+        flat = dict(data)
+        env_raw = flat.get("env")
+        if isinstance(env_raw, str):
+            env_name = env_raw
+        elif isinstance(env_raw, dict):
+            env_name = env_raw.get("name") or env_raw.get("env")
+        else:
+            env_name = None
+
+        for sub_name in ("paths", "run", "batch", "env", "envs"):
+            sub = flat.get(sub_name)
+            if isinstance(sub, dict):
+                for k, v in sub.items():
+                    if k not in flat or flat[k] is None:
+                        flat[k] = v
+
+        vis_raw = flat.get("vis")
         if isinstance(vis_raw, str):
             vis_list = [vis_raw]
         elif isinstance(vis_raw, (list, tuple)):
@@ -548,63 +678,87 @@ class ProfileConfig:
             vis_list = []
 
         return cls(
-            env=_str_or_none(data.get("env")),
-            recipe=_str_or_none(data.get("recipe")),
-            nprocs=_int_or_none(data.get("nprocs", data.get("ncores"))),
-            loglevel=_str_or_none(data.get("loglevel")),
-            useresume=bool(data["useresume"]) if "useresume" in data else None,
-            symlink_shortcuts=bool(data["symlink_shortcuts"])
-            if "symlink_shortcuts" in data
+            env=_str_or_none(env_name),
+            casa_root=_str_or_none(
+                flat.get("casa_root") or flat.get("casa_dir") or flat.get("casa_ver")
+            ),
+            heuristics_dir=_str_or_none(
+                flat.get("heuristics_dir")
+                or flat.get("heuristics_root")
+                or flat.get("pipe_dir")
+                or flat.get("pl_ver")
+            ),
+            pixi_dir=_str_or_none(flat.get("pixi_dir")),
+            pixi_env=_str_or_none(flat.get("pixi_env")),
+            branch=_str_or_none(flat.get("branch")),
+            workspaces=(
+                list(flat["workspaces"])
+                if "workspaces" in flat and isinstance(flat["workspaces"], (list, tuple))
+                else None
+            ),
+            scipipe_rootdir=_str_or_none(flat.get("scipipe_rootdir")),
+            scipipe_logdir=_str_or_none(flat.get("scipipe_logdir")),
+            casadata=_str_or_none(flat.get("casadata")),
+            pickle_dir=_str_or_none(flat.get("pickle_dir")),
+            obscaldir=_str_or_none(flat.get("obscaldir")),
+            aUdir=_str_or_none(flat.get("aUdir")),
+            validation_dir=_str_or_none(flat.get("validation_dir")),
+            recipe=_str_or_none(flat.get("recipe")),
+            nprocs=_int_or_none(flat.get("nprocs", flat.get("ncores"))),
+            loglevel=_str_or_none(flat.get("loglevel")),
+            useresume=bool(flat["useresume"]) if "useresume" in flat else None,
+            symlink_shortcuts=bool(flat["symlink_shortcuts"])
+            if "symlink_shortcuts" in flat
             else None,
-            log2term=bool(data["log2term"]) if "log2term" in data else None,
-            verbose=bool(data["verbose"]) if "verbose" in data else None,
-            omp_num_threads=_int_or_none(data.get("omp_num_threads")),
-            openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
-            omp_max_threads=_int_or_none(data.get("omp_max_threads")),
-            mem_frac=_float_or_none(data.get("mem_frac")),
-            oversubscribe=bool(data["oversubscribe"])
-            if "oversubscribe" in data
+            log2term=bool(flat["log2term"]) if "log2term" in flat else None,
+            verbose=bool(flat["verbose"]) if "verbose" in flat else None,
+            omp_num_threads=_int_or_none(flat.get("omp_num_threads")),
+            openblas_num_threads=_int_or_none(flat.get("openblas_num_threads")),
+            omp_max_threads=_int_or_none(flat.get("omp_max_threads")),
+            mem_frac=_float_or_none(flat.get("mem_frac")),
+            oversubscribe=bool(flat["oversubscribe"])
+            if "oversubscribe" in flat
             else None,
-            bind_to=_str_or_none(data.get("bind_to")),
-            map_by=_str_or_none(data.get("map_by")),
-            psrecord=bool(data["psrecord"]) if "psrecord" in data else None,
-            memstats=bool(data["memstats"]) if "memstats" in data else None,
-            pl_psrecord=bool(data["pl_psrecord"]) if "pl_psrecord" in data else None,
-            backup=bool(data["backup"]) if "backup" in data else None,
-            cont_dat=_str_or_none(data.get("cont_dat")),
-            jyperk_csv=_str_or_none(data.get("jyperk_csv")),
-            parameter_list=_str_or_none(data.get("parameter_list")),
-            ancillary=_ancillary_list(data.get("ancillary", [])),
-            workdir=_str_or_none(data.get("workdir")),
-            partition=_str_or_none(data.get("partition", data.get("queue"))),
-            cores=_int_or_none(data.get("cores")),
-            mem=_int_or_none(data.get("mem")),
-            node=_str_or_none(data.get("node")),
-            mail_type=_str_or_none(data.get("mail_type")),
-            walltime=_str_or_none(data.get("walltime")),
-            nodelist=_str_or_none(data.get("nodelist")),
-            chdir=_str_or_none(data.get("chdir")),
-            logdir=_str_or_none(data.get("logdir")),
-            cpus_per_task=_int_or_none(data.get("cpus_per_task")),
-            mem_per_cpu=_str_or_none(data.get("mem_per_cpu")),
-            hint=_str_or_none(data.get("hint")),
-            ntasks_per_core=_int_or_none(data.get("ntasks_per_core")),
-            distribution=_str_or_none(data.get("distribution")),
-            no_requeue=bool(data["no_requeue"]) if "no_requeue" in data else None,
-            scheduler=_str_or_none(data.get("scheduler")),
-            requirements=_str_or_none(data.get("requirements")),
-            mous=_str_or_none(data.get("mous")),
+            bind_to=_str_or_none(flat.get("bind_to")),
+            map_by=_str_or_none(flat.get("map_by")),
+            psrecord=bool(flat["psrecord"]) if "psrecord" in flat else None,
+            memstats=bool(flat["memstats"]) if "memstats" in flat else None,
+            pl_psrecord=bool(flat["pl_psrecord"]) if "pl_psrecord" in flat else None,
+            backup=bool(flat["backup"]) if "backup" in flat else None,
+            cont_dat=_str_or_none(flat.get("cont_dat")),
+            jyperk_csv=_str_or_none(flat.get("jyperk_csv")),
+            parameter_list=_str_or_none(flat.get("parameter_list")),
+            ancillary=_ancillary_list(flat.get("ancillary", [])),
+            workdir=_str_or_none(flat.get("workdir") or flat.get("work_path")),
+            partition=_str_or_none(flat.get("partition", flat.get("queue"))),
+            cores=_int_or_none(flat.get("cores", flat.get("ntasks"))),
+            mem=_int_or_none(flat.get("mem")),
+            node=_str_or_none(flat.get("node")),
+            mail_type=_str_or_none(flat.get("mail_type")),
+            walltime=_str_or_none(flat.get("walltime")),
+            nodelist=_str_or_none(flat.get("nodelist")),
+            chdir=_str_or_none(flat.get("chdir")),
+            logdir=_str_or_none(flat.get("logdir")),
+            cpus_per_task=_int_or_none(flat.get("cpus_per_task")),
+            mem_per_cpu=_str_or_none(flat.get("mem_per_cpu")),
+            hint=_str_or_none(flat.get("hint")),
+            ntasks_per_core=_int_or_none(flat.get("ntasks_per_core")),
+            distribution=_str_or_none(flat.get("distribution")),
+            no_requeue=bool(flat["no_requeue"]) if "no_requeue" in flat else None,
+            scheduler=_str_or_none(flat.get("scheduler")),
+            requirements=_str_or_none(flat.get("requirements")),
+            mous=_str_or_none(flat.get("mous")),
             vis=vis_list,
-            procedure=_str_or_none(data.get("procedure")),
-            script=_str_or_none(data.get("script")),
-            cmd=_str_or_none(data.get("cmd")),
-            ppr=_str_or_none(data.get("ppr")),
-            vla=bool(data["vla"]) if "vla" in data else None,
-            interactive=bool(data["interactive"]) if "interactive" in data else None,
-            datapath=_list_or_empty(data["datapath"]) if "datapath" in data else None,
-            rundata=_list_or_empty(data["rundata"]) if "rundata" in data else None,
-            dry_run=bool(data["dry_run"]) if "dry_run" in data else None,
-            autoreload=bool(data["autoreload"]) if "autoreload" in data else None,
+            procedure=_str_or_none(flat.get("procedure")),
+            script=_str_or_none(flat.get("script")),
+            cmd=_str_or_none(flat.get("cmd")),
+            ppr=_str_or_none(flat.get("ppr")),
+            vla=bool(flat["vla"]) if "vla" in flat else None,
+            interactive=bool(flat["interactive"]) if "interactive" in flat else None,
+            datapath=_list_or_empty(flat["datapath"]) if "datapath" in flat else None,
+            rundata=_list_or_empty(flat["rundata"]) if "rundata" in flat else None,
+            dry_run=bool(flat["dry_run"]) if "dry_run" in flat else None,
+            autoreload=bool(flat["autoreload"]) if "autoreload" in flat else None,
         )
 
 
@@ -676,6 +830,8 @@ class CalibpipeConfig(dict):
                 b_copy = dict(b_data)
                 if "queue" in b_copy and "partition" not in b_copy:
                     b_copy["partition"] = b_copy["queue"]
+                if "ntasks" in b_copy and "cores" not in b_copy:
+                    b_copy["cores"] = b_copy["ntasks"]
                 merged_batch_data = dict(asdict(batch))
                 merged_batch_data.update(b_copy)
                 batches[b_name] = BatchConfig.from_dict(merged_batch_data)
@@ -689,7 +845,12 @@ class CalibpipeConfig(dict):
         envs: dict[str, EnvSpec] = {}
         for env_name, env_data in data.get("envs", {}).items():
             if isinstance(env_data, dict):
-                raw_casa_root = env_data.get("casa_root", "")
+                raw_casa_root = (
+                    env_data.get("casa_root")
+                    or env_data.get("casa_dir")
+                    or env_data.get("casa_ver")
+                    or ""
+                )
                 if raw_casa_root and workspaces:
                     resolved_casa = resolve_workspace_path(
                         raw_casa_root.rstrip("/"), workspaces
@@ -705,7 +866,12 @@ class CalibpipeConfig(dict):
                     if _safe_exists(resolved_pixi):
                         raw_pixi_dir = str(resolved_pixi)
 
-                raw_heuristics = env_data.get("heuristics_dir")
+                raw_heuristics = (
+                    env_data.get("heuristics_dir")
+                    or env_data.get("heuristics_root")
+                    or env_data.get("pipe_dir")
+                    or env_data.get("pl_ver")
+                )
                 if raw_heuristics and workspaces and "{" not in raw_heuristics:
                     resolved_heur = resolve_workspace_path(
                         raw_heuristics.rstrip("/"), workspaces
@@ -726,8 +892,13 @@ class CalibpipeConfig(dict):
                         if k
                         not in (
                             "casa_root",
+                            "casa_dir",
+                            "casa_ver",
                             "branch",
                             "heuristics_dir",
+                            "heuristics_root",
+                            "pipe_dir",
+                            "pl_ver",
                             "pixi_dir",
                             "pixi_env",
                         )
@@ -781,7 +952,7 @@ class ResolvedRunOptions:
     openblas_num_threads: int | None = None
     omp_max_threads: int | None = None
     mem_frac: float | None = None
-    oversubscribe: bool = False
+    oversubscribe: bool = True
     bind_to: str | None = None
     map_by: str | None = None
 
@@ -801,6 +972,17 @@ class ResolvedRunOptions:
     rundata_specified: bool = False
     dry_run: bool = False
     autoreload: bool = True
+
+    # Environment & Path overrides
+    casa_root: str | None = None
+    heuristics_dir: str | None = None
+    pixi_dir: str | None = None
+    pixi_env: str | None = None
+    branch: str | None = None
+    workspaces: list[str] = field(default_factory=list)
+    scipipe_rootdir: str | None = None
+    scipipe_logdir: str | None = None
+    casadata: str | None = None
 
     def __init__(
         self,
@@ -830,7 +1012,7 @@ class ResolvedRunOptions:
         openblas_num_threads: int | None = None,
         omp_max_threads: int | None = None,
         mem_frac: float | None = None,
-        oversubscribe: bool = False,
+        oversubscribe: bool = True,
         bind_to: str | None = None,
         map_by: str | None = None,
         psrecord: bool = False,
@@ -846,6 +1028,20 @@ class ResolvedRunOptions:
         rundata_specified: bool = False,
         dry_run: bool = False,
         autoreload: bool = True,
+        casa_root: str | None = None,
+        heuristics_dir: str | None = None,
+        pixi_dir: str | None = None,
+        pixi_env: str | None = None,
+        branch: str | None = None,
+        workspaces: list[str] | None = None,
+        scipipe_rootdir: str | None = None,
+        scipipe_logdir: str | None = None,
+        casadata: str | None = None,
+        casa_ver: str | None = None,
+        casa_dir: str | None = None,
+        pl_ver: str | None = None,
+        pipe_dir: str | None = None,
+        heuristics_root: str | None = None,
         ncores: int | None = None,
     ) -> None:
         self.profile = profile
@@ -890,11 +1086,47 @@ class ResolvedRunOptions:
         self.rundata_specified = rundata_specified
         self.dry_run = dry_run
         self.autoreload = autoreload
+        self.casa_root = casa_root or casa_dir or casa_ver
+        self.heuristics_dir = (
+            heuristics_dir or heuristics_root or pipe_dir or pl_ver
+        )
+        self.pixi_dir = pixi_dir
+        self.pixi_env = pixi_env
+        self.branch = branch
+        self.workspaces = list(workspaces or [])
+        self.scipipe_rootdir = scipipe_rootdir
+        self.scipipe_logdir = scipipe_logdir
+        self.casadata = casadata
 
     @property
     def ncores(self) -> int:
         """Backward-compatible alias for nprocs."""
         return self.nprocs
+
+    @property
+    def casa_ver(self) -> str | None:
+        """Backward-compatible alias for casa_root."""
+        return self.casa_root
+
+    @property
+    def casa_dir(self) -> str | None:
+        """Backward-compatible alias for casa_root."""
+        return self.casa_root
+
+    @property
+    def pl_ver(self) -> str | None:
+        """Backward-compatible alias for heuristics_dir."""
+        return self.heuristics_dir
+
+    @property
+    def pipe_dir(self) -> str | None:
+        """Backward-compatible alias for heuristics_dir."""
+        return self.heuristics_dir
+
+    @property
+    def heuristics_root(self) -> str | None:
+        """Backward-compatible alias for heuristics_dir."""
+        return self.heuristics_dir
 
 
 def _safe_exists(path: Path) -> bool:
@@ -1162,8 +1394,53 @@ def resolve_run_options(
     else:
         resolved_rundata = []
 
+    # Resolve environment and path overrides: CLI > Profile
+    cli_casa_root = (
+        getattr(cli_opts, "casa_root", None)
+        or getattr(cli_opts, "casa_dir", None)
+        or getattr(cli_opts, "casa_ver", None)
+    )
+    prof_casa_root = profile.casa_root if profile else None
+    resolved_casa_root = cli_casa_root or prof_casa_root
+
+    cli_heuristics_dir = (
+        getattr(cli_opts, "heuristics_dir", None)
+        or getattr(cli_opts, "heuristics_root", None)
+        or getattr(cli_opts, "pipe_dir", None)
+        or getattr(cli_opts, "pl_ver", None)
+    )
+    prof_heuristics_dir = profile.heuristics_dir if profile else None
+    resolved_heuristics_dir = cli_heuristics_dir or prof_heuristics_dir
+
+    cli_pixi_dir = getattr(cli_opts, "pixi_dir", None)
+    prof_pixi_dir = profile.pixi_dir if profile else None
+    resolved_pixi_dir = cli_pixi_dir or prof_pixi_dir
+
+    cli_pixi_env = getattr(cli_opts, "pixi_env", None)
+    prof_pixi_env = profile.pixi_env if profile else None
+    resolved_pixi_env = cli_pixi_env or prof_pixi_env
+
+    cli_branch = getattr(cli_opts, "branch", None)
+    prof_branch = profile.branch if profile else None
+    resolved_branch = cli_branch or prof_branch
+
+    cli_casadata = getattr(cli_opts, "casadata", None)
+    prof_casadata = profile.casadata if profile else None
+    resolved_casadata = cli_casadata or prof_casadata
+
+    cli_scipipe_rootdir = getattr(cli_opts, "scipipe_rootdir", None)
+    prof_scipipe_rootdir = profile.scipipe_rootdir if profile else None
+    resolved_scipipe_rootdir = cli_scipipe_rootdir or prof_scipipe_rootdir
+
+    cli_scipipe_logdir = getattr(cli_opts, "scipipe_logdir", None)
+    prof_scipipe_logdir = profile.scipipe_logdir if profile else None
+    resolved_scipipe_logdir = cli_scipipe_logdir or prof_scipipe_logdir
+
+    prof_workspaces = profile.workspaces if profile and profile.workspaces else None
+    resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
+
     # Dynamic workspace search path resolution
-    workspaces = cfg.paths.workspaces
+    workspaces = resolved_workspaces
     if workspaces:
         accessible_workspaces = [
             ws for ws in workspaces if ws and _cached_is_dir(str(Path(ws).expanduser()))
@@ -1242,9 +1519,10 @@ def resolve_run_options(
     if workdir:
         workdir_search = []
         user_name = os.environ.get("USER", "")
+        effective_rootdir = resolved_scipipe_rootdir or cfg.paths.scipipe_rootdir
         root_dir = (
-            Path(cfg.paths.scipipe_rootdir.replace("{user}", user_name)).expanduser()
-            if cfg.paths.scipipe_rootdir
+            Path(effective_rootdir.replace("{user}", user_name)).expanduser()
+            if effective_rootdir
             else None
         )
         if root_dir is not None:
@@ -1307,35 +1585,58 @@ def resolve_run_options(
         rundata_specified=rundata_specified,
         dry_run=dry_run,
         autoreload=autoreload,
+        casa_root=resolved_casa_root,
+        heuristics_dir=resolved_heuristics_dir,
+        pixi_dir=resolved_pixi_dir,
+        pixi_env=resolved_pixi_env,
+        branch=resolved_branch,
+        workspaces=resolved_workspaces,
+        scipipe_rootdir=resolved_scipipe_rootdir,
+        scipipe_logdir=resolved_scipipe_logdir,
+        casadata=resolved_casadata,
     )
 
 
 @dataclass
 class ResolvedBatchOptions:
-    """Fully resolved options for a Slurm batch submission."""
+    """Fully resolved options for a batch submission (Slurm or HTCondor).
+
+    Scheduler Compatibility:
+      - Shared [Slurm & HTCondor]:
+          pipefile, env_name, partition, cores (ntasks), mem, mem_per_cpu,
+          mail_type, chdir, nodelist, scheduler, dry_run, logdir, outfile, errfile.
+      - Slurm only:
+          node, walltime, cpus_per_task, ntasks_per_core, hint, distribution, no_requeue.
+      - HTCondor only:
+          requirements.
+    """
 
     pipefile: Path | None
     env_name: str
     partition: str
-    cores: int
-    mem: int
-    node: str
-    mail_type: str
+    cores: int  # Tasks/CPUs per job (Slurm: --ntasks; HTCondor: request_cpus; alias: ntasks)
+    mem: int  # Total RAM in GB (Slurm: --mem; HTCondor: request_memory)
+    node: str  # [Slurm only] --nodes
+    mail_type: str  # [Slurm & HTCondor] Notification policy
     outfile: str | None = None
     errfile: str | None = None
     extra_args: list[str] = field(default_factory=list)
-    # Optional Slurm directives
-    walltime: str | None = None
-    nodelist: str | None = None
-    chdir: str | None = None
-    cpus_per_task: int | None = None
-    mem_per_cpu: str | None = None
-    hint: str | None = None
-    ntasks_per_core: int | None = None
-    distribution: str | None = None
-    no_requeue: bool = True
-    scheduler: str = "slurm"
-    requirements: str | None = None
+    # Directives
+    walltime: str | None = None  # [Slurm only] --time
+    nodelist: str | None = None  # [Slurm & HTCondor] Pinned host
+    chdir: str | None = None  # [Slurm & HTCondor] Initial directory
+    cpus_per_task: int | None = (
+        None  # [Slurm only] Logical CPUs/threads per task (--cpus-per-task)
+    )
+    mem_per_cpu: str | None = None  # [Slurm & HTCondor] Memory per CPU
+    hint: str | None = None  # [Slurm only] Placement hint (--hint)
+    ntasks_per_core: int | None = (
+        None  # [Slurm only] Tasks per physical core (--ntasks-per-core)
+    )
+    distribution: str | None = None  # [Slurm only] Task distribution (--distribution)
+    no_requeue: bool = True  # [Slurm only] Prevent auto-requeue (--no-requeue)
+    scheduler: str = "slurm"  # [Slurm & HTCondor] "slurm" or "htcondor"
+    requirements: str | None = None  # [HTCondor only] ClassAd expression override
     profile: str | None = None
     dry_run: bool = False
     logdir: str | None = None
@@ -1344,6 +1645,11 @@ class ResolvedBatchOptions:
     def queue(self) -> str:
         """Backward-compatible alias for partition."""
         return self.partition
+
+    @property
+    def ntasks(self) -> int:
+        """Backward-compatible and Slurm-native alias for cores."""
+        return self.cores
 
 
 def resolve_batch_options(
@@ -1399,6 +1705,8 @@ def resolve_batch_options(
     partition = cli_partition if cli_partition else active_batch.partition
 
     cores = getattr(cli_args, "cores", None)
+    if cores is None:
+        cores = getattr(cli_args, "ntasks", None)
     if cores is None:
         cores = active_batch.cores
 
@@ -2154,12 +2462,28 @@ def format_profile_details(config: CalibpipeConfig | dict[str, Any], name: str) 
     return "\n".join(lines)
 
 
-def resolve_env(config: dict[str, Any], env_name: str | None = None) -> EnvSpec:
+def resolve_env(
+    config: dict[str, Any],
+    env_name: str | None = None,
+    *,
+    casa_root: str | None = None,
+    heuristics_dir: str | None = None,
+    pixi_dir: str | None = None,
+    pixi_env: str | None = None,
+    branch: str | None = None,
+    workspaces: Sequence[str | Path] | None = None,
+) -> EnvSpec:
     """Resolve a named CASA environment from the loaded config.
 
     Args:
         config: Parsed TOML configuration dictionary.
         env_name: Explicit environment name. If omitted, `default_env` is used.
+        casa_root: Optional override for CASA installation root.
+        heuristics_dir: Optional override for pipeline heuristics directory.
+        pixi_dir: Optional override for Pixi workspace directory.
+        pixi_env: Optional override for Pixi environment name.
+        branch: Optional override for pipeline branch name.
+        workspaces: Optional override for workspace search roots.
 
     Returns:
         Resolved environment specification.
@@ -2180,43 +2504,75 @@ def resolve_env(config: dict[str, Any], env_name: str | None = None) -> EnvSpec:
         raise ConfigError(f"No [envs.{name}] in config file. Available: {available}")
 
     table = dict(envs[name])
-    if "casa_root" not in table and "pixi_dir" not in table:
+    if casa_root is not None:
+        table["casa_root"] = casa_root
+    if heuristics_dir is not None:
+        table["heuristics_dir"] = heuristics_dir
+    if pixi_dir is not None:
+        table["pixi_dir"] = pixi_dir
+    if pixi_env is not None:
+        table["pixi_env"] = pixi_env
+    if branch is not None:
+        table["branch"] = branch
+
+    casa_root_key = next((k for k in ("casa_root", "casa_dir", "casa_ver") if k in table and table[k]), None)
+    if not casa_root_key and "pixi_dir" not in table:
         raise ConfigError(
             f"[envs.{name}] must specify either 'casa_root' (monolithic CASA) "
             f"or 'pixi_dir' (Pixi modular CASA)."
         )
 
-    workspaces = config.get("paths", {}).get("workspaces", [])
-    casa_root = table.get("casa_root", "")
-    if casa_root and workspaces:
-        resolved_casa = resolve_workspace_path(casa_root.rstrip("/"), workspaces)
+    effective_workspaces = (
+        workspaces
+        if workspaces is not None
+        else config.get("paths", {}).get("workspaces", [])
+    )
+    resolved_casa_root = str(table.get(casa_root_key, "")) if casa_root_key else ""
+    if resolved_casa_root and effective_workspaces:
+        resolved_casa = resolve_workspace_path(resolved_casa_root.rstrip("/"), effective_workspaces)
         if _safe_exists(resolved_casa):
-            casa_root = str(resolved_casa)
+            resolved_casa_root = str(resolved_casa)
 
-    pixi_dir = table.get("pixi_dir")
-    if pixi_dir and workspaces:
-        resolved_pixi = resolve_workspace_path(pixi_dir.rstrip("/"), workspaces)
+    resolved_pixi_dir = table.get("pixi_dir")
+    if resolved_pixi_dir and effective_workspaces:
+        resolved_pixi = resolve_workspace_path(resolved_pixi_dir.rstrip("/"), effective_workspaces)
         if _safe_exists(resolved_pixi):
-            pixi_dir = str(resolved_pixi)
+            resolved_pixi_dir = str(resolved_pixi)
 
-    heuristics_dir = table.get("heuristics_dir")
-    if heuristics_dir and workspaces and "{" not in heuristics_dir:
-        resolved_heur = resolve_workspace_path(heuristics_dir.rstrip("/"), workspaces)
+    resolved_heuristics = (
+        table.get("heuristics_dir")
+        or table.get("heuristics_root")
+        or table.get("pipe_dir")
+        or table.get("pl_ver")
+    )
+    if resolved_heuristics and effective_workspaces and "{" not in resolved_heuristics:
+        resolved_heur = resolve_workspace_path(resolved_heuristics.rstrip("/"), effective_workspaces)
         if _safe_exists(resolved_heur):
-            heuristics_dir = str(resolved_heur)
+            resolved_heuristics = str(resolved_heur)
 
     return EnvSpec(
         name=name,
-        casa_root=casa_root,
+        casa_root=resolved_casa_root,
         branch=table.get("branch", name),
-        heuristics_dir=heuristics_dir,
-        pixi_dir=pixi_dir,
+        heuristics_dir=resolved_heuristics,
+        pixi_dir=resolved_pixi_dir,
         pixi_env=table.get("pixi_env", "default"),
         extra_vars={
             k: str(v)
             for k, v in table.items()
             if k
-            not in ("casa_root", "branch", "heuristics_dir", "pixi_dir", "pixi_env")
+            not in (
+                "casa_root",
+                "casa_dir",
+                "casa_ver",
+                "branch",
+                "heuristics_dir",
+                "heuristics_root",
+                "pipe_dir",
+                "pl_ver",
+                "pixi_dir",
+                "pixi_env",
+            )
         },
     )
 
@@ -2241,11 +2597,23 @@ def build_environment(
     """
     if isinstance(env_spec, dict):
         name = env_spec.get("name", "unknown")
+        casa_root_raw = (
+            env_spec.get("casa_root")
+            or env_spec.get("casa_dir")
+            or env_spec.get("casa_ver")
+            or ""
+        )
+        heuristics_raw = (
+            env_spec.get("heuristics_dir")
+            or env_spec.get("heuristics_root")
+            or env_spec.get("pipe_dir")
+            or env_spec.get("pl_ver")
+        )
         spec = EnvSpec(
             name=name,
-            casa_root=env_spec.get("casa_root", ""),
+            casa_root=casa_root_raw,
             branch=env_spec.get("branch", name),
-            heuristics_dir=env_spec.get("heuristics_dir"),
+            heuristics_dir=heuristics_raw,
             pixi_dir=env_spec.get("pixi_dir"),
             pixi_env=env_spec.get("pixi_env", "default"),
             extra_vars={
@@ -2255,8 +2623,13 @@ def build_environment(
                 not in (
                     "name",
                     "casa_root",
+                    "casa_dir",
+                    "casa_ver",
                     "branch",
                     "heuristics_dir",
+                    "heuristics_root",
+                    "pipe_dir",
+                    "pl_ver",
                     "pixi_dir",
                     "pixi_env",
                 )
@@ -2426,6 +2799,7 @@ def check_paths(
     env: dict[str, str],
     site_config: dict[str, Any] | None = None,
     strict: bool = False,
+    check_pmr: bool = False,
 ) -> list[str]:
     """Verify that key executable and support directories exist on disk.
 
@@ -2436,6 +2810,8 @@ def check_paths(
         env: Resolved environment mapping from build_environment.
         site_config: Optional [site] table from config.toml.
         strict: If True, raises ConfigError on the first unreachable path instead of warning.
+        check_pmr: If True, also checks PMR, datapacker, acsdata, and Java paths required
+            only for legacy pipelineMakeRequest MOUS workflows.
 
     Returns:
         List of warning messages for unreachable paths.
@@ -2485,33 +2861,34 @@ def check_paths(
             )
         )
 
-    checks.extend(
-        [
-            (
-                "pmr_home",
-                env.get("ACSROOT", ""),
+    if check_pmr:
+        checks.extend(
+            [
                 (
-                    "Please configure [site].pmr_home in config.toml "
-                    "(or copy from notes/config.internal.example.toml for NAASC cluster)."
+                    "pmr_home",
+                    env.get("ACSROOT", ""),
+                    (
+                        "Please configure [site].pmr_home in config.toml "
+                        "(or copy from notes/config.internal.example.toml for NAASC cluster)."
+                    ),
                 ),
-            ),
-            (
-                "datapacker_home",
-                env.get("DATAPACKER_HOME", ""),
-                "Please configure [site].datapacker_home in config.toml.",
-            ),
-            (
-                "acsdata",
-                env.get("ACSDATA", ""),
-                "Please configure [site].acsdata in config.toml.",
-            ),
-            (
-                "java_home",
-                env.get("JAVA_HOME", ""),
-                "Please configure [site].java_home or set $JAVA_HOME in your environment.",
-            ),
-        ]
-    )
+                (
+                    "datapacker_home",
+                    env.get("DATAPACKER_HOME", ""),
+                    "Please configure [site].datapacker_home in config.toml.",
+                ),
+                (
+                    "acsdata",
+                    env.get("ACSDATA", ""),
+                    "Please configure [site].acsdata in config.toml.",
+                ),
+                (
+                    "java_home",
+                    env.get("JAVA_HOME", ""),
+                    "Please configure [site].java_home or set $JAVA_HOME in your environment.",
+                ),
+            ]
+        )
 
     warnings: list[str] = []
     for label, path_str, hint in checks:

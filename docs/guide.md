@@ -224,7 +224,80 @@ export CALIBPIPE_NO_SITE_CONFIG=1
 
 ---
 
-### 2. Configuration Hierarchy & Structure
+### 2. Cascading Parameter Resolution Order
+
+When `calibpipe run` or `calibpipe submit` prepares an execution or batch submission, configuration parameters are resolved across a strict 4-level precedence cascade:
+
+```mermaid
+flowchart TD
+    CLI["1. CLI Flags<br/><code>--casa-root, -n/--nprocs, --partition, --recipe, etc.</code>"]
+    Prof["2. Profile Overrides<br/><code>[profiles.&lt;name&gt;]</code> flat keys or nested subtables<br/>(<code>.paths</code>, <code>.run</code>, <code>.batch</code>, <code>.env</code>)"]
+    Sec["3. Section Defaults<br/><code>[paths]</code>, <code>[run]</code>, <code>[batch]</code>, <code>[envs.&lt;name&gt;]</code>"]
+    Site["4. Site Defaults &amp; System Fallbacks<br/><code>[site]</code>, <code>SITE_DEFAULTS</code>"]
+    Resolved["Resolved Execution Options<br/>(<code>ResolvedRunOptions</code>, <code>ResolvedBatchOptions</code>, <code>EnvSpec</code>)"]
+
+    CLI -->|Highest Priority| Resolved
+    Prof -->|Overrides Sections| Resolved
+    Sec -->|Configuration Base| Resolved
+    Site -->|Lowest Priority| Resolved
+```
+
+1. **CLI Flags (Highest Priority):** Explicit command-line arguments (e.g. `--casa-root`, `--heuristics-dir`, `-n 16`, `--partition=queue`) override all file-based settings.
+2. **Profile Overrides:** Settings defined within the selected execution profile (`[profiles.<name>]`). Profiles support both flat keys and modular subtables:
+   - `[profiles.<name>.env]` or flat `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, `branch`
+   - `[profiles.<name>.paths]` or flat `workspaces`, `casadata`, `scipipe_rootdir`, `scipipe_logdir`
+   - `[profiles.<name>.run]` or flat `recipe`, `nprocs`, `loglevel`, `verbose`, `omp_num_threads`, `mem_frac`, etc.
+   - `[profiles.<name>.batch]` or flat `partition`, `cores`, `mem`, `mem_per_cpu`, `cpus_per_task`, etc.
+3. **Section Defaults:** Top-level configuration tables (`[paths]`, `[run]`, `[batch]`, `[envs.<name>]`) loaded from the deep-merged configuration files.
+4. **Site & System Defaults (Lowest Priority):** Built-in observatory defaults and tooling fallbacks from `[site]` and `SITE_DEFAULTS`.
+
+#### Subtable vs. Flat Key Equivalence
+
+Profiles accept parameters in two equivalent formats. Both representations normalize to the same typed `ProfileConfig` fields:
+
+```toml
+# Format A: Flat profile keys
+[profiles."vlass/7x3"]
+casa_root = "casa-6.7.7-15-py3.12.el8"
+heuristics_dir = "PIPE-3283/pipeline"
+nprocs = 8
+partition = "queue"
+cpus_per_task = 3
+mem_per_cpu = "5G"
+
+# Format B: Modular subtables
+[profiles."vlass/7x3".env]
+casa_root = "casa-6.7.7-15-py3.12.el8"
+heuristics_dir = "PIPE-3283/pipeline"
+
+[profiles."vlass/7x3".run]
+nprocs = 8
+
+[profiles."vlass/7x3".batch]
+partition = "queue"
+ntasks = 8
+cpus_per_task = 3
+mem_per_cpu = "5G"
+```
+
+#### Environment Resolution (`resolve_env`) Cascading
+
+When resolving the runtime CASA or Pixi environment (`EnvSpec`):
+1. **Base Environment Selection:** Identified by `--env`, or `profile.env`, or `default_env` (e.g. `pipe3250`).
+2. **Target Overrides:** If `casa_root` (or aliases `casa_ver`, `casa_dir`), `heuristics_dir` (or aliases `pl_ver`, `pipe_dir`, `heuristics_root`), `pixi_dir`, `pixi_env`, or `branch` are defined in the profile or provided on the CLI, they override the values in the base `[envs.<name>]` table.
+3. **Standalone Checkouts:** This allows executing against custom CASA installations or pipeline git branches directly from a profile without adding a permanent entry under `[envs.*]`.
+
+#### Dynamic Workspace Search Path Resolution
+
+Relative paths specified for datasets (`vis`), procedures (`procedure`), custom scripts (`script`), standalone PPRs (`ppr`), working directories (`workdir`), runtime roots (`casa_root`, `heuristics_dir`, `pixi_dir`, `casadata`), and ancillary files (`cont_dat`, `jyperk_csv`, `parameter_list`, `ancillary`) are dynamically resolved against the workspace search roots:
+1. **Direct Path Check:** If a path is absolute or exists relative to the current working directory, it is returned immediately.
+2. **Workspace Root Search:** Searches directories listed in `profile.workspaces` (if specified) or `paths.workspaces` in order.
+3. **Sticky Root Affinity:** Once a file or dataset is matched in a specific workspace root $W_i$, subsequent relative files prefer $W_i$ before checking remaining roots.
+4. **Filesystem Performance Caching:** Directory checks are cached via `_cached_is_dir` to eliminate redundant `stat` calls across high-latency network filesystems (NFS, Lustre).
+
+---
+
+### 3. Configuration Hierarchy & Structure
 
 The TOML configuration is organized into five distinct tiers:
 
@@ -288,24 +361,36 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 
 #### Tier 4: Batch Scheduler Defaults (`[batch]`) & Profiles (`[batches.<name>]`) (Optional)
 
-Configures baseline defaults for `calibpipe batch` when CLI flags are not provided:
+Configures baseline defaults for `calibpipe batch` (or `calibpipe submit`) when CLI flags are not provided.
 
-- `scheduler`: Batch workload manager (`"slurm"` or `"htcondor"`, default: `"slurm"`).
-- `partition`: Slurm partition or HTCondor partition (`+partition`) name (default: `plwg`; legacy alias `queue` supported).
-- `cores`: Number of tasks / CPU cores allocated per job `--ntasks` / `request_cpus` (default: `8`).
-- `mem`: Total RAM in GB per job `--mem` / `request_memory` (default: `248`; mutually exclusive with `mem_per_cpu`).
-- `node`: Slurm node count string `--nodes` (default: `"1"`).
-- `mail_type`: Email notification policy `--mail-type` / `notification` (default: `ALL`).
-- `walltime`: Optional job runtime limit `--time` (e.g. `"24:00:00"`; omitted if unset).
-- `nodelist`: Optional target host pinning `--nodelist` (Slurm) or `TARGET.Machine` requirement (HTCondor).
-- `chdir`: Optional working directory override `--chdir` (Slurm) or `initialdir` (HTCondor).
-- `cpus_per_task`: Optional CPUs per MPI task `--cpus-per-task` for hybrid `mpicasa` execution.
-- `mem_per_cpu`: Optional RAM per CPU `--mem-per-cpu` (e.g. `"30G"`; replaces `mem` if set).
-- `hint`: Optional scheduler placement hint `--hint` (e.g. `"nomultithread"`).
-- `ntasks_per_core`: Optional task limit per physical core `--ntasks-per-core` (e.g. `1` to disable hyperthreading).
-- `distribution`: Optional task distribution policy `--distribution` (e.g. `"cyclic:cyclic"`).
-- `no_requeue`: Prevent scheduler from requeuing jobs on node failure `--no-requeue` (default: `true`).
-- `dry_run`: If `true`, logs planned submission commands and formatted submit scripts without invoking the scheduler (`sbatch` or `condor_submit`), and skips queue polling (default: `false`; override via `--dry-run`).
+##### Scheduler Keyword Compatibility
+
+| Parameter | Supported Scheduler | Slurm Directive | HTCondor Attribute | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `cores` / `ntasks` | **Both** | `#SBATCH --ntasks=<n>` | `request_cpus = <n>` | Tasks in Slurm; total CPUs in HTCondor (default: `8`). |
+| `partition` / `queue` | **Both** | `#SBATCH --partition=<p>` | `+partition = "<p>"` | Partition / queue name (default: `plwg`). |
+| `mem` | **Both** | `#SBATCH --mem=<m>G` | `request_memory = <m>G` | Total memory in GB (default: `248`; mutually exclusive with `mem_per_cpu`). |
+| `mem_per_cpu` | **Both** | `#SBATCH --mem-per-cpu=<m>` | `request_memory = cores × mem_per_cpu` | Memory per CPU (e.g. `"5G"`; scaled to total RAM in HTCondor). |
+| `mail_type` | **Both** | `#SBATCH --mail-type=<t>` | `notification = <keyword>` | Notification event policy (default: `ALL`). |
+| `chdir` | **Both** | `#SBATCH --chdir=<dir>` | `initialdir = <dir>` | Initial working directory on execution node. |
+| `nodelist` | **Both** | `#SBATCH --nodelist=<host>` | `TARGET.Machine == "<host>"` | Pin execution to a specific host machine. |
+| `scheduler` | **Both** | *(Driver selector)* | *(Driver selector)* | Batch backend: `"slurm"` (default) or `"htcondor"`. |
+| `dry_run` | **Both** | *(Driver mode)* | *(Driver mode)* | Preview submit scripts without submitting (default: `false`). |
+| `logdir` | **Both** | *(Output path)* | *(Output path)* | Output directory for script records and scheduler logs. |
+| `node` | **Slurm only** | `#SBATCH --nodes=<n>` | *(N/A)* | Slurm node count string (default: `"1"`). |
+| `walltime` | **Slurm only** | `#SBATCH --time=<t>` | *(N/A)* | Slurm walltime limit (e.g. `"24:00:00"`; omitted if unset). |
+| `cpus_per_task` | **Slurm only** | `#SBATCH --cpus-per-task=<c>` | *(N/A)* | Logical CPUs/threads per task for OpenMP (`total = ntasks × cpus_per_task`). |
+| `ntasks_per_core` | **Slurm only** | `#SBATCH --ntasks-per-core=<c>` | *(N/A)* | Tasks per physical core (`1` prevents hyperthread sharing). |
+| `hint` | **Slurm only** | `#SBATCH --hint=<h>` | *(N/A)* | Placement hint (e.g. `"nomultithread"`). |
+| `distribution` | **Slurm only** | `#SBATCH --distribution=<d>` | *(N/A)* | Task distribution policy (e.g. `"cyclic:cyclic"`). |
+| `no_requeue` | **Slurm only** | `#SBATCH --no-requeue` | *(N/A)* | Prevent job requeuing on node failure (default: `true`). |
+| `requirements` | **HTCondor only** | *(N/A)* | `requirements = ( <expr> )` | Custom ClassAd requirements override (`"none"`, `"default"`, or expression). |
+
+> [!NOTE]
+> **Slurm Core vs. CPU Terminology**:
+> - **Core (Physical Core)**: An actual physical execution unit on the processor silicon. Slurm addresses physical cores via `--ntasks-per-core` (e.g. `1` guarantees each task receives its own physical core) and `--cores-per-socket`.
+> - **CPU (Logical Core / Hardware Thread)**: In Slurm (when hyperthreading/SMT is enabled), a "CPU" represents an individual hardware thread / logical execution context. Directives like `--cpus-per-task` and `--mem-per-cpu` allocate logical CPUs.
+> - **Total Allocated CPUs**: Slurm computes the total logical CPUs allocated as `ntasks × cpus_per_task`. For example, setting `ntasks = 7` and `cpus_per_task = 3` requests $7 \times 3 = 21$ logical CPUs (threads), which is the number reported in `squeue` under `CP` or `CPUS`.
 
 **Named Batch Profiles (`[batches.<name>]`):**
 Define preset resource profiles for different workloads, test queues, or node types. Profiles inherit all unspecified fields from baseline `[batch]`:
@@ -398,30 +483,83 @@ autoreload = true
 nprocs = 4
 ```
 
-Supported profile target fields:
-- `mous`: Standard ALMA MOUS UID string.
-- `vis`: MeasurementSet path string or list of paths (resolved against `paths.workspaces`).
-- `procedure`: Processing procedure XML filename or path (resolved against `paths.workspaces`).
-- `script`: Custom Python script path (resolved against `paths.workspaces`).
-- `cmd`: Inline Python snippet executed via CASA `-c`.
-- `ppr`: Standalone PPR XML path (resolved against `paths.workspaces`).
-- `vla`: Flag indicating VLA pipeline execution (`true`/`false`).
-- `datapath`: Custom list of directories for CASA `datapath` for this specific profile.
-- `rundata`: Candidate runtime measures directories for this profile (or `"none"` to disable measures tables for isolated test sessions).
-- `interactive`: Launch interactive CASA session (`true`/`false`).
-- `workdir`: Working directory override (resolved against `scipipe_rootdir` or `paths.workspaces` if relative).
-- `dry_run`: Preview execution without subprocess calls (`true`/`false`).
-- `autoreload`: Configure IPython autoreload extensions in interactive mode (`true`/`false`).
-- `verbose`: Stream full subprocess output to terminal and execution logs (`true`/`false`).
+##### Complete Profile Attributes Reference
+
+Profiles support all execution target, driver tuning, cluster submission, environment, and path override fields:
+
+| Category | Parameter | Aliases | Description |
+| :--- | :--- | :--- | :--- |
+| **Execution Targets** | `mous` | | ALMA MOUS UID string (e.g. `uid://A001/X1/X1`). |
+| | `vis` | | MeasurementSet path string or list of paths. |
+| | `procedure` | | Pipeline procedure XML filename or path. |
+| | `script` | | Custom Python script path. |
+| | `cmd` | | Inline Python snippet executed via CASA `-c`. |
+| | `ppr` | | Standalone PPR XML path. |
+| | `interactive` | | Launch interactive CASA session (`true`/`false`). |
+| | `vla` | | Flag indicating VLA pipeline execution (`true`/`false`). |
+| **Environment Overrides** | `env` | | Base environment name from `[envs.*]` (defaults to `default_env`). |
+| | `casa_root` | `casa_ver`, `casa_dir` | Monolithic CASA installation directory. |
+| | `heuristics_dir` | `pl_ver`, `pipe_dir`, `heuristics_root` | Pipeline heuristics checkout directory. |
+| | `pixi_dir` | | Pixi project directory for modular CASA environments. |
+| | `pixi_env` | | Target Pixi environment name (default: `"default"`). |
+| | `branch` | | Pipeline branch identifier. |
+| **Path Overrides** | `workspaces` | | Search roots for relative datasets, scripts, and runtime trees. |
+| | `casadata` | | CASA runtime measures directory (`geodetic/`). |
+| | `scipipe_rootdir` | | Root directory where execution folders are staged. |
+| | `scipipe_logdir` | | Output directory for scheduler and execution logs. |
+| | `datapath` | | Sequence of directories populated for CASA `datapath`. |
+| | `rundata` | | Candidate measures directories (or `"none"`). |
+| | `workdir` | `work_path` | Working execution directory override. |
+| **Run & Telemetry** | `recipe` | | Pipeline reduction recipe (`calimage`, `procedure_vlassCCIP.xml`, etc.). |
+| | `nprocs` | `ncores` | MPI process count passed to `mpicasa -n` (default: `8`). |
+| | `loglevel` | | Pipeline log level (`debug`, `info`). |
+| | `useresume` | | Use breakpoint / resume execution (`true`/`false`). |
+| | `symlink_shortcuts` | | Create convenience symlinks in project root (`true`/`false`). |
+| | `log2term` | | Mirror CASA log messages to stdout / terminal in real time. |
+| | `verbose` | | Stream full subprocess output to terminal and execution logs. |
+| | `omp_num_threads` | | Sets `OMP_NUM_THREADS` in subprocess environment. |
+| | `openblas_num_threads` | | Sets `OPENBLAS_NUM_THREADS` in subprocess environment. |
+| | `omp_max_threads` | | Upper bound for `casalog.ompSetNumThreads`. |
+| | `mem_frac` | | CASA memory fraction limit via `casalog.setMemoryFraction`. |
+| | `oversubscribe` | | OpenMPI `--oversubscribe` flag. |
+| | `bind_to` | | OpenMPI process binding policy (e.g. `core`, `socket`). |
+| | `map_by` | | OpenMPI process mapping policy (e.g. `core`, `node`). |
+| | `psrecord` | | Profile CPU/memory with `psrecord` CLI (`true`/`false`). |
+| | `memstats` | | Enable pipeline memory statistics tracking. |
+| | `pl_psrecord` | | Enable pipeline internal telemetry tracking. |
+| | `backup` | | Rotate existing run directory to timestamped `_backup_<timestamp>`. |
+| | `cont_dat` | | File path to `cont.dat` staged into working directory. |
+| | `jyperk_csv` | | File path to `jyperk.csv` staged into working directory. |
+| | `parameter_list` | | Parameter list override staged into working directory. |
+| | `ancillary` | | Additional files or `[source, target]` pairs to stage. |
+| | `dry_run` | | Preview execution without subprocess calls (`true`/`false`). |
+| | `autoreload` | | Configure IPython autoreload extensions in interactive mode. |
+| **Batch Directives** | `partition` | `queue` | Slurm partition / HTCondor queue name. |
+| | `cores` | `ntasks` | Tasks in Slurm; total CPUs in HTCondor. |
+| | `mem` | | Total memory in GB (mutually exclusive with `mem_per_cpu`). |
+| | `mem_per_cpu` | | Memory per CPU (e.g. `"5G"`). |
+| | `node` | | Slurm node count string (default: `"1"`). |
+| | `walltime` | | Slurm walltime limit (e.g. `"14-00:00:00"`). |
+| | `nodelist` | | Pin execution to a specific host machine. |
+| | `chdir` | | Initial working directory on execution node. |
+| | `cpus_per_task` | | Logical CPUs/threads per task for OpenMP multithreading. |
+| | `ntasks_per_core` | | Tasks per physical core (`1` prevents SMT sharing). |
+| | `hint` | | Slurm placement hint (e.g. `"nomultithread"`). |
+| | `distribution` | | Slurm task distribution policy across nodes/sockets. |
+| | `no_requeue` | | Prevent job requeuing on node failure. |
+| | `scheduler` | | Batch backend (`"slurm"` or `"htcondor"`). |
+| | `requirements` | | Custom HTCondor ClassAd expression. |
+| | `logdir` | | Output directory for script records and scheduler logs. |
+| | `mail_type` | | Slurm / HTCondor notification policy. |
 
 Precedence order when resolving parameters is strictly hierarchical:
-`CLI flag > -p / --profile=<name> > [run] / [batch] base config > built-in defaults`.
+`CLI flag > -p / --profile=<name> > [run] / [batch] / [paths] base config > built-in defaults`.
 
 When a CLI target (such as `--mous` or `--vis`) is provided alongside `-p <name>`, the CLI target takes precedence and overrides the profile's embedded target.
 
 ---
 
-### 3. Environment Variable Precedence & Construction
+### 4. Environment Variable Precedence & Construction
 
 When `build_environment()` runs, environment variables are assembled and overlaid in the following order:
 
@@ -550,6 +688,12 @@ calibpipe run --vis /data/test.ms --psrecord --memstats --pl-psrecord --env=main
 ```
 
 - `-n <int>`, `--nprocs <int>`: Worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS` (backward-compatible alias: `--ncores`).
+- `--casa-root <path>`: Override CASA installation root directory (aliases: `--casa-dir`, `--casa-ver`).
+- `--heuristics-dir <path>`: Override pipeline heuristics checkout directory (aliases: `--heuristics-root`, `--pipe-dir`, `--pl-ver`).
+- `--pixi-dir <path>`: Override Pixi workspace directory for modular CASA environments.
+- `--pixi-env <name>`: Override Pixi environment name (default: `default`).
+- `--branch <name>`: Override pipeline branch / checkout identifier.
+- `--casadata <path>`: Override CASA runtime measures directory (`geodetic/`).
 - `--omp-num-threads <int>`: Sets `OMP_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
 - `--openblas-num-threads <int>`: Sets `OPENBLAS_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
 - `--omp-max-threads <int>`: Calls `casalog.ompSetNumThreads(...)` if current thread count exceeds the limit.
@@ -560,6 +704,9 @@ calibpipe run --vis /data/test.ms --psrecord --memstats --pl-psrecord --env=main
 - `--psrecord`: Wraps session with `psrecord` CLI, generating `.rec` and `.rec.png` time-series telemetry plots.
 - `--memstats`: Injects `pipeline.infrastructure.utils.enable_memstats()` into the execution preamble.
 - `--pl-psrecord`: Injects `pipeline.infrastructure.utils.enable_psrecord()` into the execution preamble.
+
+> [!NOTE] OpenMPI Diagnostics
+> For all multi-process executions (`nprocs > 1`), `calibpipe` automatically injects `--display-allocation` and `--display-map` into the `mpicasa` invocation. This logs compute node slot bindings, socket layout, and rank placement directly in the driver output and log files for transparency.
 
 #### H. Ancillary File Staging & Safe Backup Rotation
 
@@ -658,7 +805,7 @@ calibpipe submit quick.run --env=main -c 8 -m 248 -b
 - `-p <name>` / `--profile=<name>` (or `--batch-profile`): Selects a named preset from `[profiles.<name>]` or `[batches.<name>]` in configuration. When specified without a pipefile, submits that profile directly as a cluster job.
 - `--partition=<name>` (or `--queue`): Submits to any specified Slurm partition.
 - `-b`: Shortcut selecting the `batch2` partition.
-- Individual flags like `-c` (cores) or `-m` (memory) can be combined with `-p` / `--profile` to apply last-mile overrides.
+- Individual flags like `-c` / `--ntasks` (tasks), `--cpus-per-task` (threads per task), or `-m` (memory) can be combined with `-p` / `--profile` to apply last-mile overrides.
 
 #### B. HTCondor Batch Submission
 

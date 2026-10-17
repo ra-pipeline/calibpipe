@@ -744,6 +744,13 @@ casa_root = "/fake/casa/main"
         )
         self.assertIn("export UV_NO_SYNC=1", htc_wrapper)
 
+    def test_job_name_profile_with_slashes(self):
+        """Verify profile names with slashes retain slashes in display_name and are sanitized in file_name."""
+        display, file_safe = runbatch.job_name("calibpipe run -p=vlass/cube/7x3", profile_name="vlass/cube/7x3")
+        self.assertTrue(display.startswith("vlass/cube/7x3_"))
+        self.assertTrue(file_safe.startswith("vlass_cube_7x3_"))
+        self.assertNotIn("/", file_safe)
+
 
 if __name__ == "__main__":
     unittest.main()

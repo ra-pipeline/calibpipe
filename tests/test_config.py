@@ -100,6 +100,58 @@ class TestEnvironmentBuilding(unittest.TestCase):
         self.assertIn("/stor/casa/main/bin", env["PATH"])
         self.assertTrue(env["SCIPIPE_ROOTDIR"].endswith("/sub1"))
 
+    def test_env_and_path_aliases(self):
+        """Test aliases: casa_dir, casa_ver -> casa_root, and pipe_dir, pl_ver -> heuristics_dir/heuristics_root."""
+        raw_toml = {
+            "default_env": "alias_env",
+            "paths": {
+                "scipipe_rootdir": "/tmp/root",
+                "scipipe_logdir": "/tmp/logs",
+                "pipe_dir": "/stor/pipelines",
+            },
+            "envs": {
+                "alias_env": {
+                    "casa_ver": "/opt/casa-6.7.0",
+                    "pl_ver": "/stor/pipelines/branch1",
+                },
+                "alias_env2": {
+                    "casa_dir": "/opt/casa-6.6.0",
+                    "heuristics_root": "/stor/pipelines/branch2",
+                },
+            },
+        }
+        cfg = CalibpipeConfig.from_dict(raw_toml)
+        self.assertEqual(cfg.paths.heuristics_root, "/stor/pipelines")
+
+        spec1 = cfg.envs["alias_env"]
+        self.assertEqual(spec1.casa_root, "/opt/casa-6.7.0")
+        self.assertEqual(spec1.heuristics_dir, "/stor/pipelines/branch1")
+        self.assertNotIn("casa_ver", spec1.extra_vars)
+        self.assertNotIn("pl_ver", spec1.extra_vars)
+
+        spec2 = cfg.envs["alias_env2"]
+        self.assertEqual(spec2.casa_root, "/opt/casa-6.6.0")
+        self.assertEqual(spec2.heuristics_dir, "/stor/pipelines/branch2")
+        self.assertNotIn("casa_dir", spec2.extra_vars)
+        self.assertNotIn("heuristics_root", spec2.extra_vars)
+
+        # Also verify resolve_env
+        resolved = resolve_env(raw_toml, "alias_env")
+        self.assertEqual(resolved.casa_root, "/opt/casa-6.7.0")
+        self.assertEqual(resolved.heuristics_dir, "/stor/pipelines/branch1")
+
+        # Verify work_path alias for workdir in profiles
+        prof_toml = {
+            "profiles": {
+                "test_prof": {
+                    "work_path": "my/test/workdir",
+                }
+            }
+        }
+        prof_cfg = CalibpipeConfig.from_dict(prof_toml)
+        self.assertEqual(prof_cfg.profiles["test_prof"].workdir, "my/test/workdir")
+        self.assertEqual(prof_cfg.profiles["test_prof"].work_path, "my/test/workdir")
+
     def test_build_environment_tilde_expansion(self):
         cfg = {
             "default_env": "main",
@@ -137,10 +189,17 @@ class TestEnvironmentBuilding(unittest.TestCase):
             "CASA_ROOT": "/nonexistent/casa/path",
             "ACSROOT": "/nonexistent/pmr/path",
         }
-        warnings = check_paths(env, strict=False)
-        self.assertTrue(len(warnings) >= 2)
-        self.assertTrue(any("CASA_ROOT" in w for w in warnings))
-        self.assertTrue(any("pmr_home" in w for w in warnings))
+        # Without check_pmr, only core paths are checked
+        warnings_default = check_paths(env, strict=False)
+        self.assertEqual(len(warnings_default), 1)
+        self.assertIn("CASA_ROOT", warnings_default[0])
+        self.assertFalse(any("pmr_home" in w for w in warnings_default))
+
+        # With check_pmr, PMR paths are checked too
+        warnings_pmr = check_paths(env, strict=False, check_pmr=True)
+        self.assertTrue(len(warnings_pmr) >= 2)
+        self.assertTrue(any("CASA_ROOT" in w for w in warnings_pmr))
+        self.assertTrue(any("pmr_home" in w for w in warnings_pmr))
 
     def test_check_paths_strict_raises(self):
         env = {
@@ -192,7 +251,7 @@ class TestTypedModels(unittest.TestCase):
         self.assertIsNone(res1.openblas_num_threads)
         self.assertIsNone(res1.omp_max_threads)
         self.assertIsNone(res1.mem_frac)
-        self.assertFalse(res1.oversubscribe)
+        self.assertTrue(res1.oversubscribe)
         self.assertIsNone(res1.bind_to)
         self.assertIsNone(res1.map_by)
         self.assertFalse(res1.psrecord)
@@ -885,6 +944,74 @@ class TestBatchProfiles(unittest.TestCase):
         self.assertIn("Slurm Batch Profiles ([batches.<name>]):", overview)
         self.assertIn("[debug] partition=debug, cores=4, mem=32 GB", overview)
 
+    def test_batch_config_ntasks_alias(self):
+        from calibpipe.config import BatchConfig
+
+        b1 = BatchConfig(ntasks=7)
+        self.assertEqual(b1.cores, 7)
+        self.assertEqual(b1.ntasks, 7)
+
+        b2 = BatchConfig.from_dict({"ntasks": 7})
+        self.assertEqual(b2.cores, 7)
+        self.assertEqual(b2.ntasks, 7)
+
+    def test_profile_config_ntasks_alias(self):
+        from calibpipe.config import ProfileConfig
+
+        p1 = ProfileConfig(ntasks=7)
+        self.assertEqual(p1.cores, 7)
+        self.assertEqual(p1.ntasks, 7)
+
+        p2 = ProfileConfig.from_dict({"ntasks": 7})
+        self.assertEqual(p2.cores, 7)
+        self.assertEqual(p2.ntasks, 7)
+
+    def test_resolve_batch_options_ntasks_cli_and_profile(self):
+        from argparse import Namespace
+
+        cfg = CalibpipeConfig.from_dict(
+            {
+                "profiles": {
+                    "vlass_slurm": {
+                        "partition": "queue",
+                        "ntasks": 7,
+                        "cpus_per_task": 3,
+                        "nprocs": 8,
+                    }
+                }
+            }
+        )
+        cli_args = Namespace(
+            pipefile="jobs.txt",
+            profile="vlass_slurm",
+            partition=None,
+            cores=None,
+            ntasks=None,
+            mem=None,
+            node=None,
+            mail_type=None,
+        )
+        opts = resolve_batch_options(cfg, cli_args)
+        # Profile ntasks=7 must override nprocs=8 fallback
+        self.assertEqual(opts.cores, 7)
+        self.assertEqual(opts.ntasks, 7)
+        self.assertEqual(opts.cpus_per_task, 3)
+
+        # CLI --ntasks must override profile
+        cli_args_override = Namespace(
+            pipefile="jobs.txt",
+            profile="vlass_slurm",
+            partition=None,
+            cores=None,
+            ntasks=12,
+            mem=None,
+            node=None,
+            mail_type=None,
+        )
+        opts_override = resolve_batch_options(cfg, cli_args_override)
+        self.assertEqual(opts_override.cores, 12)
+        self.assertEqual(opts_override.ntasks, 12)
+
 
 class TestConfigExampleSchemaDrift(unittest.TestCase):
     """Ensure config.example.toml never drifts from the typed dataclass schema in config.py."""
@@ -1473,6 +1600,124 @@ class TestNprocsBackwardCompatibility(unittest.TestCase):
             )
             res = resolve_run_options(cfg, Namespace(profile="test"))
             self.assertEqual(res.vis, [str(target_file.resolve())])
+
+    def test_profile_subtables_override_paths_run_batch_env(self):
+        config_data = {
+            "default_env": "pipe3250",
+            "paths": {
+                "workspaces": ["/base/ws"],
+                "scipipe_rootdir": "/tmp/base_root",
+                "scipipe_logdir": "/tmp/base_log",
+                "casadata": "/base/casadata",
+            },
+            "run": {
+                "recipe": "calimage",
+                "nprocs": 8,
+                "verbose": False,
+            },
+            "batch": {
+                "partition": "queue",
+                "cores": 8,
+                "mem": 248,
+            },
+            "envs": {
+                "pipe3250": {
+                    "casa_root": "/base/casa-6.7.7-7",
+                    "heuristics_dir": "/base/pipeline",
+                }
+            },
+            "profiles": {
+                "custom": {
+                    "paths": {
+                        "workspaces": ["/custom/ws"],
+                        "casadata": "/custom/casadata",
+                    },
+                    "run": {
+                        "nprocs": 16,
+                        "verbose": True,
+                    },
+                    "batch": {
+                        "partition": "gpu",
+                        "cores": 16,
+                        "mem_per_cpu": "8G",
+                    },
+                    "env": {
+                        "casa_root": "/custom/casa-6.7.7-15",
+                        "heuristics_dir": "/custom/pipe3283",
+                    },
+                }
+            },
+        }
+        cfg = CalibpipeConfig.from_dict(config_data)
+        prof = cfg.profiles["custom"]
+        self.assertEqual(prof.casa_root, "/custom/casa-6.7.7-15")
+        self.assertEqual(prof.heuristics_dir, "/custom/pipe3283")
+        self.assertEqual(prof.casadata, "/custom/casadata")
+        self.assertEqual(prof.workspaces, ["/custom/ws"])
+        self.assertEqual(prof.nprocs, 16)
+        self.assertEqual(prof.cores, 16)
+        self.assertEqual(prof.partition, "gpu")
+        self.assertEqual(prof.mem_per_cpu, "8G")
+
+        # Resolve run options
+        run_opts = resolve_run_options(cfg, Namespace(profile="custom"))
+        self.assertEqual(run_opts.casa_root, "/custom/casa-6.7.7-15")
+        self.assertEqual(run_opts.heuristics_dir, "/custom/pipe3283")
+        self.assertEqual(run_opts.casadata, "/custom/casadata")
+        self.assertEqual(run_opts.workspaces, ["/custom/ws"])
+        self.assertEqual(run_opts.nprocs, 16)
+        self.assertTrue(run_opts.verbose)
+
+        # Resolve batch options
+        batch_opts = resolve_batch_options(cfg, Namespace(profile="custom"))
+        self.assertEqual(batch_opts.partition, "gpu")
+        self.assertEqual(batch_opts.cores, 16)
+        self.assertEqual(batch_opts.mem_per_cpu, "8G")
+
+        # Resolve env with run_opts overrides
+        env_spec = resolve_env(
+            cfg,
+            run_opts.env_name,
+            casa_root=run_opts.casa_root,
+            heuristics_dir=run_opts.heuristics_dir,
+            workspaces=run_opts.workspaces,
+        )
+        self.assertEqual(env_spec.name, "pipe3250")
+        self.assertEqual(env_spec.casa_root, "/custom/casa-6.7.7-15")
+        self.assertEqual(env_spec.heuristics_dir, "/custom/pipe3283")
+
+    def test_profile_aliases_and_cli_precedence(self):
+        config_data = {
+            "default_env": "pipe3250",
+            "envs": {
+                "pipe3250": {
+                    "casa_root": "/base/casa",
+                    "heuristics_dir": "/base/pl",
+                }
+            },
+            "profiles": {
+                "test_prof": {
+                    "casa_ver": "/prof/casa",
+                    "pl_ver": "/prof/pl",
+                }
+            },
+        }
+        cfg = CalibpipeConfig.from_dict(config_data)
+
+        # Profile alone
+        run_opts = resolve_run_options(cfg, Namespace(profile="test_prof"))
+        self.assertEqual(run_opts.casa_root, "/prof/casa")
+        self.assertEqual(run_opts.heuristics_dir, "/prof/pl")
+
+        # CLI overrides profile
+        cli_opts = Namespace(
+            profile="test_prof",
+            casa_root="/cli/casa",
+            heuristics_dir="/cli/pl",
+        )
+        run_opts_cli = resolve_run_options(cfg, cli_opts)
+        self.assertEqual(run_opts_cli.casa_root, "/cli/casa")
+        self.assertEqual(run_opts_cli.heuristics_dir, "/cli/pl")
 
 
 if __name__ == "__main__":

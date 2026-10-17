@@ -14,3 +14,36 @@ try:
     import pipeline.infrastructure.executeppr as eppr
 except Exception as exc:
     print(f"[calibpipe] Warning: Failed to import or initialize pipeline: {exc}", file=sys.stderr)
+
+# Diagnostic session information
+try:
+    from casampi.MPIEnvironment import MPIEnvironment
+    _is_client = not MPIEnvironment.is_mpi_enabled or MPIEnvironment.is_mpi_client
+except Exception:
+    _is_client = True
+
+if _is_client:
+    try:
+        from casatasks import casalog
+
+        print("+" * 80)
+        print("Start a pipeline processing session:")
+        for mod_name in ("casatasks", "casatools", "casashell"):
+            try:
+                mod = __import__(mod_name)
+                if hasattr(mod, "version_string"):
+                    print(f"{mod_name + ' version:':<25}{mod.version_string()}")
+            except Exception:
+                pass
+        print(f"{'casalog.num_cpus:':<25}{casalog.getNumCPUs()}")
+        print(f"{'casalog.total_memory:':<25}{casalog.getMemoryTotal() / 1024 / 1024:.2f} GiB")
+        print(f"{'casalog.omp_num_threads:':<25}{casalog.ompGetNumThreads()}")
+        try:
+            from casampi.MPIEnvironment import MPIEnvironment
+            print(f"{'is_mpi:':<25}{MPIEnvironment.is_mpi_enabled}")
+        except Exception:
+            print(f"{'is_mpi:':<25}False")
+        print("-" * 80)
+    except Exception as _diag_exc:
+        print(f"[calibpipe] Warning: Failed to output session diagnostics: {_diag_exc}", file=sys.stderr)
+

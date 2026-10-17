@@ -49,6 +49,11 @@ class TestTemplates(unittest.TestCase):
         self.assertIn("import pipeline", rendered)
         self.assertIn("pipeline.initcli()", rendered)
         self.assertIn("import pipeline.infrastructure.executeppr as eppr", rendered)
+        self.assertIn("Start a pipeline processing session:", rendered)
+        self.assertIn("casalog.num_cpus:", rendered)
+        self.assertIn("casalog.total_memory:", rendered)
+        self.assertIn("casalog.omp_num_threads:", rendered)
+        self.assertIn("is_mpi:", rendered)
 
     def test_render_slurm_job(self) -> None:
         """Verify slurm_job.sh.in renders with pipejob command."""

@@ -358,7 +358,7 @@ class TestHardwareAndMpiTuning(DriverModesTestCase):
         casa_runs = [c for c in calls if c[0] == "casa_run"]
         self.assertEqual(len(casa_runs), 1)
         cmd = casa_runs[0][1]
-        self.assertIn("mpicasa -n 8 --oversubscribe --bind-to core --map-by socket  /fake/casa/main/bin/casa", cmd)
+        self.assertIn("mpicasa -n 8 --display-allocation --display-map --oversubscribe --bind-to core --map-by socket  /fake/casa/main/bin/casa", cmd)
 
 
 class TestTelemetryAndProfiling(DriverModesTestCase):
