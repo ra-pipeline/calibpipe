@@ -120,6 +120,13 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         self.assertIn(f"-c {piperun_file.resolve()}", casa_runs[0][1])
         self.assertIn("xvfb-run -a", casa_runs[0][1])
 
+        # Check isolated .casa and ipython_config.py with HistoryManager disabled
+        ipython_file = workdir / "working" / ".casa" / "ipython" / "profile_default" / "ipython_config.py"
+        self.assertTrue(ipython_file.is_file())
+        ipython_content = ipython_file.read_text()
+        self.assertIn("c = get_config()", ipython_content)
+        self.assertIn("c.HistoryManager.enabled = False", ipython_content)
+
     def test_recipe_reducer_derives_procedure_from_recipe(self) -> None:
         ms_path = self.tmp / "test.ms"
         ms_path.mkdir()
@@ -276,6 +283,14 @@ class TestInteractiveMode(DriverModesTestCase):
         self.assertIn("/fake/casa/main/bin/casa", cmd)
         self.assertNotIn("xvfb-run", cmd)
         self.assertNotIn("-c ", cmd)
+
+        # Check isolated .casa and ipython_config.py keeps HistoryManager enabled in interactive mode
+        ipython_file = workdir / ".casa" / "ipython" / "profile_default" / "ipython_config.py"
+        self.assertTrue(ipython_file.is_file())
+        ipython_content = ipython_file.read_text()
+        self.assertIn("c = get_config()", ipython_content)
+        self.assertNotIn("c.HistoryManager.enabled = False", ipython_content)
+        self.assertIn("%load_ext autoreload", ipython_content)
 
 
 class TestTargetConflictAndValidation(DriverModesTestCase):
@@ -754,16 +769,20 @@ class TestNamedProfiles(DriverModesTestCase):
         from calibpipe.driver import write_ipython_config
 
         rcdir = self.tmp / "rc_autoreload"
-        cfg_file = write_ipython_config(rcdir, autoreload=True)
+        cfg_file = write_ipython_config(rcdir, autoreload=True, disable_history=True)
         self.assertTrue(cfg_file.is_file())
         content = cfg_file.read_text()
+        self.assertIn("c = get_config()", content)
+        self.assertIn("c.HistoryManager.enabled = False", content)
         self.assertIn("%load_ext autoreload", content)
         self.assertIn("%autoreload 2", content)
 
         rcdir_no = self.tmp / "rc_no_autoreload"
-        cfg_file_no = write_ipython_config(rcdir_no, autoreload=False)
+        cfg_file_no = write_ipython_config(rcdir_no, autoreload=False, disable_history=False)
         self.assertTrue(cfg_file_no.is_file())
         content_no = cfg_file_no.read_text()
+        self.assertIn("c = get_config()", content_no)
+        self.assertNotIn("c.HistoryManager.enabled = False", content_no)
         self.assertNotIn("%load_ext autoreload", content_no)
 
     def test_write_casa_config_datapath_and_rundata(self) -> None:

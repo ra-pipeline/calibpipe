@@ -357,7 +357,7 @@ Overrides the package's built-in defaults for observatory-specific infrastructur
 - `casa_enable_telemetry`: If `true`, enables CASA telemetry (default: `false`).
 - `submit_host`: If set, `calibpipe batch` strictly refuses to submit batch jobs unless run on this specific hostname.
 - `strict_paths`: If set to `true`, path validation aborts with an error instead of issuing warnings.
-- `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py` and `startup.py`) inside the run tree, ensuring pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`.
+- `use_custom_rcdir`: If `true` (default), generates an isolated CASA runtime environment (`.casa/` with `config.py`, `startup.py`, and `ipython/profile_default/ipython_config.py`) inside the run tree. Ensures pipeline heuristics and `eppr` are properly initialized without relying on `~/.casa/`, and disables IPython SQLite HistoryManager to avoid multi-rank MPI file locking on parallel filesystems like Lustre.
 - `log2term`: Mirror CASA log output directly to stdout / terminal in real time (default: `false`).
 
 #### Tier 4: Batch Scheduler Defaults (`[batch]`) & Profiles (`[batches.<name>]`) (Optional)

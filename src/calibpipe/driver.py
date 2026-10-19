@@ -186,13 +186,20 @@ def write_casa_startup(
 
 def write_ipython_config(
     rcdir: Path,
-    autoreload: bool = True,
+    autoreload: bool = False,
+    disable_history: bool = True,
 ) -> Path:
     """Generate isolated ipython_config.py for CASA under rcdir.
+
+    By default in batch modes, disables IPython SQLite HistoryManager to prevent
+    database locking and Lustre filesystem latency issues during multi-process MPI runs.
+    In interactive sessions, history remains enabled for command recall.
 
     Args:
         rcdir: Custom runtime configuration directory.
         autoreload: Whether to configure %load_ext autoreload and %autoreload 2.
+        disable_history: Whether to disable IPython SQLite HistoryManager (defaults to
+            True for batch/MPI runs; False for interactive sessions).
 
     Returns:
         Path to the generated ipython_config.py file.
@@ -201,10 +208,9 @@ def write_ipython_config(
     ipython_dir.mkdir(parents=True, exist_ok=True)
     ipython_file = ipython_dir / "ipython_config.py"
 
-    lines = [
-        "# c = get_config()",
-        "c.HistoryManager.enabled = False",
-    ]
+    lines = ["c = get_config()"]
+    if disable_history:
+        lines.append("c.HistoryManager.enabled = False")
     if autoreload:
         lines.extend(
             [
@@ -1181,6 +1187,7 @@ def _run_mous(
             rundata_specified=run_opts.rundata_specified,
         )
         write_casa_startup(rcdir)
+        write_ipython_config(rcdir, autoreload=False)
         if env_spec.is_pixi:
             rcdir_args = [
                 "--cachedir",
@@ -1441,6 +1448,7 @@ def _run_recipe_reducer(
                 rundata_specified=run_opts.rundata_specified,
             )
             write_casa_startup(rcdir)
+            write_ipython_config(rcdir, autoreload=False)
         if env_spec.is_pixi:
             rcdir_args = [
                 "--cachedir",
@@ -1579,6 +1587,7 @@ def _run_standalone_ppr(
             rundata_specified=run_opts.rundata_specified,
         )
         write_casa_startup(rcdir)
+        write_ipython_config(rcdir, autoreload=False)
         if env_spec.is_pixi:
             rcdir_args = [
                 "--cachedir",
@@ -1716,6 +1725,7 @@ def _run_script(
             rundata_specified=run_opts.rundata_specified,
         )
         write_casa_startup(rcdir)
+        write_ipython_config(rcdir, autoreload=False)
         if env_spec.is_pixi:
             rcdir_args = [
                 "--cachedir",
@@ -1820,6 +1830,7 @@ def _run_cmd(
             rundata_specified=run_opts.rundata_specified,
         )
         write_casa_startup(rcdir)
+        write_ipython_config(rcdir, autoreload=False)
         if env_spec.is_pixi:
             rcdir_args = [
                 "--cachedir",
@@ -1907,7 +1918,11 @@ def _run_interactive(
             rundata_specified=run_opts.rundata_specified,
         )
         write_casa_startup(rcdir)
-        write_ipython_config(rcdir, autoreload=run_opts.autoreload)
+        write_ipython_config(
+            rcdir,
+            autoreload=run_opts.autoreload,
+            disable_history=False,
+        )
         if env_spec.is_pixi:
             rcdir_args = [
                 "--cachedir",

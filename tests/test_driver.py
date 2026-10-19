@@ -271,6 +271,12 @@ class TestCustomRcdir(CalibPipeIFCaptureCase):
         self.assertIn("telemetry_enabled = False", config_content)
         self.assertIn("crashreporter_enabled = False", config_content)
 
+        ipython_file = self.working / ".casa" / "ipython" / "profile_default" / "ipython_config.py"
+        self.assertTrue(ipython_file.is_file())
+        ipython_content = ipython_file.read_text()
+        self.assertIn("c = get_config()", ipython_content)
+        self.assertIn("c.HistoryManager.enabled = False", ipython_content)
+
     def test_no_custom_rcdir_omits_rcdir_args(self):
         calls = self.run_and_capture(["--no-custom-rcdir"])
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
