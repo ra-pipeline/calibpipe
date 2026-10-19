@@ -316,17 +316,18 @@ config.toml
 
 Configures directories where runs, logs, and reference databases reside:
 
-- `scipipe_rootdir`: Root directory where execution folders and data products are staged. Supports `{user}` interpolation.
-- `scipipe_logdir`: Root directory for driver and subprocess execution logs. Supports `{user}` interpolation.
+- `scipipe_rootdir`: Root directory where execution folders and data products are staged. Supports a single path string or candidate list (automatically picking the first existing path) and `{user}` interpolation.
+- `scipipe_logdir`: Root directory for driver and subprocess execution logs. Supports a single path string or candidate list (automatically picking the first existing path) and `{user}` interpolation.
 - `pickle_dir`: (Optional) Directory for post-run pickle logs. Supports `{user}` interpolation.
 - `obscaldir`: (Optional) Path to static offline calibrator database (passed to the pipeline via `--staticobscal`).
 - `aUdir`: (Optional) Directory for auxiliary `analysisUtils` scripts.
 - `validation_dir`: (Optional) Directory containing baseline reference products.
 - `heuristics_root`: (Optional) Base directory for multi-branch pipeline checkouts (`{heuristics_root}/{branch}`).
 - `workspaces`: (Optional) Sequence of workspace root directories searched when resolving relative dataset paths (`vis`), scripts (`script`), procedures (`procedure`), runtime paths (`casa_root`, `pixi_dir`, `heuristics_dir`), standalone PPRs (`ppr`), working directories (`workdir`), and ancillary staging files (`cont_dat`, `jyperk_csv`, `parameter_list`, `ancillary`).
-- `casadata`: (Optional) Explicit directory or workspace-relative name containing CASA runtime measures data (`geodetic/`).
+- `casarundata`: (Optional) Explicit directory or candidate list containing CASA runtime measures data (`geodetic/`, `ephemerides/`). Automatically picks the first existing directory and populates `measurespath` and `rundata` in `.casa/config.py` as well as `CASADATA`/`CASARUNDATA` in the environment. Aliases: `casadata`, `rundata`.
+- `casadata`: (Optional) Backward-compatible alias for `casarundata`.
+- `rundata`: (Optional) Backward-compatible alias for `casarundata`. Can also be set to `"none"` or `[]` to explicitly disable runtime measures path configuration.
 - `datapath`: (Optional) Sequence of directories configured for CASA's `datapath` in `.casa/config.py`.
-- `rundata`: (Optional) Sequence of candidate measures directories checked in order to populate `rundata` and `measurespath` in `.casa/config.py`. Set to `"none"` or `[]` to explicitly disable.
 
 #### Tier 2: Runtime Targets (`[envs.<name>]`)
 

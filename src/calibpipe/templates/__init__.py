@@ -24,6 +24,7 @@ def render_template(template_name: str, **kwargs: Any) -> str:
             "telemetry": "False",
             "log2term": "False",
             "casadata": "",
+            "casarundata": "",
             "datapath": "None",
             "rundata": "None",
             "rundata_specified": "False",

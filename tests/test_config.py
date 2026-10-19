@@ -1720,5 +1720,299 @@ class TestNprocsBackwardCompatibility(unittest.TestCase):
         self.assertEqual(run_opts_cli.heuristics_dir, "/cli/pl")
 
 
+class TestScipipeDirListResolution(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        self.dir1 = self.root / "existing1"
+        self.dir2 = self.root / "existing2"
+        self.dir1.mkdir(parents=True, exist_ok=True)
+        self.dir2.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def test_first_existing_picked_from_list(self):
+        cfg_data = {
+            "paths": {
+                "scipipe_rootdir": [
+                    str(self.root / "nonexistent"),
+                    str(self.dir1),
+                    str(self.dir2),
+                ],
+                "scipipe_logdir": [
+                    str(self.root / "nonexistent_log"),
+                    str(self.dir2),
+                ],
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.scipipe_rootdir, str(self.dir1))
+        self.assertEqual(cfg.paths.scipipe_logdir, str(self.dir2))
+
+    def test_first_candidate_picked_when_multiple_exist(self):
+        cfg_data = {
+            "paths": {
+                "scipipe_rootdir": [
+                    str(self.dir1),
+                    str(self.dir2),
+                ],
+                "scipipe_logdir": [
+                    str(self.dir1),
+                ],
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.scipipe_rootdir, str(self.dir1))
+        self.assertEqual(cfg.paths.scipipe_logdir, str(self.dir1))
+
+    def test_fallback_when_none_exist(self):
+        cfg_data = {
+            "paths": {
+                "scipipe_rootdir": [
+                    "/completely/nonexistent/root1",
+                    "/completely/nonexistent/root2",
+                ],
+                "scipipe_logdir": [
+                    "/completely/nonexistent/log1",
+                ],
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.scipipe_rootdir, "/completely/nonexistent/root1")
+        self.assertEqual(cfg.paths.scipipe_logdir, "/completely/nonexistent/log1")
+
+    def test_tilde_and_user_expansion_in_list(self):
+        user = os.environ.get("USER", "testuser")
+        user_dir = self.root / f"user_{user}"
+        user_dir.mkdir(parents=True, exist_ok=True)
+
+        cfg_data = {
+            "paths": {
+                "scipipe_rootdir": [
+                    str(self.root / "nonexistent"),
+                    str(self.root / "user_{user}"),
+                ],
+                "scipipe_logdir": [
+                    str(self.root / "nonexistent"),
+                    str(self.dir1),
+                ],
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.scipipe_rootdir, str(self.root / "user_{user}"))
+        self.assertEqual(cfg.paths.scipipe_logdir, str(self.dir1))
+
+        cfg_dict = {
+            "default_env": "main",
+            "paths": cfg_data["paths"],
+            "envs": {"main": {"casa_root": "/fake/casa"}},
+        }
+        spec = resolve_env(cfg_dict, "main")
+        env = build_environment(cfg_dict, spec, validate_paths=False)
+        self.assertEqual(env["SCIPIPE_ROOTDIR"], str(self.root / f"user_{user}"))
+
+    def test_profile_scipipe_dir_list_override(self):
+        cfg_data = {
+            "default_env": "main",
+            "paths": {
+                "scipipe_rootdir": str(self.dir1),
+                "scipipe_logdir": str(self.dir1),
+            },
+            "envs": {
+                "main": {
+                    "casa_root": "/fake/casa",
+                }
+            },
+            "profiles": {
+                "custom_prof": {
+                    "scipipe_rootdir": [
+                        str(self.root / "nonexistent"),
+                        str(self.dir2),
+                    ],
+                    "scipipe_logdir": [
+                        str(self.dir2),
+                    ],
+                }
+            },
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.profiles["custom_prof"].scipipe_rootdir, str(self.dir2))
+        self.assertEqual(cfg.profiles["custom_prof"].scipipe_logdir, str(self.dir2))
+
+        run_opts = resolve_run_options(cfg, Namespace(profile="custom_prof"))
+        self.assertEqual(run_opts.scipipe_rootdir, str(self.dir2))
+        self.assertEqual(run_opts.scipipe_logdir, str(self.dir2))
+
+    def test_build_environment_with_list(self):
+        cfg = {
+            "default_env": "main",
+            "paths": {
+                "scipipe_rootdir": [
+                    str(self.root / "nonexistent"),
+                    str(self.dir1),
+                ],
+                "scipipe_logdir": [
+                    str(self.dir2),
+                ],
+            },
+            "envs": {
+                "main": {
+                    "casa_root": "/fake/casa",
+                }
+            },
+        }
+        spec = resolve_env(cfg, "main")
+        env = build_environment(cfg, spec, validate_paths=False)
+        self.assertEqual(env["SCIPIPE_ROOTDIR"], str(self.dir1))
+        self.assertEqual(env["SCIPIPE_LOGDIR"], str(self.dir2))
+
+    def test_single_string_backward_compatibility(self):
+        cfg_data = {
+            "paths": {
+                "scipipe_rootdir": "/some/uncreated/path/{user}",
+                "scipipe_logdir": "/some/uncreated/logpath/{user}",
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.scipipe_rootdir, "/some/uncreated/path/{user}")
+        self.assertEqual(cfg.paths.scipipe_logdir, "/some/uncreated/logpath/{user}")
+
+
+class TestCasarundataConsolidation(unittest.TestCase):
+    def setUp(self):
+        self.td = tempfile.TemporaryDirectory()
+        self.root = Path(self.td.name)
+        self.data1 = self.root / "casadata1"
+        self.data2 = self.root / "casadata2"
+        self.data1.mkdir(parents=True, exist_ok=True)
+        self.data2.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        self.td.cleanup()
+
+    def test_casarundata_list_resolution(self):
+        cfg_data = {
+            "paths": {
+                "casarundata": [
+                    str(self.root / "nonexistent"),
+                    str(self.data1),
+                    str(self.data2),
+                ]
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.casarundata, str(self.data1))
+        self.assertEqual(cfg.paths.casadata, str(self.data1))
+
+    def test_casadata_alias_resolution(self):
+        cfg_data = {
+            "paths": {
+                "casadata": [
+                    str(self.root / "nonexistent"),
+                    str(self.data2),
+                ]
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.casarundata, str(self.data2))
+        self.assertEqual(cfg.paths.casadata, str(self.data2))
+
+    def test_rundata_alias_resolution(self):
+        cfg_data = {
+            "paths": {
+                "rundata": [
+                    str(self.root / "nonexistent"),
+                    str(self.data1),
+                ]
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.casarundata, str(self.data1))
+        self.assertEqual(cfg.paths.casadata, str(self.data1))
+
+    def test_precedence_casarundata_over_aliases(self):
+        cfg_data = {
+            "paths": {
+                "casarundata": str(self.data1),
+                "casadata": str(self.data2),
+                "rundata": "/other/path",
+            }
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.paths.casarundata, str(self.data1))
+        self.assertEqual(cfg.paths.casadata, str(self.data1))
+
+    def test_profile_casarundata_override(self):
+        cfg_data = {
+            "default_env": "main",
+            "paths": {
+                "casarundata": str(self.data1),
+            },
+            "envs": {"main": {"casa_root": "/fake/casa"}},
+            "profiles": {
+                "custom_data": {
+                    "casarundata": [
+                        str(self.root / "nonexistent"),
+                        str(self.data2),
+                    ]
+                }
+            },
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.profiles["custom_data"].casarundata, str(self.data2))
+        self.assertEqual(cfg.profiles["custom_data"].casadata, str(self.data2))
+
+        run_opts = resolve_run_options(cfg, Namespace(profile="custom_data"))
+        self.assertEqual(run_opts.casarundata, str(self.data2))
+        self.assertEqual(run_opts.casadata, str(self.data2))
+
+    def test_cli_flags_casarundata_and_casadata(self):
+        cfg = CalibpipeConfig.from_dict({"paths": {"casarundata": str(self.data1)}})
+
+        # CLI --casarundata
+        opts1 = resolve_run_options(cfg, Namespace(casarundata=str(self.data2)))
+        self.assertEqual(opts1.casarundata, str(self.data2))
+        self.assertEqual(opts1.casadata, str(self.data2))
+
+        # CLI --casadata
+        opts2 = resolve_run_options(cfg, Namespace(casadata=str(self.data2)))
+        self.assertEqual(opts2.casarundata, str(self.data2))
+        self.assertEqual(opts2.casadata, str(self.data2))
+
+    def test_build_environment_exports_both(self):
+        cfg = {
+            "default_env": "main",
+            "paths": {
+                "scipipe_rootdir": "/fake/root",
+                "scipipe_logdir": "/fake/log",
+                "casarundata": [
+                    str(self.root / "nonexistent"),
+                    str(self.data1),
+                ],
+            },
+            "envs": {
+                "main": {
+                    "casa_root": "/fake/casa",
+                }
+            },
+        }
+        spec = resolve_env(cfg, "main")
+        env = build_environment(cfg, spec, validate_paths=False)
+        self.assertEqual(env["CASARUNDATA"], str(self.data1))
+        self.assertEqual(env["CASADATA"], str(self.data1))
+
+    def test_write_casa_config_with_casarundata(self):
+        from calibpipe.driver import write_casa_config
+
+        rcdir = self.root / ".casa"
+        rcdir.mkdir(parents=True, exist_ok=True)
+        config_path = write_casa_config(rcdir, casarundata=str(self.data1))
+        content = config_path.read_text(encoding="utf-8")
+        self.assertIn(f"rundata = ['{self.data1}']", content)
+        self.assertIn(f'"{self.data1}"', content)
+
+
 if __name__ == "__main__":
     unittest.main()
+

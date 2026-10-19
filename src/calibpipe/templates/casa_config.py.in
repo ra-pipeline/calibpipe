@@ -38,14 +38,15 @@ elif _rundata_specified and not _user_rundata:
 else:
     # Auto-discovery fallback
     _measures_candidates = [
+        "$casarundata",
+        os.environ.get("CASARUNDATA", ""),
         os.environ.get("CASADATA", ""),
         "$casadata",
-        os.environ.get("CASARUNDATA", ""),
-        "~/.casa/data",
         "~/.casa/casarundata",
+        "~/.casa/data",
         "/home/casa/data/distro",
-        "/opt/casa/data",
         "/opt/casa/casarundata",
+        "/opt/casa/data",
     ]
     for _p in _measures_candidates:
         if not _p:

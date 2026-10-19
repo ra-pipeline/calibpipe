@@ -36,10 +36,12 @@ default_env = "main"
 # The '{user}' placeholder is automatically replaced with the current $USER.
 # Directories will be automatically created on startup if they do not exist.
 [paths]
-# [Required] Root directory where pipeline run folders and data products are created:
+# [Required] Root directory where pipeline run folders and data products are created
+# (supports a single path string or a list of candidate paths, automatically picking the first that exists):
 scipipe_rootdir = "/data/pipeline/root/{user}"
 
-# [Required] Directory where stdout/stderr and driver logs are written:
+# [Required] Directory where stdout/stderr and driver logs are written
+# (supports a single path string or a list of candidate paths, automatically picking the first that exists):
 scipipe_logdir = "/data/pipeline/logs/{user}"
 
 # [Optional] Directory for post-run pickle files (legacy run tracking):
@@ -57,14 +59,14 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 # [Optional] Workspace search directories for resolving relative datasets, scripts, and ancillary files:
 # workspaces = ["/data/pipeline/datasets", "/data/pipeline/testdata"]
 
-# [Optional] CASA measures and runtime data directory (e.g. casa-data or casarundata):
+# [Optional] CASA measures and runtime data directory (supports a single path string or candidate list;
+# aliases: casadata, rundata):
+# casarundata = "/data/casa/casarundata"
 # casadata = "/data/casa/distro"
+# rundata = ["/data/casa/distro"]
 
 # [Optional] List of directories for CASA datapath (runtime data and test datasets):
 # datapath = ["/data/casa/distro", "/data/pipeline/pipeline-testdata"]
-
-# [Optional] Candidate measures/rundata directories searched in order:
-# rundata = ["/data/casa/distro"]
 
 # [Optional] Base directory for multiple pipeline branch checkouts.
 # If set, any [envs.<name>] without an explicit heuristics_dir will default to:

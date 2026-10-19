@@ -119,6 +119,7 @@ def write_casa_config(
     datapath: list[str] | None = None,
     rundata: list[str] | None = None,
     rundata_specified: bool = False,
+    casarundata: str | None = None,
 ) -> Path:
     """Generate isolated config.py for CASA inside rcdir.
 
@@ -130,6 +131,7 @@ def write_casa_config(
         datapath: Optional list of directories for datapath.
         rundata: Optional list of directories for rundata candidates.
         rundata_specified: Whether rundata was explicitly specified by profile/CLI.
+        casarundata: Optional resolved casarundata path.
 
     Returns:
         Path to the generated config.py file.
@@ -137,12 +139,23 @@ def write_casa_config(
     site = site_config or {}
     telemetry = "True" if site.get("casa_enable_telemetry", False) else "False"
     log2term_str = "True" if (site.get("log2term", False) or log2term) else "False"
-    casadata_val = casadata or site.get("casadata") or os.environ.get("CASADATA", "")
+    casadata_val = (
+        casarundata
+        or casadata
+        or site.get("casarundata")
+        or site.get("casadata")
+        or os.environ.get("CASARUNDATA")
+        or os.environ.get("CASADATA", "")
+    )
+    if not rundata and casadata_val and not rundata_specified:
+        rundata = [casadata_val]
+        rundata_specified = True
     content = render_template(
         "casa_config.py.in",
         telemetry=telemetry,
         log2term=log2term_str,
         casadata=casadata_val,
+        casarundata=casadata_val,
         datapath=repr(datapath) if datapath else "None",
         rundata=repr(rundata) if rundata else ("[]" if rundata_specified else "None"),
         rundata_specified="True" if rundata_specified else "False",
@@ -564,9 +577,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override pipeline branch / checkout name",
     )
     p.add_argument(
+        "--casarundata",
         "--casadata",
+        dest="casadata",
         default=None,
-        help="Override casadata runtime measures directory",
+        help="Override casarundata / casadata runtime measures directory",
     )
     p.add_argument("--subdir", help="Extra subdirectory appended to SCIPIPE_ROOTDIR")
     p.add_argument(
@@ -2035,8 +2050,10 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         paths_effective["scipipe_rootdir"] = run_opts.scipipe_rootdir
     if run_opts.scipipe_logdir:
         paths_effective["scipipe_logdir"] = run_opts.scipipe_logdir
-    if run_opts.casadata:
-        paths_effective["casadata"] = run_opts.casadata
+    if run_opts.casadata or getattr(run_opts, "casarundata", None):
+        crd_val = getattr(run_opts, "casarundata", None) or run_opts.casadata
+        paths_effective["casarundata"] = crd_val
+        paths_effective["casadata"] = crd_val
     cfg_effective["paths"] = paths_effective
 
     env_spec = envconfig.resolve_env(

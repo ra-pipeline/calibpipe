@@ -86,6 +86,139 @@ def _ancillary_list(value: Any) -> list[Any]:
     return []
 
 
+def _safe_exists(path: Path) -> bool:
+    """Check if path exists without raising OSError on permission errors or broken mounts."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _safe_is_dir(path: Path) -> bool:
+    """Check if path is a directory without raising OSError on permission errors or broken mounts."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+@functools.lru_cache(maxsize=256)
+def _cached_is_dir(path_str: str) -> bool:
+    """Cached directory check to minimize repeated stat calls on network filesystems."""
+    return _safe_is_dir(Path(path_str))
+
+
+def resolve_workspace_path(
+    path_str: str | Path,
+    workspaces: Sequence[str | Path] = (),
+) -> Path:
+    """Resolve a file or directory path against workspace search roots.
+
+    If path_str exists as given (or is an absolute path), it is returned.
+    Otherwise, searches workspaces in order. If the path exists relative
+    to any workspace root, that resolved path is returned.
+    If not found in any workspace, returns Path(path_str).
+
+    Args:
+        path_str: Relative or absolute path string or Path object.
+        workspaces: Sequence of workspace search directories.
+
+    Returns:
+        Resolved Path object.
+    """
+    if not path_str:
+        return Path("")
+    p = Path(path_str).expanduser()
+    if p.is_absolute() or _safe_exists(p):
+        return p
+    for ws in workspaces:
+        if not ws:
+            continue
+        ws_path = Path(ws).expanduser()
+        if not _cached_is_dir(str(ws_path)):
+            continue
+        candidate = ws_path / p
+        if _safe_exists(candidate):
+            try:
+                return candidate.resolve()
+            except OSError:
+                return candidate
+    return p
+
+
+def resolve_first_existing_path(
+    value: Any,
+    workspaces: Sequence[str | Path] = (),
+    user: str | None = None,
+) -> str:
+    """Normalize a path or list of candidate paths, picking the first one that exists.
+
+    If value is a single string or Path, it is returned as a stripped string.
+    If value is a sequence of candidate paths, each is tested in order (with ~ and
+    {user} expanded). The first candidate that exists on the filesystem is returned.
+    If none of the candidates exist directly, the first candidate whose parent directory
+    exists is returned. If neither exists, the first candidate is returned as fallback.
+
+    Args:
+        value: A path string, Path object, sequence of candidate paths, or None.
+        workspaces: Optional workspace roots to search for relative candidate paths.
+        user: Optional username for {user} interpolation (defaults to $USER).
+
+    Returns:
+        The selected path string, or "" if value is empty/None.
+    """
+    if value is None or value is False:
+        return ""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or s.lower() in ("none", "null", "false"):
+            return ""
+        return s
+
+    if isinstance(value, (list, tuple)):
+        candidates: list[str] = []
+        for v in value:
+            if v is not None and v is not False:
+                s = str(v).strip()
+                if s and s.lower() not in ("none", "null", "false"):
+                    candidates.append(s)
+        if not candidates:
+            return ""
+
+        actual_user = user or os.environ.get("USER", "")
+
+        def _expand(cand: str) -> Path:
+            interp = cand.replace("{user}", actual_user)
+            return Path(interp).expanduser()
+
+        # Pass 1: First candidate that exists
+        for cand in candidates:
+            exp = _expand(cand)
+            if _safe_exists(exp):
+                return cand
+            if workspaces and not exp.is_absolute():
+                ws_res = resolve_workspace_path(exp, workspaces)
+                if _safe_exists(ws_res):
+                    return str(ws_res)
+
+        # Pass 2: First candidate whose parent directory exists
+        for cand in candidates:
+            exp = _expand(cand)
+            if _safe_exists(exp.parent):
+                return cand
+            if workspaces and not exp.is_absolute():
+                ws_res = resolve_workspace_path(exp.parent, workspaces)
+                if _safe_exists(ws_res):
+                    return str(ws_res / exp.name)
+
+        # Pass 3: Fallback to the first candidate
+        return candidates[0]
+
+    return str(value).strip()
+
+
 @dataclass
 class PathsConfig:
     """Working and output directory paths for pipeline processing."""
@@ -98,15 +231,88 @@ class PathsConfig:
     validation_dir: str | None = None
     heuristics_root: str | None = None
     workspaces: list[str] = field(default_factory=list)
+    casarundata: str | None = None
     casadata: str | None = None
     datapath: list[str] = field(default_factory=list)
     rundata: list[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        if isinstance(self.scipipe_rootdir, (list, tuple)):
+            self.scipipe_rootdir = resolve_first_existing_path(
+                self.scipipe_rootdir, workspaces=self.workspaces
+            )
+        elif self.scipipe_rootdir is None:
+            self.scipipe_rootdir = ""
+        else:
+            self.scipipe_rootdir = str(self.scipipe_rootdir)
+
+        if isinstance(self.scipipe_logdir, (list, tuple)):
+            self.scipipe_logdir = resolve_first_existing_path(
+                self.scipipe_logdir, workspaces=self.workspaces
+            )
+        elif self.scipipe_logdir is None:
+            self.scipipe_logdir = ""
+        else:
+            self.scipipe_logdir = str(self.scipipe_logdir)
+
+        raw_casarundata = (
+            self.casarundata
+            if self.casarundata is not None
+            else (
+                self.casadata
+                if self.casadata is not None
+                else (self.rundata if self.rundata else None)
+            )
+        )
+        if isinstance(raw_casarundata, (list, tuple)):
+            resolved_casarundata = (
+                resolve_first_existing_path(raw_casarundata, workspaces=self.workspaces) or None
+            )
+        elif raw_casarundata is not None:
+            resolved_casarundata = str(raw_casarundata).strip() or None
+        else:
+            resolved_casarundata = None
+
+        self.casarundata = resolved_casarundata
+        self.casadata = resolved_casarundata
+        if not self.rundata and resolved_casarundata:
+            self.rundata = [resolved_casarundata]
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PathsConfig:
+        workspaces = list(data.get("workspaces", []) or [])
+        raw_casarundata = (
+            data.get("casarundata")
+            if "casarundata" in data and data.get("casarundata") is not None
+            else (
+                data.get("casadata")
+                if "casadata" in data and data.get("casadata") is not None
+                else data.get("rundata")
+            )
+        )
+        resolved_casarundata = (
+            resolve_first_existing_path(raw_casarundata, workspaces=workspaces)
+            if raw_casarundata is not None
+            else None
+        )
+        if resolved_casarundata == "":
+            resolved_casarundata = None
+
+        user_rundata = data.get("rundata")
+        if user_rundata is not None:
+            rundata_list = _list_or_empty(user_rundata)
+        elif resolved_casarundata:
+            rundata_list = [resolved_casarundata]
+        else:
+            rundata_list = []
+
         return cls(
-            scipipe_rootdir=str(data.get("scipipe_rootdir", "")),
-            scipipe_logdir=str(data.get("scipipe_logdir", "")),
+            scipipe_rootdir=resolve_first_existing_path(
+                data.get("scipipe_rootdir", ""), workspaces=workspaces
+            ),
+            scipipe_logdir=resolve_first_existing_path(
+                data.get("scipipe_logdir", ""), workspaces=workspaces
+            ),
             pickle_dir=data.get("pickle_dir"),
             obscaldir=data.get("obscaldir"),
             aUdir=data.get("aUdir"),
@@ -116,10 +322,11 @@ class PathsConfig:
                 or data.get("pipe_dir")
                 or data.get("pl_ver")
             ),
-            workspaces=list(data.get("workspaces", []) or []),
-            casadata=data.get("casadata"),
+            workspaces=workspaces,
+            casarundata=resolved_casarundata,
+            casadata=resolved_casarundata,
             datapath=_list_or_empty(data.get("datapath")),
-            rundata=_list_or_empty(data.get("rundata")),
+            rundata=rundata_list,
         )
 
 
@@ -557,6 +764,7 @@ class ProfileConfig:
     workspaces: list[str] | None = None
     scipipe_rootdir: str | None = None
     scipipe_logdir: str | None = None
+    casarundata: str | None = None
     casadata: str | None = None
     pickle_dir: str | None = None
     obscaldir: str | None = None
@@ -598,6 +806,41 @@ class ProfileConfig:
             kwargs["heuristics_dir"] = kwargs.pop("heuristics_root")
         if "ancillary" in kwargs:
             kwargs["ancillary"] = _ancillary_list(kwargs["ancillary"])
+        if "scipipe_rootdir" in kwargs:
+            raw_root = kwargs["scipipe_rootdir"]
+            if isinstance(raw_root, (list, tuple)):
+                kwargs["scipipe_rootdir"] = resolve_first_existing_path(
+                    raw_root, workspaces=kwargs.get("workspaces") or ()
+                )
+            elif raw_root is not None:
+                kwargs["scipipe_rootdir"] = str(raw_root)
+        if "scipipe_logdir" in kwargs:
+            raw_log = kwargs["scipipe_logdir"]
+            if isinstance(raw_log, (list, tuple)):
+                kwargs["scipipe_logdir"] = resolve_first_existing_path(
+                    raw_log, workspaces=kwargs.get("workspaces") or ()
+                )
+            elif raw_log is not None:
+                kwargs["scipipe_logdir"] = str(raw_log)
+        if "casarundata" in kwargs:
+            raw_crd = kwargs["casarundata"]
+            if isinstance(raw_crd, (list, tuple)):
+                kwargs["casarundata"] = (
+                    resolve_first_existing_path(raw_crd, workspaces=kwargs.get("workspaces") or ()) or None
+                )
+            elif raw_crd is not None:
+                kwargs["casarundata"] = str(raw_crd)
+            if "casadata" not in kwargs:
+                kwargs["casadata"] = kwargs["casarundata"]
+        elif "casadata" in kwargs:
+            raw_crd = kwargs["casadata"]
+            if isinstance(raw_crd, (list, tuple)):
+                kwargs["casadata"] = (
+                    resolve_first_existing_path(raw_crd, workspaces=kwargs.get("workspaces") or ()) or None
+                )
+            elif raw_crd is not None:
+                kwargs["casadata"] = str(raw_crd)
+            kwargs["casarundata"] = kwargs["casadata"]
         for f in fields(self):
             if f.name in kwargs:
                 setattr(self, f.name, kwargs[f.name])
@@ -696,9 +939,36 @@ class ProfileConfig:
                 if "workspaces" in flat and isinstance(flat["workspaces"], (list, tuple))
                 else None
             ),
-            scipipe_rootdir=_str_or_none(flat.get("scipipe_rootdir")),
-            scipipe_logdir=_str_or_none(flat.get("scipipe_logdir")),
-            casadata=_str_or_none(flat.get("casadata")),
+            scipipe_rootdir=(
+                resolve_first_existing_path(
+                    flat["scipipe_rootdir"], workspaces=flat.get("workspaces") or ()
+                )
+                if "scipipe_rootdir" in flat and flat["scipipe_rootdir"] is not None
+                else None
+            ),
+            scipipe_logdir=(
+                resolve_first_existing_path(
+                    flat["scipipe_logdir"], workspaces=flat.get("workspaces") or ()
+                )
+                if "scipipe_logdir" in flat and flat["scipipe_logdir"] is not None
+                else None
+            ),
+            casarundata=(
+                resolve_first_existing_path(
+                    flat.get("casarundata") if "casarundata" in flat else flat.get("casadata", flat.get("rundata")),
+                    workspaces=flat.get("workspaces") or (),
+                )
+                if ("casarundata" in flat or "casadata" in flat or "rundata" in flat)
+                else None
+            ),
+            casadata=(
+                resolve_first_existing_path(
+                    flat.get("casarundata") if "casarundata" in flat else flat.get("casadata", flat.get("rundata")),
+                    workspaces=flat.get("workspaces") or (),
+                )
+                if ("casarundata" in flat or "casadata" in flat or "rundata" in flat)
+                else None
+            ),
             pickle_dir=_str_or_none(flat.get("pickle_dir")),
             obscaldir=_str_or_none(flat.get("obscaldir")),
             aUdir=_str_or_none(flat.get("aUdir")),
@@ -982,6 +1252,7 @@ class ResolvedRunOptions:
     workspaces: list[str] = field(default_factory=list)
     scipipe_rootdir: str | None = None
     scipipe_logdir: str | None = None
+    casarundata: str | None = None
     casadata: str | None = None
 
     def __init__(
@@ -1036,6 +1307,7 @@ class ResolvedRunOptions:
         workspaces: list[str] | None = None,
         scipipe_rootdir: str | None = None,
         scipipe_logdir: str | None = None,
+        casarundata: str | None = None,
         casadata: str | None = None,
         casa_ver: str | None = None,
         casa_dir: str | None = None,
@@ -1094,9 +1366,23 @@ class ResolvedRunOptions:
         self.pixi_env = pixi_env
         self.branch = branch
         self.workspaces = list(workspaces or [])
-        self.scipipe_rootdir = scipipe_rootdir
-        self.scipipe_logdir = scipipe_logdir
-        self.casadata = casadata
+        self.scipipe_rootdir = (
+            resolve_first_existing_path(scipipe_rootdir, workspaces=self.workspaces)
+            if isinstance(scipipe_rootdir, (list, tuple))
+            else scipipe_rootdir
+        )
+        self.scipipe_logdir = (
+            resolve_first_existing_path(scipipe_logdir, workspaces=self.workspaces)
+            if isinstance(scipipe_logdir, (list, tuple))
+            else scipipe_logdir
+        )
+        chosen_crd = casarundata or casadata
+        self.casarundata = (
+            resolve_first_existing_path(chosen_crd, workspaces=self.workspaces) or None
+            if isinstance(chosen_crd, (list, tuple))
+            else (str(chosen_crd).strip() or None if chosen_crd is not None else None)
+        )
+        self.casadata = self.casarundata
 
     @property
     def ncores(self) -> int:
@@ -1127,66 +1413,6 @@ class ResolvedRunOptions:
     def heuristics_root(self) -> str | None:
         """Backward-compatible alias for heuristics_dir."""
         return self.heuristics_dir
-
-
-def _safe_exists(path: Path) -> bool:
-    """Check if path exists without raising OSError on permission errors or broken mounts."""
-    try:
-        return path.exists()
-    except OSError:
-        return False
-
-
-def _safe_is_dir(path: Path) -> bool:
-    """Check if path is a directory without raising OSError on permission errors or broken mounts."""
-    try:
-        return path.is_dir()
-    except OSError:
-        return False
-
-
-@functools.lru_cache(maxsize=256)
-def _cached_is_dir(path_str: str) -> bool:
-    """Cached directory check to minimize repeated stat calls on network filesystems."""
-    return _safe_is_dir(Path(path_str))
-
-
-def resolve_workspace_path(
-    path_str: str | Path,
-    workspaces: Sequence[str | Path] = (),
-) -> Path:
-    """Resolve a file or directory path against workspace search roots.
-
-    If path_str exists as given (or is an absolute path), it is returned.
-    Otherwise, searches workspaces in order. If the path exists relative
-    to any workspace root, that resolved path is returned.
-    If not found in any workspace, returns Path(path_str).
-
-    Args:
-        path_str: Relative or absolute path string or Path object.
-        workspaces: Sequence of workspace search directories.
-
-    Returns:
-        Resolved Path object.
-    """
-    if not path_str:
-        return Path("")
-    p = Path(path_str).expanduser()
-    if p.is_absolute() or _safe_exists(p):
-        return p
-    for ws in workspaces:
-        if not ws:
-            continue
-        ws_path = Path(ws).expanduser()
-        if not _cached_is_dir(str(ws_path)):
-            continue
-        candidate = ws_path / p
-        if _safe_exists(candidate):
-            try:
-                return candidate.resolve()
-            except OSError:
-                return candidate
-    return p
 
 
 def resolve_run_options(
@@ -1424,9 +1650,35 @@ def resolve_run_options(
     prof_branch = profile.branch if profile else None
     resolved_branch = cli_branch or prof_branch
 
+    cli_casarundata = getattr(cli_opts, "casarundata", None)
     cli_casadata = getattr(cli_opts, "casadata", None)
-    prof_casadata = profile.casadata if profile else None
-    resolved_casadata = cli_casadata or prof_casadata
+    prof_casarundata = (
+        getattr(profile, "casarundata", None)
+        or getattr(profile, "casadata", None)
+        if profile
+        else None
+    )
+    resolved_casarundata = (
+        cli_casarundata
+        or cli_casadata
+        or prof_casarundata
+        or getattr(cfg.paths, "casarundata", None)
+        or cfg.paths.casadata
+    )
+    if isinstance(resolved_casarundata, (list, tuple)):
+        resolved_casarundata = (
+            resolve_first_existing_path(
+                resolved_casarundata, workspaces=resolved_workspaces
+            )
+            or None
+        )
+    elif resolved_casarundata is not None:
+        resolved_casarundata = str(resolved_casarundata).strip() or None
+
+    resolved_casadata = resolved_casarundata
+    if not resolved_rundata and resolved_casarundata and not rundata_specified:
+        resolved_rundata = [resolved_casarundata]
+        rundata_specified = True
 
     cli_scipipe_rootdir = getattr(cli_opts, "scipipe_rootdir", None)
     prof_scipipe_rootdir = profile.scipipe_rootdir if profile else None
@@ -1438,6 +1690,20 @@ def resolve_run_options(
 
     prof_workspaces = profile.workspaces if profile and profile.workspaces else None
     resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
+
+    if isinstance(resolved_scipipe_rootdir, (list, tuple)):
+        resolved_scipipe_rootdir = resolve_first_existing_path(
+            resolved_scipipe_rootdir, workspaces=resolved_workspaces
+        )
+    elif resolved_scipipe_rootdir is not None:
+        resolved_scipipe_rootdir = str(resolved_scipipe_rootdir)
+
+    if isinstance(resolved_scipipe_logdir, (list, tuple)):
+        resolved_scipipe_logdir = resolve_first_existing_path(
+            resolved_scipipe_logdir, workspaces=resolved_workspaces
+        )
+    elif resolved_scipipe_logdir is not None:
+        resolved_scipipe_logdir = str(resolved_scipipe_logdir)
 
     # Dynamic workspace search path resolution
     workspaces = resolved_workspaces
@@ -1520,6 +1786,10 @@ def resolve_run_options(
         workdir_search = []
         user_name = os.environ.get("USER", "")
         effective_rootdir = resolved_scipipe_rootdir or cfg.paths.scipipe_rootdir
+        if isinstance(effective_rootdir, (list, tuple)):
+            effective_rootdir = resolve_first_existing_path(
+                effective_rootdir, workspaces=workspaces, user=user_name
+            )
         root_dir = (
             Path(effective_rootdir.replace("{user}", user_name)).expanduser()
             if effective_rootdir
@@ -1593,6 +1863,7 @@ def resolve_run_options(
         workspaces=resolved_workspaces,
         scipipe_rootdir=resolved_scipipe_rootdir,
         scipipe_logdir=resolved_scipipe_logdir,
+        casarundata=resolved_casarundata,
         casadata=resolved_casadata,
     )
 
@@ -1748,9 +2019,10 @@ def resolve_batch_options(
     requirements = _cli_or_cfg(
         "requirements", getattr(active_batch, "requirements", None)
     )
-    logdir = _cli_or_cfg(
-        "logdir", active_batch.logdir or cfg.paths.scipipe_logdir or None
-    )
+    raw_logdir = active_batch.logdir or cfg.paths.scipipe_logdir or None
+    if isinstance(raw_logdir, (list, tuple)):
+        raw_logdir = resolve_first_existing_path(raw_logdir)
+    logdir = _cli_or_cfg("logdir", raw_logdir)
 
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
@@ -2206,8 +2478,8 @@ def format_config_overview(
     )
     if cfg.paths.workspaces:
         lines.append(f"  workspaces:      {', '.join(cfg.paths.workspaces)}")
-    if cfg.paths.casadata:
-        lines.append(f"  casadata:        {cfg.paths.casadata}")
+    if cfg.paths.casarundata or cfg.paths.casadata:
+        lines.append(f"  casarundata:     {cfg.paths.casarundata or cfg.paths.casadata}")
     if cfg.paths.datapath:
         lines.append(f"  datapath:        {', '.join(cfg.paths.datapath)}")
     if cfg.paths.rundata:
@@ -2729,6 +3001,8 @@ def build_environment(
             if required:
                 raise ConfigError(f"[paths].{key} is required")
             continue
+        if isinstance(template, (list, tuple)):
+            template = resolve_first_existing_path(template, workspaces=workspaces, user=user)
         resolved = os.path.expanduser(template.format(user=user))
         if var == "SCIPIPE_ROOTDIR" and subdir:
             resolved = str(Path(resolved) / subdir)
@@ -2738,20 +3012,32 @@ def build_environment(
             pass
         env[var] = resolved
 
-    # Discover casadata / measurespath
-    casadata_val = paths.get("casadata")
+    # Discover casarundata / casadata / measurespath
+    casadata_val = (
+        paths.get("casarundata")
+        if "casarundata" in paths and paths.get("casarundata") is not None
+        else (
+            paths.get("casadata")
+            if "casadata" in paths and paths.get("casadata") is not None
+            else paths.get("rundata")
+        )
+    )
     if casadata_val:
-        p = resolve_workspace_path(casadata_val, workspaces)
-        if p.exists():
-            env["CASADATA"] = str(p.resolve())
-        else:
-            env["CASADATA"] = str(p.expanduser())
+        if isinstance(casadata_val, (list, tuple)):
+            casadata_val = resolve_first_existing_path(casadata_val, workspaces=workspaces)
+        if casadata_val:
+            p = resolve_workspace_path(casadata_val, workspaces)
+            resolved_casadata = str(p.resolve() if p.exists() else p.expanduser())
+            env["CASADATA"] = resolved_casadata
+            env["CASARUNDATA"] = resolved_casadata
     elif workspaces and "CASADATA" not in env:
         for ws in workspaces:
-            for cand_name in ("casa-data", "casarundata", "data"):
+            for cand_name in ("casarundata", "casa-data", "data"):
                 cand = Path(ws).expanduser() / cand_name
                 if cand.is_dir() and (cand / "geodetic").is_dir():
-                    env["CASADATA"] = str(cand.resolve())
+                    resolved_cand = str(cand.resolve())
+                    env["CASADATA"] = resolved_cand
+                    env["CASARUNDATA"] = resolved_cand
                     break
             if "CASADATA" in env:
                 break
