@@ -320,6 +320,7 @@ class PathsConfig:
             heuristics_root=(
                 data.get("heuristics_root")
                 or data.get("pipe_dir")
+                or data.get("pipe_ver")
                 or data.get("pl_ver")
             ),
             workspaces=workspaces,
@@ -800,6 +801,8 @@ class ProfileConfig:
             kwargs["casa_root"] = kwargs.pop("casa_dir")
         if "pl_ver" in kwargs and "heuristics_dir" not in kwargs:
             kwargs["heuristics_dir"] = kwargs.pop("pl_ver")
+        if "pipe_ver" in kwargs and "heuristics_dir" not in kwargs:
+            kwargs["heuristics_dir"] = kwargs.pop("pipe_ver")
         if "pipe_dir" in kwargs and "heuristics_dir" not in kwargs:
             kwargs["heuristics_dir"] = kwargs.pop("pipe_dir")
         if "heuristics_root" in kwargs and "heuristics_dir" not in kwargs:
@@ -929,6 +932,7 @@ class ProfileConfig:
                 flat.get("heuristics_dir")
                 or flat.get("heuristics_root")
                 or flat.get("pipe_dir")
+                or flat.get("pipe_ver")
                 or flat.get("pl_ver")
             ),
             pixi_dir=_str_or_none(flat.get("pixi_dir")),
@@ -1140,6 +1144,7 @@ class CalibpipeConfig(dict):
                     env_data.get("heuristics_dir")
                     or env_data.get("heuristics_root")
                     or env_data.get("pipe_dir")
+                    or env_data.get("pipe_ver")
                     or env_data.get("pl_ver")
                 )
                 if raw_heuristics and workspaces and "{" not in raw_heuristics:
@@ -1168,6 +1173,7 @@ class CalibpipeConfig(dict):
                             "heuristics_dir",
                             "heuristics_root",
                             "pipe_dir",
+                            "pipe_ver",
                             "pl_ver",
                             "pixi_dir",
                             "pixi_env",
@@ -1312,6 +1318,7 @@ class ResolvedRunOptions:
         casa_ver: str | None = None,
         casa_dir: str | None = None,
         pl_ver: str | None = None,
+        pipe_ver: str | None = None,
         pipe_dir: str | None = None,
         heuristics_root: str | None = None,
         ncores: int | None = None,
@@ -1360,7 +1367,7 @@ class ResolvedRunOptions:
         self.autoreload = autoreload
         self.casa_root = casa_root or casa_dir or casa_ver
         self.heuristics_dir = (
-            heuristics_dir or heuristics_root or pipe_dir or pl_ver
+            heuristics_dir or heuristics_root or pipe_dir or pipe_ver or pl_ver
         )
         self.pixi_dir = pixi_dir
         self.pixi_env = pixi_env
@@ -1633,6 +1640,7 @@ def resolve_run_options(
         getattr(cli_opts, "heuristics_dir", None)
         or getattr(cli_opts, "heuristics_root", None)
         or getattr(cli_opts, "pipe_dir", None)
+        or getattr(cli_opts, "pipe_ver", None)
         or getattr(cli_opts, "pl_ver", None)
     )
     prof_heuristics_dir = profile.heuristics_dir if profile else None
@@ -2815,6 +2823,7 @@ def resolve_env(
         table.get("heuristics_dir")
         or table.get("heuristics_root")
         or table.get("pipe_dir")
+        or table.get("pipe_ver")
         or table.get("pl_ver")
     )
     if resolved_heuristics and effective_workspaces and "{" not in resolved_heuristics:
@@ -2841,6 +2850,7 @@ def resolve_env(
                 "heuristics_dir",
                 "heuristics_root",
                 "pipe_dir",
+                "pipe_ver",
                 "pl_ver",
                 "pixi_dir",
                 "pixi_env",
@@ -2879,6 +2889,7 @@ def build_environment(
             env_spec.get("heuristics_dir")
             or env_spec.get("heuristics_root")
             or env_spec.get("pipe_dir")
+            or env_spec.get("pipe_ver")
             or env_spec.get("pl_ver")
         )
         spec = EnvSpec(
@@ -2901,6 +2912,7 @@ def build_environment(
                     "heuristics_dir",
                     "heuristics_root",
                     "pipe_dir",
+                    "pipe_ver",
                     "pl_ver",
                     "pixi_dir",
                     "pixi_env",

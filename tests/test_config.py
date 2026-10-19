@@ -1719,6 +1719,15 @@ class TestNprocsBackwardCompatibility(unittest.TestCase):
         self.assertEqual(run_opts_cli.casa_root, "/cli/casa")
         self.assertEqual(run_opts_cli.heuristics_dir, "/cli/pl")
 
+        # pipe_ver alias in profile
+        cfg_pipe_ver = CalibpipeConfig.from_dict({
+            "default_env": "pipe3250",
+            "envs": {"pipe3250": {"casa_root": "/base/casa", "heuristics_dir": "/base/pl"}},
+            "profiles": {"test_pipe_ver": {"casa_ver": "/prof/casa", "pipe_ver": "/prof/pipe_ver"}},
+        })
+        run_opts_pv = resolve_run_options(cfg_pipe_ver, Namespace(profile="test_pipe_ver"))
+        self.assertEqual(run_opts_pv.heuristics_dir, "/prof/pipe_ver")
+
 
 class TestScipipeDirListResolution(unittest.TestCase):
     def setUp(self):

@@ -284,7 +284,7 @@ mem_per_cpu = "5G"
 
 When resolving the runtime CASA or Pixi environment (`EnvSpec`):
 1. **Base Environment Selection:** Identified by `--env`, or `profile.env`, or `default_env` (e.g. `pipe3250`).
-2. **Target Overrides:** If `casa_root` (or aliases `casa_ver`, `casa_dir`), `heuristics_dir` (or aliases `pl_ver`, `pipe_dir`, `heuristics_root`), `pixi_dir`, `pixi_env`, or `branch` are defined in the profile or provided on the CLI, they override the values in the base `[envs.<name>]` table.
+2. **Target Overrides:** If `casa_root` (or aliases `casa_ver`, `casa_dir`), `heuristics_dir` (or aliases `pl_ver`, `pipe_ver`, `pipe_dir`, `heuristics_root`), `pixi_dir`, `pixi_env`, or `branch` are defined in the profile or provided on the CLI, they override the values in the base `[envs.<name>]` table.
 3. **Standalone Checkouts:** This allows executing against custom CASA installations or pipeline git branches directly from a profile without adding a permanent entry under `[envs.*]`.
 
 #### Dynamic Workspace Search Path Resolution
@@ -500,7 +500,7 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `vla` | | Flag indicating VLA pipeline execution (`true`/`false`). |
 | **Environment Overrides** | `env` | | Base environment name from `[envs.*]` (defaults to `default_env`). |
 | | `casa_root` | `casa_ver`, `casa_dir` | Monolithic CASA installation directory. |
-| | `heuristics_dir` | `pl_ver`, `pipe_dir`, `heuristics_root` | Pipeline heuristics checkout directory. |
+| | `heuristics_dir` | `pl_ver`, `pipe_ver`, `pipe_dir`, `heuristics_root` | Pipeline heuristics checkout directory. |
 | | `pixi_dir` | | Pixi project directory for modular CASA environments. |
 | | `pixi_env` | | Target Pixi environment name (default: `"default"`). |
 | | `branch` | | Pipeline branch identifier. |
