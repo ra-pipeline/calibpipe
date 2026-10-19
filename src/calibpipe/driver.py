@@ -120,6 +120,9 @@ def write_casa_config(
     rundata: list[str] | None = None,
     rundata_specified: bool = False,
     casarundata: str | None = None,
+    nologger: bool = False,
+    logfile: str | None = None,
+    telemetry: bool | None = None,
 ) -> Path:
     """Generate isolated config.py for CASA inside rcdir.
 
@@ -132,13 +135,31 @@ def write_casa_config(
         rundata: Optional list of directories for rundata candidates.
         rundata_specified: Whether rundata was explicitly specified by profile/CLI.
         casarundata: Optional resolved casarundata path.
+        nologger: Disable CASA GUI logger window.
+        logfile: Optional custom logfile path or filename.
+        telemetry: Optional telemetry enable override.
 
     Returns:
         Path to the generated config.py file.
     """
     site = site_config or {}
-    telemetry = "True" if site.get("casa_enable_telemetry", False) else "False"
+    enable_telemetry = (
+        bool(telemetry)
+        if telemetry is not None
+        else bool(site.get("casa_enable_telemetry", False))
+    )
+    telemetry_str = "True" if enable_telemetry else "False"
     log2term_str = "True" if (site.get("log2term", False) or log2term) else "False"
+    nologger_str = "True" if (site.get("nologger", False) or nologger) else "False"
+
+    if logfile:
+        if os.path.isabs(logfile):
+            logfile_expr = repr(logfile)
+        else:
+            logfile_expr = f"os.path.join(_workdir, {logfile!r})"
+    else:
+        logfile_expr = 'os.path.join(_workdir, f"casa-{time.strftime(\'%Y%m%d-%H%M%S\', time.gmtime())}.log")'
+
     casadata_val = (
         casarundata
         or casadata
@@ -152,8 +173,10 @@ def write_casa_config(
         rundata_specified = True
     content = render_template(
         "casa_config.py.in",
-        telemetry=telemetry,
+        telemetry=telemetry_str,
         log2term=log2term_str,
+        nologger=nologger_str,
+        logfile_expr=logfile_expr,
         casadata=casadata_val,
         casarundata=casadata_val,
         datapath=repr(datapath) if datapath else "None",
@@ -208,7 +231,7 @@ def write_ipython_config(
     ipython_dir.mkdir(parents=True, exist_ok=True)
     ipython_file = ipython_dir / "ipython_config.py"
 
-    lines = ["c = get_config()"]
+    lines = ["c = get_config()", "c.TerminalIPythonApp.display_banner = False"]
     if disable_history:
         lines.append("c.HistoryManager.enabled = False")
     if autoreload:
@@ -262,6 +285,46 @@ def get_casa_rcdir_args(casaroot: str | Path, rcdir: Path) -> list[str]:
             str(rcdir / "startup.py"),
         ]
     return ["--rcdir", str(rcdir)]
+
+
+def apply_casa_cli_flags(
+    casarun: str,
+    run_opts: envconfig.ResolvedRunOptions,
+    working_path: Path,
+    is_pixi: bool,
+    now_ts: str | None = None,
+) -> tuple[str, Path | None]:
+    """Append logfile, nologger, and log2term command line arguments to casarun.
+
+    Args:
+        casarun: Current assembled CASA command line string.
+        run_opts: Fully resolved run configuration options.
+        working_path: Execution working directory.
+        is_pixi: Whether environment is Pixi modular CASA.
+        now_ts: Optional timestamp string for default logfile naming.
+
+    Returns:
+        Tuple of (updated_casarun, resolved_casa_logfile_path).
+    """
+    ts = now_ts or datetime.now().strftime("%Y%m%d-%H%M%S")
+    casa_logfile: Path | None = None
+
+    if run_opts.logfile:
+        p_log = Path(run_opts.logfile)
+        casa_logfile = p_log if p_log.is_absolute() else working_path / p_log
+        if "--logfile" not in casarun:
+            casarun = f"{casarun} --logfile {casa_logfile}"
+    elif is_pixi and "--logfile" not in casarun:
+        casa_logfile = working_path / f"casa-{ts}.log"
+        casarun = f"{casarun} --logfile {casa_logfile}"
+
+    if run_opts.nologger and "--nologger" not in casarun.split():
+        casarun = f"{casarun} --nologger"
+
+    if run_opts.log2term and "--log2term" not in casarun.split():
+        casarun = f"{casarun} --log2term"
+
+    return casarun, casa_logfile
 
 
 def link_weblog(
@@ -562,6 +625,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--heuristics-dir",
         "--heuristics-root",
         "--pipe-dir",
+        "--pipe-ver",
         "--pl-ver",
         dest="heuristics_dir",
         default=None,
@@ -686,6 +750,19 @@ def build_parser() -> argparse.ArgumentParser:
             "Mirror CASA log messages to terminal/stdout in real time "
             "(default: from [run].log2term / [site].log2term)"
         ),
+    )
+    p.add_argument(
+        "--nologger",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="nologger",
+        help="Disable CASA GUI logger (--nologger / --no-nologger) (default: from [run].nologger)",
+    )
+    p.add_argument(
+        "--logfile",
+        default=None,
+        dest="logfile",
+        help="Path or filename for CASA execution logfile (default: from [run].logfile)",
     )
     # Alternative direct execution modes (pcasa-style decoupling from PMR)
     p.add_argument(
@@ -867,7 +944,7 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         dest="autoreload",
-        help="Enable IPython %autoreload 2 for interactive CASA sessions (--autoreload / --no-autoreload)",
+        help="Enable IPython %%autoreload 2 for interactive CASA sessions (--autoreload / --no-autoreload)",
     )
     return p
 
@@ -1185,6 +1262,9 @@ def _run_mous(
             datapath=run_opts.datapath,
             rundata=run_opts.rundata,
             rundata_specified=run_opts.rundata_specified,
+            nologger=run_opts.nologger,
+            logfile=run_opts.logfile,
+            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1202,14 +1282,9 @@ def _run_mous(
         casarun = f"{casarun} " + " ".join(rcdir_args)
         log_message(f"created isolated CASA rcdir at {rcdir}")
 
-    if env_spec.is_pixi:
-        casa_logfile = (
-            working_path / f"casa-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
-        )
-        casarun = f"{casarun} --logfile {casa_logfile}"
-
-    if run_opts.log2term:
-        casarun = f"{casarun} --log2term"
+    casarun, casa_logfile = apply_casa_cli_flags(
+        casarun, run_opts, working_path, env_spec.is_pixi
+    )
 
     # Prepare working execution directory and fixes script
     working_path.mkdir(parents=True, exist_ok=True)
@@ -1446,6 +1521,9 @@ def _run_recipe_reducer(
                 datapath=run_opts.datapath,
                 rundata=run_opts.rundata,
                 rundata_specified=run_opts.rundata_specified,
+                nologger=run_opts.nologger,
+                logfile=run_opts.logfile,
+                telemetry=run_opts.casa_enable_telemetry,
             )
             write_casa_startup(rcdir)
             write_ipython_config(rcdir, autoreload=False)
@@ -1464,12 +1542,9 @@ def _run_recipe_reducer(
         if mylog:
             mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    if env_spec.is_pixi:
-        casa_logfile = working_path / f"casa-{now_ts}.log"
-        casarun = f"{casarun} --logfile {casa_logfile}"
-
-    if run_opts.log2term:
-        casarun = f"{casarun} --log2term"
+    casarun, casa_logfile = apply_casa_cli_flags(
+        casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
+    )
 
     piperun_file = working_path / "casa_piperun.py"
     resolved_workdir = str(working_path)
@@ -1585,6 +1660,9 @@ def _run_standalone_ppr(
             datapath=run_opts.datapath,
             rundata=run_opts.rundata,
             rundata_specified=run_opts.rundata_specified,
+            nologger=run_opts.nologger,
+            logfile=run_opts.logfile,
+            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1602,12 +1680,9 @@ def _run_standalone_ppr(
         casarun = f"{casarun} " + " ".join(rcdir_args)
         mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    if env_spec.is_pixi:
-        casa_logfile = working_path / f"casa-{now_ts}.log"
-        casarun = f"{casarun} --logfile {casa_logfile}"
-
-    if run_opts.log2term:
-        casarun = f"{casarun} --log2term"
+    casarun, casa_logfile = apply_casa_cli_flags(
+        casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
+    )
 
     piperun_file = (working_path / "casa_piperun.py").resolve()
     resolved_workdir = str(working_path.resolve())
@@ -1723,6 +1798,9 @@ def _run_script(
             datapath=run_opts.datapath,
             rundata=run_opts.rundata,
             rundata_specified=run_opts.rundata_specified,
+            nologger=run_opts.nologger,
+            logfile=run_opts.logfile,
+            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1740,12 +1818,9 @@ def _run_script(
         casarun = f"{casarun} " + " ".join(rcdir_args)
         mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    if env_spec.is_pixi:
-        casa_logfile = working_path / f"casa-{now_ts}.log"
-        casarun = f"{casarun} --logfile {casa_logfile}"
-
-    if run_opts.log2term:
-        casarun = f"{casarun} --log2term"
+    casarun, casa_logfile = apply_casa_cli_flags(
+        casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
+    )
 
     cmd = wrap_cmd(
         f"{casarun} -c {script_path}",
@@ -1828,6 +1903,9 @@ def _run_cmd(
             datapath=run_opts.datapath,
             rundata=run_opts.rundata,
             rundata_specified=run_opts.rundata_specified,
+            nologger=run_opts.nologger,
+            logfile=run_opts.logfile,
+            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1845,12 +1923,9 @@ def _run_cmd(
         casarun = f"{casarun} " + " ".join(rcdir_args)
         mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    if env_spec.is_pixi:
-        casa_logfile = working_path / f"casa-{now_ts}.log"
-        casarun = f"{casarun} --logfile {casa_logfile}"
-
-    if run_opts.log2term:
-        casarun = f"{casarun} --log2term"
+    casarun, casa_logfile = apply_casa_cli_flags(
+        casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
+    )
 
     cmd_file = (working_path / "casa_cmd.py").resolve()
     resolved_workdir = str(working_path.resolve())
@@ -1916,6 +1991,9 @@ def _run_interactive(
             datapath=run_opts.datapath,
             rundata=run_opts.rundata,
             rundata_specified=run_opts.rundata_specified,
+            nologger=run_opts.nologger,
+            logfile=run_opts.logfile,
+            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(
@@ -1935,6 +2013,10 @@ def _run_interactive(
         else:
             rcdir_args = get_casa_rcdir_args(casaroot, rcdir)
         casarun = f"{casarun} " + " ".join(rcdir_args)
+
+    casarun, _ = apply_casa_cli_flags(
+        casarun, run_opts, working_path, env_spec.is_pixi
+    )
 
     if run_opts.dry_run:
         print("[DRY RUN] Execution mode: interactive")

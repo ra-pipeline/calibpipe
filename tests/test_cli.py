@@ -98,6 +98,89 @@ ncores = 4
                 cli.main(["profile", "show", "nonexistent", f"--config={cfg_path}"])
             self.assertEqual(cm.exception.code, 1)
 
+    def test_run_subcommand_interactive_flag(self) -> None:
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.toml"
+            cfg_path.write_text("""
+default_env = "main"
+
+[paths]
+scipipe_rootdir = "/fake/root"
+scipipe_logdir = "/fake/logs"
+workspaces = ["/fake/ws"]
+
+[envs.main]
+casa_root = "/fake/casa"
+
+[profiles.interactive]
+target = "interactive"
+interactive = true
+env = "main"
+dry_run = true
+""")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                cli.main(["run", "-p=interactive", f"--config={cfg_path}", "--no-site-config"])
+            self.assertIn("Execution mode: interactive", buf.getvalue())
+
+    def test_run_subcommand_empty_args_shows_help(self) -> None:
+        import io
+        import os
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.toml"
+            cfg_path.write_text("""
+default_env = "main"
+
+[paths]
+scipipe_rootdir = "/fake/root"
+scipipe_logdir = "/fake/logs"
+workspaces = ["/fake/ws"]
+
+[envs.main]
+casa_root = "/fake/casa"
+""")
+            buf = io.StringIO()
+            with redirect_stdout(buf), patch.dict(
+                os.environ, {"CALIBPIPE_CONFIG": str(cfg_path), "CALIBPIPE_NO_SITE_CONFIG": "1"}
+            ):
+                # When run without arguments, prints driver help and exits 0
+                with self.assertRaises(SystemExit) as cm:
+                    cli.main(["run"])
+                self.assertEqual(cm.exception.code, 0)
+            self.assertIn("Assists in the execution of the interferometric pipeline", buf.getvalue())
+
+    def test_submit_subcommand_rejects_interactive_profile(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from calibpipe import batch
+
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.toml"
+            cfg_path.write_text("""
+default_env = "main"
+
+[envs.main]
+casa_root = "/fake/casa"
+
+[profiles.interactive]
+target = "interactive"
+interactive = true
+env = "main"
+""")
+            with self.assertRaises(SystemExit) as cm:
+                batch.main(["-p", "interactive", f"--config={cfg_path}", "--no-site-config"])
+            self.assertEqual(cm.exception.code, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

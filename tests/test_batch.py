@@ -751,6 +751,14 @@ casa_root = "/fake/casa/main"
         self.assertTrue(file_safe.startswith("vlass_cube_7x3_"))
         self.assertNotIn("/", file_safe)
 
+    def test_job_name_profile_containing_mous_substring(self):
+        """Verify profile names containing 'mous' (e.g. e2e_mous_calimage) are not misidentified as --mous."""
+        display, file_safe = runbatch.job_name(
+            "calibpipe run -p=e2e_mous_calimage", profile_name="e2e_mous_calimage"
+        )
+        self.assertTrue(display.startswith("e2e_mous_calimage_"))
+        self.assertTrue(file_safe.startswith("e2e_mous_calimage_"))
+
 
 if __name__ == "__main__":
     unittest.main()

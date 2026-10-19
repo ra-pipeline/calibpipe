@@ -531,7 +531,7 @@ def job_name(
     """
     prefix = ""
     for tok in pipejob.split():
-        if "mous" in tok:
+        if tok.startswith("--mous="):
             prefix = tok.split("=", 1)[-1][11:]
             prefix = prefix.strip("/").replace("/", "_")
             break
@@ -801,8 +801,32 @@ def main(argv: Sequence[str] | None = None) -> None:
                 pipejob_parts.append(f"--config={args.config}")
             if getattr(args, "no_site_config", False):
                 pipejob_parts.append("--no-site-config")
-            if getattr(args, "profile", None) and args.profile in cfg.profiles:
-                pipejob_parts.append(f"--profile={args.profile}")
+            if (
+                getattr(args, "profile", None)
+                and args.profile in cfg.profiles
+                and args.profile not in cfg.batches
+            ):
+                p = cfg.profiles[args.profile]
+                has_run_or_env = any(
+                    [
+                        p.casa_root,
+                        p.heuristics_dir,
+                        p.pixi_dir,
+                        p.pixi_env,
+                        p.branch,
+                        p.recipe,
+                        p.loglevel,
+                        p.useresume,
+                        p.omp_num_threads,
+                        p.psrecord,
+                        p.memstats,
+                        p.backup,
+                        p.workspaces,
+                        p.casadata,
+                    ]
+                )
+                if has_run_or_env:
+                    pipejob_parts.append(f"--profile={args.profile}")
             if batch_opts.env_name:
                 pipejob_parts.append(f"--env={batch_opts.env_name}")
             if getattr(args, "log2term", None) is True:

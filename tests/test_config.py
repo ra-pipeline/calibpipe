@@ -2022,6 +2022,301 @@ class TestCasarundataConsolidation(unittest.TestCase):
         self.assertIn(f'"{self.data1}"', content)
 
 
+class TestSimplifiedConfigHierarchy(unittest.TestCase):
+    """Test the simplified config hierarchy: tool paths consolidation, nprocs/threads, and unified presets."""
+
+    def test_paths_and_site_bidirectional_sync(self):
+        from calibpipe.config import CalibpipeConfig
+
+        # When defined under [paths]
+        cfg1 = CalibpipeConfig.from_dict({
+            "paths": {
+                "pmr_home": "/custom/pmr",
+                "datapacker_home": "/custom/datapacker",
+                "acsdata": "/custom/acsdata",
+                "java_home": "/custom/jvm",
+                "pixi_bin": "/custom/bin/pixi",
+            }
+        })
+        self.assertEqual(cfg1.paths.pmr_home, "/custom/pmr")
+        self.assertEqual(cfg1.site.pmr_home, "/custom/pmr")
+        self.assertEqual(cfg1.paths.datapacker_home, "/custom/datapacker")
+        self.assertEqual(cfg1.site.datapacker_home, "/custom/datapacker")
+        self.assertEqual(cfg1.paths.acsdata, "/custom/acsdata")
+        self.assertEqual(cfg1.site.acsdata, "/custom/acsdata")
+        self.assertEqual(cfg1.paths.java_home, "/custom/jvm")
+        self.assertEqual(cfg1.site.java_home, "/custom/jvm")
+        self.assertEqual(cfg1.paths.pixi_bin, "/custom/bin/pixi")
+        self.assertEqual(cfg1.site.pixi_bin, "/custom/bin/pixi")
+
+        # When defined under [site] (legacy compatibility)
+        cfg2 = CalibpipeConfig.from_dict({
+            "site": {
+                "pmr_home": "/site/pmr",
+                "datapacker_home": "/site/datapacker",
+                "acsdata": "/site/acsdata",
+                "java_home": "/site/jvm",
+                "pixi_bin": "/site/bin/pixi",
+            }
+        })
+        self.assertEqual(cfg2.paths.pmr_home, "/site/pmr")
+        self.assertEqual(cfg2.site.pmr_home, "/site/pmr")
+        self.assertEqual(cfg2.paths.datapacker_home, "/site/datapacker")
+        self.assertEqual(cfg2.site.datapacker_home, "/site/datapacker")
+
+    def test_nprocs_and_threads_properties(self):
+        from calibpipe.config import BatchConfig, ProfileConfig, resolve_batch_options, CalibpipeConfig
+        from argparse import Namespace
+
+        # BatchConfig uses cores and cpus_per_task (threads property alias for cpus_per_task)
+        b = BatchConfig.from_dict({"partition": "plwg", "cores": 8, "cpus_per_task": 2})
+        self.assertEqual(b.cores, 8)
+        self.assertEqual(b.threads, 2)
+        self.assertEqual(b.cpus_per_task, 2)
+
+        # BatchConfig initialized with threads alias
+        b2 = BatchConfig.from_dict({"partition": "plwg", "cores": 16, "threads": 4})
+        self.assertEqual(b2.cores, 16)
+        self.assertEqual(b2.cpus_per_task, 4)
+        self.assertEqual(b2.threads, 4)
+
+        # ProfileConfig clearly separates MPI application processes (nprocs) from scheduler cores (cores)
+        p = ProfileConfig.from_dict({"partition": "batch2", "nprocs": 12, "cores": 16, "cpus_per_task": 3})
+        self.assertEqual(p.nprocs, 12)
+        self.assertEqual(p.cores, 16)
+        self.assertEqual(p.threads, 3)
+        self.assertEqual(p.cpus_per_task, 3)
+
+        cfg = CalibpipeConfig.from_dict({
+            "batch": {"partition": "plwg", "cores": 8},
+            "profiles": {
+                "test_preset": {"partition": "batch2", "cores": 16, "cpus_per_task": 2, "mem": 128}
+            }
+        })
+        res = resolve_batch_options(cfg, Namespace(profile="test_preset", pipefile="test.txt"))
+        self.assertEqual(res.cores, 16)
+        self.assertEqual(res.cpus_per_task, 2)
+
+    def test_unified_presets_and_legacy_batches_mirroring(self):
+        from calibpipe.config import CalibpipeConfig, resolve_batch_options
+        from argparse import Namespace
+
+        cfg = CalibpipeConfig.from_dict({
+            "batch": {"partition": "plwg", "cores": 8},
+            "batches": {
+                "legacy_debug": {"partition": "debug", "cores": 4, "mem": 32}
+            },
+            "profiles": {
+                "modern_heavy": {"partition": "heavy", "cores": 32, "mem": 512}
+            }
+        })
+        # Legacy batch profile is automatically mirrored into cfg.profiles
+        self.assertIn("legacy_debug", cfg.profiles)
+        self.assertIn("modern_heavy", cfg.profiles)
+
+        res_legacy = resolve_batch_options(cfg, Namespace(profile="legacy_debug", pipefile="test.txt"))
+        self.assertEqual(res_legacy.partition, "debug")
+        self.assertEqual(res_legacy.cores, 4)
+
+        res_modern = resolve_batch_options(cfg, Namespace(profile="modern_heavy", pipefile="test.txt"))
+        self.assertEqual(res_modern.partition, "heavy")
+        self.assertEqual(res_modern.cores, 32)
+
+    def test_default_profile_behavior(self):
+        from calibpipe.config import CalibpipeConfig, resolve_run_options, resolve_batch_options, resolve_env
+        from argparse import Namespace
+
+        cfg = CalibpipeConfig.from_dict({
+            "default_profile": "regression_test",
+            "envs": {
+                "dev_env": {"casa_root": "/fake/casa", "heuristics_dir": "/fake/heuristics"}
+            },
+            "profiles": {
+                "regression_test": {
+                    "env": "dev_env",
+                    "vis": "data/test.ms",
+                    "recipe": "procedure_custom.xml",
+                    "nprocs": 12,
+                    "cores": 12,
+                    "partition": "batch2",
+                    "mem": 256,
+                },
+                "other_profile": {
+                    "vis": "data/other.ms",
+                    "nprocs": 2,
+                }
+            }
+        })
+
+        # default_env is automatically derived from default_profile's env
+        self.assertEqual(cfg.default_profile, "regression_test")
+        self.assertEqual(cfg.default_env, "dev_env")
+
+        # resolve_run_options automatically picks up default_profile when --profile is not passed
+        run_opts = resolve_run_options(cfg, Namespace())
+        self.assertEqual(run_opts.vis, ["data/test.ms"])
+        self.assertEqual(run_opts.recipe, "procedure_custom.xml")
+        self.assertEqual(run_opts.nprocs, 12)
+        self.assertEqual(run_opts.env_name, "dev_env")
+
+        # Explicit CLI --profile overrides default_profile
+        run_opts_override = resolve_run_options(cfg, Namespace(profile="other_profile"))
+        self.assertEqual(run_opts_override.vis, ["data/other.ms"])
+        self.assertEqual(run_opts_override.nprocs, 2)
+
+        # resolve_batch_options applies explicit profile options
+        batch_opts = resolve_batch_options(cfg, Namespace(profile="regression_test", pipefile="test.txt"))
+        self.assertEqual(batch_opts.partition, "batch2")
+        self.assertEqual(batch_opts.cores, 12)
+        self.assertEqual(batch_opts.mem, 256)
+
+        # resolve_env automatically resolves environment from default_profile
+        spec = resolve_env(cfg)
+        self.assertEqual(spec.casa_root, "/fake/casa")
+
+
+class TestNologgerAndLogfileConfig(unittest.TestCase):
+    """Test nologger and logfile configuration across RunConfig, profiles, and CASA generation."""
+
+    def test_run_config_nologger_and_logfile(self):
+        from calibpipe.config import RunConfig
+
+        # Standard keys
+        rc = RunConfig.from_dict({"nologger": True, "logfile": "run_custom.log"})
+        self.assertTrue(rc.nologger)
+        self.assertEqual(rc.logfile, "run_custom.log")
+
+        # noglogger alias support
+        rc_alias = RunConfig.from_dict({"noglogger": True})
+        self.assertTrue(rc_alias.nologger)
+        self.assertIsNone(rc_alias.logfile)
+
+    def test_profile_config_nologger_and_logfile(self):
+        from calibpipe.config import ProfileConfig
+
+        # Standard keys
+        prof = ProfileConfig.from_dict({"nologger": True, "logfile": "prof_custom.log"})
+        self.assertTrue(prof.nologger)
+        self.assertEqual(prof.logfile, "prof_custom.log")
+
+        # noglogger alias support
+        prof_alias = ProfileConfig.from_dict({"noglogger": True})
+        self.assertTrue(prof_alias.nologger)
+
+    def test_resolve_run_options_precedence(self):
+        from argparse import Namespace
+        from calibpipe.config import CalibpipeConfig, resolve_run_options
+
+        cfg = CalibpipeConfig.from_dict({
+            "run": {
+                "nologger": True,
+                "logfile": "base_run.log",
+            },
+            "profiles": {
+                "prof1": {
+                    "nologger": False,
+                    "logfile": "profile_run.log",
+                },
+                "prof_default": {},
+            },
+        })
+
+        # 1. Inherited from [run]
+        opts1 = resolve_run_options(cfg, Namespace())
+        self.assertTrue(opts1.nologger)
+        self.assertEqual(opts1.logfile, "base_run.log")
+
+        # 2. Overridden by profile
+        opts2 = resolve_run_options(cfg, Namespace(profile="prof1"))
+        self.assertFalse(opts2.nologger)
+        self.assertEqual(opts2.logfile, "profile_run.log")
+
+        # 3. Overridden by CLI flags
+        opts3 = resolve_run_options(cfg, Namespace(profile="prof1", nologger=True, logfile="cli_run.log"))
+        self.assertTrue(opts3.nologger)
+        self.assertEqual(opts3.logfile, "cli_run.log")
+
+    def test_write_casa_config_nologger_and_logfile(self):
+        import tempfile
+        from pathlib import Path
+        from calibpipe.driver import write_casa_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rcdir = Path(tmpdir) / ".casa"
+            rcdir.mkdir()
+
+            # Test relative logfile and nologger=True
+            cfg_file = write_casa_config(rcdir, nologger=True, logfile="my_relative.log")
+            content = cfg_file.read_text(encoding="utf-8")
+            self.assertIn("nologger = True", content)
+            self.assertIn("logfile = os.path.join(_workdir, 'my_relative.log')", content)
+
+            # Test absolute logfile
+            cfg_file_abs = write_casa_config(rcdir, nologger=False, logfile="/tmp/abs_casa.log")
+            content_abs = cfg_file_abs.read_text(encoding="utf-8")
+            self.assertIn("nologger = False", content_abs)
+            self.assertIn("logfile = '/tmp/abs_casa.log'", content_abs)
+
+    def test_apply_casa_cli_flags(self):
+        from pathlib import Path
+        from calibpipe.config import ResolvedRunOptions
+        from calibpipe.driver import apply_casa_cli_flags
+
+        work_path = Path("/tmp/test_work")
+
+        # Pixi with defaults
+        opts_default = ResolvedRunOptions()
+        cmd, log_path = apply_casa_cli_flags("pixi run casa", opts_default, work_path, is_pixi=True, now_ts="20261019-120000")
+        self.assertIn("--logfile /tmp/test_work/casa-20261019-120000.log", cmd)
+        self.assertNotIn("--nologger", cmd)
+        self.assertEqual(log_path, work_path / "casa-20261019-120000.log")
+
+        # Custom nologger and logfile
+        opts_custom = ResolvedRunOptions(nologger=True, logfile="custom.log")
+        cmd_custom, log_path_custom = apply_casa_cli_flags(
+            "/opt/casa/bin/casa", opts_custom, work_path, is_pixi=False
+        )
+        self.assertIn("--logfile /tmp/test_work/custom.log", cmd_custom)
+        self.assertIn("--nologger", cmd_custom)
+    def test_run_options_rcdir_telemetry_precedence(self):
+        # 1. Fallback to [site] defaults when not in [run] or profile
+        cfg_site_only = CalibpipeConfig.from_dict({
+            "site": {"use_custom_rcdir": True, "casa_enable_telemetry": False},
+        })
+        opts1 = resolve_run_options(cfg_site_only, Namespace())
+        self.assertTrue(opts1.use_custom_rcdir)
+        self.assertFalse(opts1.casa_enable_telemetry)
+
+        # 2. [run] overrides [site]
+        cfg_run_override = CalibpipeConfig.from_dict({
+            "site": {"use_custom_rcdir": True, "casa_enable_telemetry": False},
+            "run": {"use_custom_rcdir": False, "casa_enable_telemetry": True},
+        })
+        opts2 = resolve_run_options(cfg_run_override, Namespace())
+        self.assertFalse(opts2.use_custom_rcdir)
+        self.assertTrue(opts2.casa_enable_telemetry)
+
+        # 3. [profiles.<name>] overrides [run] and [site]
+        cfg_profile_override = CalibpipeConfig.from_dict({
+            "site": {"use_custom_rcdir": True, "casa_enable_telemetry": False},
+            "run": {"use_custom_rcdir": False, "casa_enable_telemetry": False},
+            "profiles": {
+                "test_prof": {"use_custom_rcdir": True, "casa_enable_telemetry": True},
+            },
+        })
+        opts3 = resolve_run_options(cfg_profile_override, Namespace(profile="test_prof"))
+        self.assertTrue(opts3.use_custom_rcdir)
+        self.assertTrue(opts3.casa_enable_telemetry)
+
+        # 4. CLI flag overrides [profiles]
+        opts4 = resolve_run_options(
+            cfg_profile_override,
+            Namespace(profile="test_prof", custom_rcdir=False, telemetry=False),
+        )
+        self.assertFalse(opts4.use_custom_rcdir)
+        self.assertFalse(opts4.casa_enable_telemetry)
+
+
 if __name__ == "__main__":
     unittest.main()
 

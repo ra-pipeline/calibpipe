@@ -119,7 +119,9 @@ Inside `ppmr_dir`, `pipelineMakeRequest` lays out the standard ALMA Science Pipe
                     ├── casa_piperun.py              <-- Generated CASA execution script
                     └── .casa/                       <-- Isolated CASA runtime state
                         ├── config.py
-                        └── startup.py
+                        ├── startup.py
+                        └── ipython/profile_default/
+                            └── ipython_config.py    <-- Suppresses SQLite history locking
 ```
 
 ### Why Symlink Shortcuts are Used Instead of Physical Restructuring
@@ -142,7 +144,7 @@ Inside `ppmr_dir`, `pipelineMakeRequest` lays out the standard ALMA Science Pipe
 | `rawdata/` | PMR | Raw ALMA Science Data Model (`.asdm.sdm`) execution blocks. |
 | `working/` | PMR / `calibpipe` | Where CASA runs. Contains the PPR XML, Casa pipescript, and intermediate MS files. |
 | `products/` | ALMA Pipeline | Final calibrated tables, FITS images, and pipeline weblogs. |
-| `working/.casa/` | `calibpipe` | Private CASA runtime environment isolating user config and telemetry. |
+| `working/.casa/` | `calibpipe` | Private CASA runtime environment isolating user config, telemetry, and IPython history locking. |
 
 ---
 
