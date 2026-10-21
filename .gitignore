@@ -23,6 +23,7 @@ htmlcov/
 local/
 
 # Execution working trees & runtime staging
+.casa/
 working/
 working*/
 products/

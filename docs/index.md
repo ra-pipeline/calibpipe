@@ -14,10 +14,11 @@ The package keeps site-specific execution details in TOML configuration rather t
 
 ## What You Can Do with calibpipe
 
-- **Run single pipeline executions:** `calibpipe run --mous=... --env=...`
-- **Submit runs to Slurm:** `calibpipe submit pipefile.txt --env=...` (alias: `calibpipe batch`)
-- **Resolve interactive shell environments:** `source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`
-- **Preserve existing workflows:** seamlessly drop in for legacy scripts without breaking cron jobs or cluster submission scripts.
+- **Run single pipeline executions:** standard ALMA MOUS reductions (`--mous`), direct recipe reductions on local datasets (`--vis` + `--procedure`), standalone PPRs (`--PPR`), custom scripts (`--script`), inline commands (`--cmd`), or interactive CASA sessions (`-i`).
+- **Submit runs to Slurm or HTCondor:** batch queues from pipefiles (`calibpipe submit pipefile.txt`) or single-job submissions directly from named profiles (`calibpipe submit -p <profile>`).
+- **Target named execution and batch profiles:** encapsulate execution targets, CASA/pipeline checkouts, hardware tuning, and scheduler resources under `[profiles.<name>]`.
+- **Resolve interactive shell environments:** `source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`.
+- **Preserve existing workflows:** drop in seamlessly for legacy scripts (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
 
 ---
 
@@ -79,5 +80,5 @@ For Slurm batch execution, interactive shell sourcing, and legacy wrapper mappin
 - **[User Guide](guide.md):** Complete manual covering architecture, the 5-tier configuration schema, Slurm batching, shell environment setup, testing, and local doc previewing.
 - **[Execution Internals](internals.md):** In-depth technical details on project ID resolution, `pipelineMakeRequest` (PMR) staging, OUS directory layout, and FAQ.
 - **[Changelog & History](changelog.md):** Evolution from prototype scripts to modern library, version-by-version release notes, and pending features.
-- **[API Reference](api/index.md):** Auto-generated module reference and docstrings for `cli`, `config`, `driver`, `batch`, and execution steps.
+- **[API Reference](api/index.md):** Auto-generated module reference and docstrings for `cli`, `config`, `runner`, `batch`, `pmr`, and execution steps.
 - **[Configuration Template](https://github.com/nrao/calibpipe/blob/main/config.example.toml):** Fully annotated generic configuration template.

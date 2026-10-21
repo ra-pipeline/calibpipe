@@ -235,6 +235,11 @@ class PathsConfig:
     casadata: str | None = None
     datapath: list[str] = field(default_factory=list)
     rundata: list[str] = field(default_factory=list)
+    pmr_home: str | None = None
+    datapacker_home: str | None = None
+    acsdata: str | None = None
+    java_home: str | None = None
+    pixi_bin: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.scipipe_rootdir, (list, tuple)):
@@ -328,6 +333,11 @@ class PathsConfig:
             casadata=resolved_casarundata,
             datapath=_list_or_empty(data.get("datapath")),
             rundata=rundata_list,
+            pmr_home=_str_or_none(data.get("pmr_home")),
+            datapacker_home=_str_or_none(data.get("datapacker_home")),
+            acsdata=_str_or_none(data.get("acsdata")),
+            java_home=_str_or_none(data.get("java_home")),
+            pixi_bin=_str_or_none(data.get("pixi_bin")),
         )
 
 
@@ -447,6 +457,8 @@ class BatchConfig:
 
     # --- HTCondor-specific Directives [HTCondor only] ---
     requirements: str | None = None  # HTCondor: requirements expression override
+    omp_num_threads: int | None = None
+    openblas_num_threads: int | None = None
 
     def __init__(
         self,
@@ -470,16 +482,22 @@ class BatchConfig:
         queue: str | None = None,
         logdir: str | None = None,
         ntasks: int | None = None,
+        threads: int | None = None,
+        omp_num_threads: int | None = None,
+        openblas_num_threads: int | None = None,
     ) -> None:
         self.partition = queue if queue is not None else partition
-        self.cores = ntasks if ntasks is not None else cores
+        if ntasks is not None:
+            self.cores = ntasks
+        else:
+            self.cores = cores
         self.mem = mem
         self.node = node
         self.mail_type = mail_type
         self.walltime = walltime
         self.nodelist = nodelist
         self.chdir = chdir
-        self.cpus_per_task = cpus_per_task
+        self.cpus_per_task = threads if threads is not None else cpus_per_task
         self.mem_per_cpu = mem_per_cpu
         self.hint = hint
         self.ntasks_per_core = ntasks_per_core
@@ -489,6 +507,8 @@ class BatchConfig:
         self.requirements = requirements
         self.dry_run = dry_run
         self.logdir = logdir
+        self.omp_num_threads = omp_num_threads
+        self.openblas_num_threads = openblas_num_threads
 
     @property
     def queue(self) -> str:
@@ -497,26 +517,37 @@ class BatchConfig:
 
     @property
     def ntasks(self) -> int:
-        """Backward-compatible and Slurm-native alias for cores."""
+        """Slurm-native alias for cores."""
         return self.cores
+
+    @property
+    def threads(self) -> int | None:
+        """Thread count alias for cpus_per_task."""
+        return self.cpus_per_task
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BatchConfig:
         default_inst = cls()
+        cores_val = data.get("cores")
+        if cores_val is None:
+            cores_val = data.get("ntasks", default_inst.cores)
+
+        threads_val = data.get("cpus_per_task")
+        if threads_val is None:
+            threads_val = data.get("threads", default_inst.cpus_per_task)
+
         return cls(
             partition=str(
                 data.get("partition", data.get("queue", default_inst.partition))
             ),
-            cores=int(data.get("cores", data.get("ntasks", default_inst.cores))),
+            cores=int(cores_val),
             mem=int(data.get("mem", default_inst.mem)),
             node=str(data.get("node", default_inst.node)),
             mail_type=str(data.get("mail_type", default_inst.mail_type)),
             walltime=data.get("walltime", default_inst.walltime),
             nodelist=data.get("nodelist", default_inst.nodelist),
             chdir=data.get("chdir", default_inst.chdir),
-            cpus_per_task=_int_or_none(
-                data.get("cpus_per_task", default_inst.cpus_per_task)
-            ),
+            cpus_per_task=_int_or_none(threads_val),
             mem_per_cpu=data.get("mem_per_cpu", default_inst.mem_per_cpu),
             hint=data.get("hint", default_inst.hint),
             ntasks_per_core=_int_or_none(
@@ -528,6 +559,8 @@ class BatchConfig:
             requirements=data.get("requirements", default_inst.requirements),
             dry_run=bool(data.get("dry_run", default_inst.dry_run)),
             logdir=data.get("logdir", default_inst.logdir),
+            omp_num_threads=_int_or_none(data.get("omp_num_threads")),
+            openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
         )
 
 
@@ -561,6 +594,10 @@ class RunConfig:
     rundata: list[str] = field(default_factory=list)
     dry_run: bool = False
     autoreload: bool = True
+    nologger: bool = False
+    logfile: str | None = None
+    use_custom_rcdir: bool = True
+    casa_enable_telemetry: bool = False
 
     def __init__(
         self,
@@ -591,6 +628,10 @@ class RunConfig:
         dry_run: bool = False,
         autoreload: bool = True,
         ncores: int | None = None,
+        nologger: bool = False,
+        logfile: str | None = None,
+        use_custom_rcdir: bool = True,
+        casa_enable_telemetry: bool = False,
     ) -> None:
         self.recipe = recipe
         self.nprocs = ncores if ncores is not None else nprocs
@@ -618,6 +659,10 @@ class RunConfig:
         self.rundata = list(rundata or [])
         self.dry_run = dry_run
         self.autoreload = autoreload
+        self.nologger = nologger
+        self.logfile = logfile
+        self.use_custom_rcdir = use_custom_rcdir
+        self.casa_enable_telemetry = casa_enable_telemetry
 
     @property
     def ncores(self) -> int:
@@ -628,6 +673,7 @@ class RunConfig:
     def from_dict(cls, data: dict[str, Any]) -> RunConfig:
         default_inst = cls()
         nprocs_val = data.get("nprocs", data.get("ncores", default_inst.nprocs))
+        nologger_val = data.get("nologger", data.get("noglogger", default_inst.nologger))
         return cls(
             recipe=str(data.get("recipe", default_inst.recipe)),
             nprocs=int(nprocs_val),
@@ -657,6 +703,14 @@ class RunConfig:
             rundata=_list_or_empty(data.get("rundata", default_inst.rundata)),
             dry_run=bool(data.get("dry_run", default_inst.dry_run)),
             autoreload=bool(data.get("autoreload", default_inst.autoreload)),
+            nologger=bool(nologger_val),
+            logfile=_str_or_none(data.get("logfile")),
+            use_custom_rcdir=bool(
+                data.get("use_custom_rcdir", default_inst.use_custom_rcdir)
+            ),
+            casa_enable_telemetry=bool(
+                data.get("casa_enable_telemetry", default_inst.casa_enable_telemetry)
+            ),
         )
 
 
@@ -785,10 +839,23 @@ class ProfileConfig:
     rundata: list[str] | None = None
     dry_run: bool | None = None
     autoreload: bool | None = None
+    nologger: bool | None = None
+    logfile: str | None = None
+    use_custom_rcdir: bool | None = None
+    casa_enable_telemetry: bool | None = None
+
+    @property
+    def threads(self) -> int | None:
+        """Canonical thread count alias for cpus_per_task."""
+        return self.cpus_per_task
 
     def __init__(self, **kwargs: Any) -> None:
+        if "noglogger" in kwargs and "nologger" not in kwargs:
+            kwargs["nologger"] = kwargs.pop("noglogger")
         if "queue" in kwargs and "partition" not in kwargs:
             kwargs["partition"] = kwargs.pop("queue")
+        if "threads" in kwargs and "cpus_per_task" not in kwargs:
+            kwargs["cpus_per_task"] = kwargs.pop("threads")
         if "ntasks" in kwargs and "cores" not in kwargs:
             kwargs["cores"] = kwargs.pop("ntasks")
         if "ncores" in kwargs and "nprocs" not in kwargs:
@@ -1013,7 +1080,7 @@ class ProfileConfig:
             nodelist=_str_or_none(flat.get("nodelist")),
             chdir=_str_or_none(flat.get("chdir")),
             logdir=_str_or_none(flat.get("logdir")),
-            cpus_per_task=_int_or_none(flat.get("cpus_per_task")),
+            cpus_per_task=_int_or_none(flat.get("cpus_per_task", flat.get("threads"))),
             mem_per_cpu=_str_or_none(flat.get("mem_per_cpu")),
             hint=_str_or_none(flat.get("hint")),
             ntasks_per_core=_int_or_none(flat.get("ntasks_per_core")),
@@ -1033,6 +1100,20 @@ class ProfileConfig:
             rundata=_list_or_empty(flat["rundata"]) if "rundata" in flat else None,
             dry_run=bool(flat["dry_run"]) if "dry_run" in flat else None,
             autoreload=bool(flat["autoreload"]) if "autoreload" in flat else None,
+            nologger=(
+                bool(flat["nologger"])
+                if "nologger" in flat
+                else (bool(flat["noglogger"]) if "noglogger" in flat else None)
+            ),
+            logfile=_str_or_none(flat.get("logfile")),
+            use_custom_rcdir=(
+                bool(flat["use_custom_rcdir"]) if "use_custom_rcdir" in flat else None
+            ),
+            casa_enable_telemetry=(
+                bool(flat["casa_enable_telemetry"])
+                if "casa_enable_telemetry" in flat
+                else None
+            ),
         )
 
 
@@ -1046,6 +1127,7 @@ class CalibpipeConfig(dict):
     def __init__(
         self,
         default_env: str = "main",
+        default_profile: str | None = None,
         paths: PathsConfig | None = None,
         envs: dict[str, EnvSpec] | None = None,
         site: SiteConfig | None = None,
@@ -1058,6 +1140,7 @@ class CalibpipeConfig(dict):
     ) -> None:
         super().__init__(raw_dict or {})
         self.default_env = default_env
+        self.default_profile = default_profile
         self.paths = paths or PathsConfig()
         self.envs = envs or {}
         self.site = site or SiteConfig()
@@ -1071,6 +1154,8 @@ class CalibpipeConfig(dict):
 
         # Synchronize dictionary keys for backwards compatibility
         self["default_env"] = self.default_env
+        if self.default_profile is not None:
+            self["default_profile"] = self.default_profile
         self["paths"] = asdict(self.paths)
         self["envs"] = {
             k: asdict(v) if is_dataclass(v) else v for k, v in self.envs.items()
@@ -1092,9 +1177,21 @@ class CalibpipeConfig(dict):
         loaded_layers: Sequence[str | Path] | None = None,
     ) -> CalibpipeConfig:
         """Construct a strongly-typed CalibpipeConfig from a parsed TOML dictionary."""
-        default_env = str(data.get("default_env", "main"))
-        paths = PathsConfig.from_dict(data.get("paths", {}))
-        site = SiteConfig.from_dict(data.get("site", {}))
+        default_profile_raw = data.get("default_profile")
+        default_profile = str(default_profile_raw) if default_profile_raw is not None else None
+        default_env_raw = data.get("default_env")
+        paths_data = dict(data.get("paths", {}))
+        site_data = dict(data.get("site", {}))
+
+        # Tool installation paths configured in [paths] take effect in site config if not set in [site]
+        for tool_key in ("pmr_home", "datapacker_home", "acsdata", "java_home", "pixi_bin"):
+            if tool_key in paths_data and paths_data[tool_key] and tool_key not in site_data:
+                site_data[tool_key] = paths_data[tool_key]
+            elif tool_key in site_data and site_data[tool_key] and tool_key not in paths_data:
+                paths_data[tool_key] = site_data[tool_key]
+
+        paths = PathsConfig.from_dict(paths_data)
+        site = SiteConfig.from_dict(site_data)
         batch = BatchConfig.from_dict(data.get("batch", {}))
         run = RunConfig.from_dict(data.get("run", {}))
 
@@ -1106,6 +1203,8 @@ class CalibpipeConfig(dict):
                     b_copy["partition"] = b_copy["queue"]
                 if "ntasks" in b_copy and "cores" not in b_copy:
                     b_copy["cores"] = b_copy["ntasks"]
+                if "threads" in b_copy and "cpus_per_task" not in b_copy:
+                    b_copy["cpus_per_task"] = b_copy["threads"]
                 merged_batch_data = dict(asdict(batch))
                 merged_batch_data.update(b_copy)
                 batches[b_name] = BatchConfig.from_dict(merged_batch_data)
@@ -1114,6 +1213,30 @@ class CalibpipeConfig(dict):
         for prof_name, prof_data in data.get("profiles", {}).items():
             if isinstance(prof_data, dict):
                 profiles[prof_name] = ProfileConfig.from_dict(prof_data)
+
+        # Mirror any [batches] entries into profiles so all presets exist in profiles
+        for b_name, b_cfg in batches.items():
+            if b_name not in profiles:
+                profiles[b_name] = ProfileConfig(
+                    partition=b_cfg.partition,
+                    cores=b_cfg.cores,
+                    mem=b_cfg.mem,
+                    mem_per_cpu=b_cfg.mem_per_cpu,
+                    node=b_cfg.node,
+                    walltime=b_cfg.walltime,
+                    nodelist=b_cfg.nodelist,
+                    chdir=b_cfg.chdir,
+                    cpus_per_task=b_cfg.cpus_per_task,
+                    ntasks_per_core=b_cfg.ntasks_per_core,
+                    hint=b_cfg.hint,
+                    distribution=b_cfg.distribution,
+                    no_requeue=b_cfg.no_requeue,
+                    scheduler=b_cfg.scheduler,
+                    requirements=b_cfg.requirements,
+                    dry_run=b_cfg.dry_run,
+                    logdir=b_cfg.logdir,
+                    mail_type=b_cfg.mail_type,
+                )
 
         workspaces = paths.workspaces
         envs: dict[str, EnvSpec] = {}
@@ -1181,8 +1304,18 @@ class CalibpipeConfig(dict):
                     },
                 )
 
+        if default_env_raw is not None:
+            default_env = str(default_env_raw)
+        elif default_profile and default_profile in profiles and profiles[default_profile].env:
+            default_env = str(profiles[default_profile].env)
+        elif default_profile and default_profile in envs:
+            default_env = default_profile
+        else:
+            default_env = "main"
+
         return cls(
             default_env=default_env,
+            default_profile=default_profile,
             paths=paths,
             envs=envs,
             site=site,
@@ -1248,6 +1381,9 @@ class ResolvedRunOptions:
     rundata_specified: bool = False
     dry_run: bool = False
     autoreload: bool = True
+    nologger: bool = False
+    logfile: str | None = None
+    casa_enable_telemetry: bool = False
 
     # Environment & Path overrides
     casa_root: str | None = None
@@ -1305,6 +1441,9 @@ class ResolvedRunOptions:
         rundata_specified: bool = False,
         dry_run: bool = False,
         autoreload: bool = True,
+        nologger: bool = False,
+        logfile: str | None = None,
+        casa_enable_telemetry: bool = False,
         casa_root: str | None = None,
         heuristics_dir: str | None = None,
         pixi_dir: str | None = None,
@@ -1365,6 +1504,9 @@ class ResolvedRunOptions:
         self.rundata_specified = rundata_specified
         self.dry_run = dry_run
         self.autoreload = autoreload
+        self.nologger = nologger
+        self.logfile = logfile
+        self.casa_enable_telemetry = casa_enable_telemetry
         self.casa_root = casa_root or casa_dir or casa_ver
         self.heuristics_dir = (
             heuristics_dir or heuristics_root or pipe_dir or pipe_ver or pl_ver
@@ -1436,6 +1578,8 @@ def resolve_run_options(
         cfg = CalibpipeConfig.from_dict(config)
 
     profile_name = getattr(cli_opts, "profile", None)
+    if not profile_name and cfg.default_profile:
+        profile_name = cfg.default_profile
     profile: ProfileConfig | None = None
     if profile_name:
         if profile_name not in cfg.profiles:
@@ -1444,12 +1588,6 @@ def resolve_run_options(
                 f"Unknown profile '{profile_name}'. Available profiles in config: {valid_profiles}"
             )
         profile = cfg.profiles[profile_name]
-
-    # Custom rcdir: CLI flag > [site].use_custom_rcdir > default
-    if getattr(cli_opts, "custom_rcdir", None) is not None:
-        use_custom_rcdir = bool(cli_opts.custom_rcdir)
-    else:
-        use_custom_rcdir = cfg.site.use_custom_rcdir
 
     def _val(attr: str, cfg_val: Any) -> Any:
         cli_v = getattr(cli_opts, attr, None)
@@ -1460,6 +1598,38 @@ def resolve_run_options(
             if prof_v is not None:
                 return prof_v
         return cfg_val
+
+    # Custom rcdir: CLI flag > Profile > [run] > [site]
+    rcdir_cfg_fallback = (
+        cfg.run.use_custom_rcdir
+        if cfg.run.use_custom_rcdir is not None
+        else cfg.site.use_custom_rcdir
+    )
+    cli_rcdir = (
+        getattr(cli_opts, "custom_rcdir", None)
+        if getattr(cli_opts, "custom_rcdir", None) is not None
+        else getattr(cli_opts, "use_custom_rcdir", None)
+    )
+    prof_rcdir = profile.use_custom_rcdir if profile and profile.use_custom_rcdir is not None else None
+    use_custom_rcdir = bool(
+        cli_rcdir if cli_rcdir is not None else (prof_rcdir if prof_rcdir is not None else rcdir_cfg_fallback)
+    )
+
+    # Telemetry: CLI flag > Profile > [run] > [site]
+    telemetry_cfg_fallback = (
+        cfg.run.casa_enable_telemetry
+        if cfg.run.casa_enable_telemetry is not None
+        else cfg.site.casa_enable_telemetry
+    )
+    cli_telemetry = (
+        getattr(cli_opts, "casa_enable_telemetry", None)
+        if getattr(cli_opts, "casa_enable_telemetry", None) is not None
+        else getattr(cli_opts, "telemetry", None)
+    )
+    prof_telemetry = profile.casa_enable_telemetry if profile and profile.casa_enable_telemetry is not None else None
+    casa_enable_telemetry = bool(
+        cli_telemetry if cli_telemetry is not None else (prof_telemetry if prof_telemetry is not None else telemetry_cfg_fallback)
+    )
 
     symlink_shortcuts = _val("symlink_shortcuts", cfg.run.symlink_shortcuts)
     log2term = _val("log2term", cfg.run.log2term or cfg.site.log2term)
@@ -1596,6 +1766,26 @@ def resolve_run_options(
         autoreload = bool(profile.autoreload)
     else:
         autoreload = cfg.run.autoreload
+
+    # Nologger: CLI > Profile > [run]
+    cli_nologger = getattr(cli_opts, "nologger", None)
+    if cli_nologger is not None:
+        nologger = bool(cli_nologger)
+    elif profile is not None and profile.nologger is not None:
+        nologger = bool(profile.nologger)
+    else:
+        nologger = cfg.run.nologger
+
+    # Logfile: CLI > Profile > [run]
+    cli_logfile = getattr(cli_opts, "logfile", None)
+    if cli_logfile:
+        logfile = str(cli_logfile).strip()
+    elif profile is not None and profile.logfile:
+        logfile = str(profile.logfile).strip()
+    elif cfg.run.logfile:
+        logfile = str(cfg.run.logfile).strip()
+    else:
+        logfile = None
 
     # Datapath & rundata resolution: CLI > Profile > [run] > [paths]
     cli_datapath = getattr(cli_opts, "datapath", None)
@@ -1791,7 +1981,6 @@ def resolve_run_options(
         ]
 
     if workdir:
-        workdir_search = []
         user_name = os.environ.get("USER", "")
         effective_rootdir = resolved_scipipe_rootdir or cfg.paths.scipipe_rootdir
         if isinstance(effective_rootdir, (list, tuple)):
@@ -1803,20 +1992,23 @@ def resolve_run_options(
             if effective_rootdir
             else None
         )
-        if root_dir is not None:
-            workdir_search.append(str(root_dir))
-        if workspaces:
-            workdir_search.extend(workspaces)
-        if workdir_search:
-            resolved_wd = resolve_workspace_path(workdir, workdir_search)
-            if _safe_exists(resolved_wd):
-                workdir = str(resolved_wd)
-            elif (
-                root_dir is not None
-                and not Path(workdir).is_absolute()
-                and not workdir.startswith("~")
-            ):
-                workdir = str(root_dir / workdir)
+        raw_wd = Path(workdir).expanduser()
+        if not raw_wd.is_absolute() and not str(workdir).startswith("~"):
+            found_in_ws = None
+            if workspaces:
+                for ws in workspaces:
+                    candidate = Path(ws).expanduser() / raw_wd
+                    if _safe_exists(candidate):
+                        found_in_ws = str(candidate.resolve())
+                        break
+            if found_in_ws:
+                workdir = found_in_ws
+            elif root_dir is not None:
+                workdir = str(root_dir / raw_wd)
+            else:
+                workdir = str(raw_wd.resolve())
+        else:
+            workdir = str(raw_wd.resolve())
 
     return ResolvedRunOptions(
         profile=profile_name,
@@ -1863,6 +2055,9 @@ def resolve_run_options(
         rundata_specified=rundata_specified,
         dry_run=dry_run,
         autoreload=autoreload,
+        nologger=nologger,
+        logfile=logfile,
+        casa_enable_telemetry=casa_enable_telemetry,
         casa_root=resolved_casa_root,
         heuristics_dir=resolved_heuristics_dir,
         pixi_dir=resolved_pixi_dir,
@@ -1919,6 +2114,8 @@ class ResolvedBatchOptions:
     profile: str | None = None
     dry_run: bool = False
     logdir: str | None = None
+    omp_num_threads: int | None = None
+    openblas_num_threads: int | None = None
 
     @property
     def queue(self) -> str:
@@ -1927,7 +2124,7 @@ class ResolvedBatchOptions:
 
     @property
     def ntasks(self) -> int:
-        """Backward-compatible and Slurm-native alias for cores."""
+        """Slurm-native alias for cores."""
         return self.cores
 
 
@@ -1950,24 +2147,27 @@ def resolve_batch_options(
     active_batch: BatchConfig = cfg.batch
 
     if profile_name:
-        if profile_name in cfg.batches:
-            active_batch = cfg.batches[profile_name]
-        elif profile_name in cfg.profiles:
+        if profile_name in cfg.profiles:
             profile = cfg.profiles[profile_name]
+            if getattr(profile, "interactive", False) or getattr(profile, "target", "") == "interactive":
+                raise ConfigError(
+                    f"Cannot submit interactive profile '{profile_name}' to the batch scheduler. "
+                    "Interactive CASA sessions must be run locally using 'calibpipe run -i' or 'calibpipe run -p <name>'."
+                )
             prof_dict = {
                 k: v
                 for k, v in asdict(profile).items()
                 if v is not None and hasattr(cfg.batch, k)
             }
-            if "cores" not in prof_dict and profile.nprocs is not None:
-                prof_dict["cores"] = profile.nprocs
             if "partition" not in prof_dict and profile.partition is not None:
                 prof_dict["partition"] = profile.partition
             merged_dict = asdict(cfg.batch)
             merged_dict.update(prof_dict)
             active_batch = BatchConfig.from_dict(merged_dict)
+        elif profile_name in cfg.batches:
+            active_batch = cfg.batches[profile_name]
         else:
-            available = sorted(set(cfg.batches.keys()) | set(cfg.profiles.keys()))
+            available = sorted(set(cfg.profiles.keys()) | set(cfg.batches.keys()))
             raise ConfigError(
                 f"Unknown batch profile '{profile_name}'. Available profiles: {available}"
             )
@@ -2002,9 +2202,39 @@ def resolve_batch_options(
         v = getattr(cli_args, attr, None)
         return v if v is not None else cfg_val
 
+    user_name = os.environ.get("USER", "")
+    cli_rootdir = getattr(cli_args, "scipipe_rootdir", None)
+    prof_rootdir = profile.scipipe_rootdir if profile else None
+    effective_rootdir = cli_rootdir or prof_rootdir or cfg.paths.scipipe_rootdir
+    if isinstance(effective_rootdir, (list, tuple)):
+        prof_workspaces = profile.workspaces if profile and profile.workspaces else None
+        resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
+        effective_rootdir = resolve_first_existing_path(
+            effective_rootdir, workspaces=resolved_workspaces, user=user_name
+        )
+    root_dir = (
+        Path(effective_rootdir.replace("{user}", user_name)).expanduser()
+        if effective_rootdir
+        else None
+    )
+
     walltime = _cli_or_cfg("walltime", active_batch.walltime)
     nodelist = _cli_or_cfg("nodelist", active_batch.nodelist)
     chdir = _cli_or_cfg("chdir", active_batch.chdir)
+    if chdir is None and profile and profile.workdir:
+        raw_workdir = Path(os.path.expanduser(profile.workdir))
+        # Derive project_root so working/ can be cleanly rotated if backup=True
+        raw_chdir = raw_workdir.parent if raw_workdir.name == "working" else raw_workdir
+        if not raw_chdir.is_absolute() and not str(raw_chdir).startswith("~") and root_dir is not None:
+            chdir = str(root_dir / raw_chdir)
+        else:
+            chdir = str(raw_chdir)
+    elif chdir is not None:
+        raw_chdir = Path(os.path.expanduser(str(chdir)))
+        if not raw_chdir.is_absolute() and not str(raw_chdir).startswith("~") and root_dir is not None:
+            chdir = str(root_dir / raw_chdir)
+        else:
+            chdir = str(raw_chdir)
     cpus_per_task = _int_or_none(
         _cli_or_cfg("cpus_per_task", active_batch.cpus_per_task)
     )
@@ -2027,6 +2257,32 @@ def resolve_batch_options(
     requirements = _cli_or_cfg(
         "requirements", getattr(active_batch, "requirements", None)
     )
+    cli_omp = getattr(cli_args, "omp_num_threads", None)
+    omp_num_threads = _int_or_none(
+        cli_omp
+        if cli_omp is not None
+        else (
+            getattr(profile, "omp_num_threads", None)
+            if profile and getattr(profile, "omp_num_threads", None) is not None
+            else getattr(active_batch, "omp_num_threads", None)
+        )
+    )
+    if omp_num_threads is None and cfg.run.omp_num_threads is not None:
+        omp_num_threads = cfg.run.omp_num_threads
+
+    cli_openblas = getattr(cli_args, "openblas_num_threads", None)
+    openblas_num_threads = _int_or_none(
+        cli_openblas
+        if cli_openblas is not None
+        else (
+            getattr(profile, "openblas_num_threads", None)
+            if profile and getattr(profile, "openblas_num_threads", None) is not None
+            else getattr(active_batch, "openblas_num_threads", None)
+        )
+    )
+    if openblas_num_threads is None and cfg.run.openblas_num_threads is not None:
+        openblas_num_threads = cfg.run.openblas_num_threads
+
     raw_logdir = active_batch.logdir or cfg.paths.scipipe_logdir or None
     if isinstance(raw_logdir, (list, tuple)):
         raw_logdir = resolve_first_existing_path(raw_logdir)
@@ -2057,6 +2313,8 @@ def resolve_batch_options(
         profile=profile_name,
         dry_run=dry_run,
         logdir=logdir,
+        omp_num_threads=omp_num_threads,
+        openblas_num_threads=openblas_num_threads,
     )
 
 
@@ -2446,6 +2704,8 @@ def format_config_overview(
         lines.append(f"Config File:      {config_path}")
     elif layers and len(layers) == 1:
         lines.append(f"Config File:      {layers[0]}")
+    if cfg.default_profile:
+        lines.append(f"Default Profile:  {cfg.default_profile}")
     lines.extend(
         [
             f"Default Env:      {cfg.default_env}",
@@ -2634,6 +2894,8 @@ def format_profile_list(config: CalibpipeConfig | dict[str, Any]) -> str:
         lines.append("  (none defined)")
     else:
         for pname in sorted(cfg.profiles.keys()):
+            if pname in cfg.batches:
+                continue
             p = cfg.profiles[pname]
             pdetails = []
             if p.cmd:
@@ -2650,13 +2912,25 @@ def format_profile_list(config: CalibpipeConfig | dict[str, Any]) -> str:
                 target_str = "interactive"
             elif p.recipe:
                 target_str = f"recipe({p.recipe})"
+            elif p.partition or p.mem or p.mem_per_cpu or p.walltime or p.scheduler:
+                target_str = p.scheduler or "batch"
             else:
                 target_str = "tuning"
 
             if p.env:
                 pdetails.append(f"env={p.env}")
+            if p.partition:
+                pdetails.append(f"partition={p.partition}")
             if p.nprocs:
                 pdetails.append(f"nprocs={p.nprocs}")
+            if p.threads and p.threads != 1:
+                pdetails.append(f"threads={p.threads}")
+            if p.mem:
+                pdetails.append(f"mem={p.mem} GB")
+            if p.mem_per_cpu:
+                pdetails.append(f"mem_per_cpu={p.mem_per_cpu}")
+            if p.walltime:
+                pdetails.append(f"time={p.walltime}")
             if p.psrecord:
                 pdetails.append("psrecord=True")
             if p.backup:
@@ -2715,7 +2989,7 @@ def format_profile_details(config: CalibpipeConfig | dict[str, Any], name: str) 
     ]
 
     found = False
-    if name in cfg.profiles:
+    if name in cfg.profiles and name not in cfg.batches:
         found = True
         p = cfg.profiles[name]
         lines.append("Type: Execution Profile ([profiles])")
@@ -2777,8 +3051,15 @@ def resolve_env(
         raise ConfigError("Config file has no [envs.*] tables defined.")
 
     name = env_name or config.get("default_env")
+    if not name and config.get("default_profile"):
+        dp = config.get("default_profile")
+        profs = config.get("profiles", {})
+        if dp in profs and profs[dp].get("env"):
+            name = profs[dp]["env"]
+        elif dp in envs:
+            name = dp
     if not name:
-        raise ConfigError("No --env given and config file has no default_env set.")
+        raise ConfigError("No --env given and config file has no default_env or default_profile set.")
     if name not in envs:
         available = ", ".join(sorted(envs))
         raise ConfigError(f"No [envs.{name}] in config file. Available: {available}")

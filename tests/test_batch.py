@@ -592,6 +592,36 @@ class TestBatchProfiles(RunbatchCaptureCase):
             self.assertIn("#SBATCH --job-name=test_prof_", script)
             self.assertIn("calibpipe run -p=test_prof", script)
 
+    def test_batch_profile_auto_chdir_emits_directive_and_creates_dir(self):
+        from calibpipe.config import ProfileConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            target_dir = Path(td) / "new_project_run" / "working"
+            self.assertFalse(target_dir.parent.exists())
+
+            cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+            cfg.profiles["auto_chdir_prof"] = ProfileConfig(
+                cores=4,
+                mem=32,
+                queue="test_partition",
+                workdir=str(target_dir),
+            )
+            with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
+                calls = self.run_and_capture(
+                    [
+                        f"--config={CONFIG}",
+                        "-p",
+                        "auto_chdir_prof",
+                    ]
+                )
+                self.assertEqual(len(calls), 1)
+                cmd, script = calls[0]
+                self.assertTrue(cmd.startswith("sbatch "))
+                expected_project_root = str(target_dir.parent)
+                self.assertIn(f"#SBATCH --chdir={expected_project_root}", script)
+                # Ensure the directory was pre-created before submission
+                self.assertTrue(target_dir.parent.is_dir())
+
     def test_batch_dry_run_skips_submission(self):
         buf = io.StringIO()
         tmpdir = tempfile.mkdtemp()
@@ -744,12 +774,78 @@ casa_root = "/fake/casa/main"
         )
         self.assertIn("export UV_NO_SYNC=1", htc_wrapper)
 
+    def test_build_script_exports_thread_environment(self):
+        from calibpipe.batch import build_htcondor_script, build_sbatch_script
+
+        # 1. Slurm with cpus_per_task fallback
+        slurm_script = build_sbatch_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            cpus_per_task=2,
+            job_name="test_thread_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertIn("export OMP_NUM_THREADS=2", slurm_script)
+        self.assertIn("export OPENBLAS_NUM_THREADS=2", slurm_script)
+
+        # 2. Slurm with explicit omp_num_threads override
+        slurm_override = build_sbatch_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            cpus_per_task=4,
+            omp_num_threads=1,
+            openblas_num_threads=1,
+            job_name="test_override_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertIn("export OMP_NUM_THREADS=1", slurm_override)
+        self.assertIn("export OPENBLAS_NUM_THREADS=1", slurm_override)
+
+        # 3. HTCondor with explicit omp_num_threads
+        _, htc_wrapper = build_htcondor_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            omp_num_threads=2,
+            openblas_num_threads=2,
+            job_name="test_htc_thread_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertIn("export OMP_NUM_THREADS=2", htc_wrapper)
+        self.assertIn("export OPENBLAS_NUM_THREADS=2", htc_wrapper)
+
     def test_job_name_profile_with_slashes(self):
         """Verify profile names with slashes retain slashes in display_name and are sanitized in file_name."""
         display, file_safe = runbatch.job_name("calibpipe run -p=vlass/cube/7x3", profile_name="vlass/cube/7x3")
         self.assertTrue(display.startswith("vlass/cube/7x3_"))
         self.assertTrue(file_safe.startswith("vlass_cube_7x3_"))
         self.assertNotIn("/", file_safe)
+
+    def test_job_name_profile_containing_mous_substring(self):
+        """Verify profile names containing 'mous' (e.g. e2e_mous_calimage) are not misidentified as --mous."""
+        display, file_safe = runbatch.job_name(
+            "calibpipe run -p=e2e_mous_calimage", profile_name="e2e_mous_calimage"
+        )
+        self.assertTrue(display.startswith("e2e_mous_calimage_"))
+        self.assertTrue(file_safe.startswith("e2e_mous_calimage_"))
 
 
 if __name__ == "__main__":

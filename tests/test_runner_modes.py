@@ -1,4 +1,4 @@
-"""Tests for calibpipe.driver direct execution modes (pcasa-style decoupling from PMR)."""
+"""Tests for calibpipe.runner direct execution modes (pcasa-style decoupling from PMR)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from calibpipe import driver
+from calibpipe import runner
 
 
 class DriverModesTestCase(unittest.TestCase):
@@ -57,21 +57,21 @@ casa_root = "/fake/casa/main"
             return 0
 
         with (
-            patch.object(driver, "getoutput", side_effect=fake_getoutput),
-            patch.object(driver.RunLogger, "run", side_effect=fake_run),
-            patch.object(driver.RunLogger, "runquiet", side_effect=fake_run),
-            patch.object(driver.subprocess, "call", side_effect=fake_call),
-            patch.dict(driver.os.environ, {}, clear=False),
+            patch.object(runner, "getoutput", side_effect=fake_getoutput),
+            patch.object(runner.RunLogger, "run", side_effect=fake_run),
+            patch.object(runner.RunLogger, "runquiet", side_effect=fake_run),
+            patch.object(runner.subprocess, "call", side_effect=fake_call),
+            patch.dict(runner.os.environ, {}, clear=False),
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
         ):
             try:
-                driver.main(args)
+                runner.main(args)
                 exit_code = 0
             except SystemExit as e:
                 exit_code = int(e.code) if e.code is not None else 0
             finally:
-                self.last_env = dict(driver.os.environ)
+                self.last_env = dict(runner.os.environ)
 
         return calls, exit_code
 
@@ -427,7 +427,7 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         workdir = self.tmp / "work_psrecord"
         workdir.mkdir()
 
-        with patch("calibpipe.driver.shutil.which", return_value="/usr/bin/psrecord"):
+        with patch("calibpipe.runner.shutil.which", return_value="/usr/bin/psrecord"):
             calls, exit_code = self.run_driver([
                 "--cmd", "print(123)",
                 "--psrecord",
@@ -450,7 +450,7 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         workdir = self.tmp / "work_no_psrecord"
         workdir.mkdir()
 
-        with patch("calibpipe.driver.shutil.which", return_value=None):
+        with patch("calibpipe.runner.shutil.which", return_value=None):
             calls, exit_code = self.run_driver([
                 "--cmd", "print(123)",
                 "--psrecord",
@@ -665,7 +665,7 @@ class TestNamedProfiles(DriverModesTestCase):
             openblas_num_threads=2,
         )
 
-        with patch("calibpipe.driver.envconfig.load_merged_config", return_value=cfg):
+        with patch("calibpipe.runner.envconfig.load_merged_config", return_value=cfg):
             calls, exit_code = self.run_driver([
                 "--script", str(script_file),
                 "--profile=fast_prof",
@@ -699,7 +699,7 @@ class TestNamedProfiles(DriverModesTestCase):
             workdir=str(workdir),
         )
 
-        with patch("calibpipe.driver.envconfig.load_merged_config", return_value=cfg):
+        with patch("calibpipe.runner.envconfig.load_merged_config", return_value=cfg):
             calls, exit_code = self.run_driver([
                 "-p", "self_contained",
                 f"--config={self.config}",
@@ -732,7 +732,7 @@ class TestNamedProfiles(DriverModesTestCase):
             workdir=str(workdir),
         )
 
-        with patch("calibpipe.driver.envconfig.load_merged_config", return_value=cfg):
+        with patch("calibpipe.runner.envconfig.load_merged_config", return_value=cfg):
             calls, exit_code = self.run_driver([
                 "-p", "script_prof",
                 "--cmd", "import casatasks",
@@ -766,7 +766,7 @@ class TestNamedProfiles(DriverModesTestCase):
         self.assertEqual(len(casa_runs), 0)
 
     def test_write_ipython_config(self) -> None:
-        from calibpipe.driver import write_ipython_config
+        from calibpipe.runner import write_ipython_config
 
         rcdir = self.tmp / "rc_autoreload"
         cfg_file = write_ipython_config(rcdir, autoreload=True, disable_history=True)
@@ -786,7 +786,7 @@ class TestNamedProfiles(DriverModesTestCase):
         self.assertNotIn("%load_ext autoreload", content_no)
 
     def test_write_casa_config_datapath_and_rundata(self) -> None:
-        from calibpipe.driver import write_casa_config
+        from calibpipe.runner import write_casa_config
 
         rcdir = self.tmp / "rc_datapath_test"
         rcdir.mkdir(parents=True)
@@ -833,7 +833,7 @@ class TestBatchJobColocation(unittest.TestCase):
             },
         ):
             # Job start: script should be copied, logs should be symlinked
-            driver.link_batch_job_files_start(self.working)
+            runner.link_batch_job_files_start(self.working)
 
             copied_script = self.working / "batch.testjob.sbatch"
             self.assertTrue(copied_script.is_file())
@@ -858,7 +858,7 @@ class TestBatchJobColocation(unittest.TestCase):
             self.assertIn("TASK COMPLETED IN CASA", sym_out.read_text())
 
             # Job finish: symlinks are unlinked and replaced with real file copies
-            driver.finalize_batch_job_logs(self.working)
+            runner.finalize_batch_job_logs(self.working)
 
             final_out = self.working / "batch.out"
             final_err = self.working / "batch.err"
@@ -888,12 +888,12 @@ class TestBatchJobColocation(unittest.TestCase):
         env_clean["SLURM_JOB_NAME"] = job_name
 
         with patch.dict(os.environ, env_clean, clear=True):
-            driver.link_batch_job_files_start(self.working)
+            runner.link_batch_job_files_start(self.working)
             self.assertTrue((self.working / f"batch.{job_name}.sbatch").is_file())
             self.assertTrue((self.working / "batch.out").is_symlink())
             self.assertEqual((self.working / "batch.out").read_text(), "FALLBACK STDOUT\n")
 
-            driver.finalize_batch_job_logs(self.working)
+            runner.finalize_batch_job_logs(self.working)
             self.assertFalse((self.working / "batch.out").is_symlink())
             self.assertEqual((self.working / "batch.out").read_text(), "FALLBACK STDOUT\n")
 
@@ -904,10 +904,10 @@ class TestBatchJobColocation(unittest.TestCase):
             if not k.startswith("CALIBPIPE_BATCH_") and not k.startswith("SLURM_")
         }
         with patch.dict(os.environ, env_clean, clear=True):
-            driver.link_batch_job_files_start(self.working)
+            runner.link_batch_job_files_start(self.working)
             self.assertFalse((self.working / "batch.out").exists())
             self.assertFalse((self.working / "batch.err").exists())
-            driver.finalize_batch_job_logs(self.working)
+            runner.finalize_batch_job_logs(self.working)
             self.assertFalse((self.working / "batch.out").exists())
 
     def test_batch_colocation_same_destination_file_guard(self) -> None:
@@ -925,7 +925,7 @@ class TestBatchJobColocation(unittest.TestCase):
             },
         ):
             # Should not unlink the real file or raise an error trying to copy onto itself
-            driver.link_batch_job_files_start(self.working)
+            runner.link_batch_job_files_start(self.working)
             self.assertFalse(existing_out.is_symlink())
             self.assertEqual(existing_out.read_text(), "DIRECT OUTPUT\n")
             self.assertEqual(existing_script.read_text(), "#!/bin/sh\n")

@@ -27,7 +27,11 @@
 # or set CALIBPIPE_NO_SITE_CONFIG=1.
 # ==============================================================================
 
-# Default environment selected when --env is not specified on the command line.
+# [Optional] Default execution profile selected when -p / --profile is not specified on the CLI.
+# If set, 'calibpipe run' and 'calibpipe submit' automatically target this profile.
+# default_profile = "debug"
+
+# Default environment selected when neither --env nor a profile specifies an environment.
 default_env = "main"
 
 # ------------------------------------------------------------------------------
@@ -72,6 +76,14 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 # If set, any [envs.<name>] without an explicit heuristics_dir will default to:
 #   {heuristics_root}/{branch}
 # heuristics_root = "/data/pipeline/branches"
+
+# [Optional] External tooling installation paths (can also be configured under [site]):
+# pmr_home = "/opt/pipetools/latest"
+# datapacker_home = "/opt/datapacker/current"
+# acsdata = "/opt/acsdata"
+# java_home = "/usr/lib/jvm/default-java"
+# pixi_bin = "/opt/pixi/bin/pixi"
+
 
 # ------------------------------------------------------------------------------
 # 2. Environments ([envs.<name>])
@@ -134,26 +146,32 @@ pixi_dir = "/data/pipeline/branches/main"
 # log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
 
 # ------------------------------------------------------------------------------
-# 4. Slurm Batch Job Defaults ([batch]) & Profiles ([batches.<name>]) (Optional)
+# 4. Batch Job Defaults ([batch]) & Profiles ([batches.<name>]) (Optional)
 # ------------------------------------------------------------------------------
-# Defaults when submitting jobs via 'calibpipe batch' or 'calibpipe submit'.
+# Resource allocation and scheduler directives for 'calibpipe submit' and 'calibpipe batch'.
 #
-# Slurm CPU, Core, and Task Terminology:
-#   - Task / Process (--ntasks):
-#       The number of independent tasks or processes to launch (e.g. MPI ranks).
-#       Configured via 'cores' or its native alias 'ntasks' (default: 8).
-#   - CPU (--cpus-per-task):
-#       In Slurm, a "CPU" represents a logical execution unit / hardware thread
-#       (SMT/hyperthread). Multi-threaded runtimes (OpenMP, OpenBLAS, CASA threads)
-#       bind to these logical CPUs. Total CPUs allocated by Slurm = ntasks × cpus_per_task.
-#       This total is what appears in 'squeue' output under 'CP' or 'CPUS'.
-#   - Core (--ntasks-per-core):
-#       A physical processor core on silicon. Setting 'ntasks_per_core = 1' ensures
-#       Slurm maps tasks across distinct physical cores rather than co-scheduling
-#       two tasks onto sibling hyperthreads of the same physical core.
-#   - Memory:
-#       'mem' sets total job memory in GB (--mem). Alternatively, 'mem_per_cpu' sets
-#       memory per logical CPU (--mem-per-cpu, e.g. "5G", total = mem_per_cpu × total_cpus).
+# Direct Scheduler Mapping:
+#   -----------------------------------------------------------------------------
+#   Config Key        Slurm Directive                   HTCondor Directive
+#   -----------------------------------------------------------------------------
+#   cores             #SBATCH --ntasks=<cores>          request_cpus = <cores>
+#   partition         #SBATCH --partition=<partition>   +partition = "<partition>"
+#   mem               #SBATCH --mem=<mem>               request_memory = <mem>G
+#   mem_per_cpu       #SBATCH --mem-per-cpu=<val>       request_memory = cores * val
+#   chdir             #SBATCH --chdir=<dir>             initialdir = <dir>
+#   nodelist          #SBATCH --nodelist=<host>         TARGET.Machine == "<host>"
+#   mail_type         #SBATCH --mail-type=<type>        notification = <type>
+#   node              #SBATCH --nodes=<node>            (N/A)
+#   walltime          #SBATCH --time=<walltime>         (N/A)
+#   cpus_per_task     #SBATCH --cpus-per-task=<cpus>    (N/A)
+#   ntasks_per_core   #SBATCH --ntasks-per-core=<num>   (N/A)
+#   no_requeue        #SBATCH --no-requeue              (N/A)
+#   hint              #SBATCH --hint=<hint>             (N/A)
+#   distribution      #SBATCH --distribution=<policy>   (N/A)
+#   requirements      (N/A)                             requirements = ( ... )
+#   -----------------------------------------------------------------------------
+#   Note: MPI process count inside CASA is configured in [run].nprocs (mpicasa -n <nprocs>).
+#   Batch [batch].cores controls cluster allocation (--ntasks / request_cpus).
 #
 # [batch]
 # # --- General & Scheduler Selection [Slurm & HTCondor] ---
@@ -162,7 +180,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # logdir = "~/Workspace/logs"             # Directory for batch scheduler script and log records
 
 # # --- Shared Resource Allocation [Slurm & HTCondor] ---
-# partition = "plwg"                      # Slurm partition / HTCondor partition (or legacy 'queue')
+# partition = "plwg"                      # Slurm partition / HTCondor partition (alias: queue)
 # cores = 8                               # Tasks/CPUs per batch job (Slurm: --ntasks; HTCondor: request_cpus; alias: ntasks = 8)
 # mem = 248                               # Total memory in GB per batch job (Slurm: --mem; HTCondor: request_memory; mutually exclusive with mem_per_cpu)
 # mem_per_cpu = "5G"                      # Memory per CPU (Slurm: --mem-per-cpu; HTCondor: converts to request_memory = cores * mem_per_cpu)
@@ -173,7 +191,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # # --- Slurm-Specific Directives [Slurm only] ---
 # node = "1"                              # Number of nodes (--nodes)
 # walltime = "24:00:00"                   # Slurm walltime limit (--time; omitted if unset)
-# cpus_per_task = 3                       # Logical CPUs (threads) per task (--cpus-per-task; total allocated CPUs = ntasks * cpus_per_task)
+# cpus_per_task = 3                       # Logical CPUs/threads per task (Slurm: --cpus-per-task; alias: threads = 3)
 # ntasks_per_core = 1                     # Limit tasks per physical core (--ntasks-per-core; 1 prevents hyperthread sharing)
 # hint = "nomultithread"                  # Scheduler placement hint (--hint, e.g. 'nomultithread')
 # distribution = "cyclic:cyclic"          # Task distribution policy (--distribution)
@@ -182,20 +200,22 @@ pixi_dir = "/data/pipeline/branches/main"
 # # --- HTCondor-Specific Directives [HTCondor only] ---
 # requirements = "none"                   # HTCondor ClassAd requirements override ("none", "default", or custom expression)
 #
-# Named batch profiles override baseline [batch] settings and are selectable via
+# Named resource profiles override baseline [batch] settings and are selectable via
 # 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):
 #
-# [batches.debug]
+# [profiles.debug]
 # partition = "debug"                     # Test/debug partition
-# cores = 4                               # Reduced CPU count
+# cores = 4                               # Reduced CPU/task count (alias: ntasks = 4)
 # mem = 32                                # Reduced RAM (GB)
 # walltime = "01:00:00"                   # Short walltime limit
 #
-# [batches.heavy]
+# [profiles.heavy]
 # partition = "batch2"                    # High-capacity partition
-# cores = 16
+# cores = 16                              # High CPU/task count (alias: ntasks = 16)
 # mem = 500
-# cpus_per_task = 2
+# cpus_per_task = 2                       # Logical CPUs/threads per task (alias: threads = 2)
+#
+# (Note: Legacy [batches.<name>] tables remain fully supported for backward compatibility).
 
 # ------------------------------------------------------------------------------
 # 5. Pipeline Run Defaults ([run]) (Optional)
@@ -229,6 +249,10 @@ pixi_dir = "/data/pipeline/branches/main"
 # rundata = ["/data/casa/data"]           # Candidate measures/rundata directories (or "none" to disable)
 # dry_run = false                         # Simulate execution without running subprocess commands (default: false)
 # autoreload = true                       # Enable IPython %autoreload 2 for interactive CASA sessions (default: true)
+# nologger = false                        # Disable CASA GUI logger window (--nologger) (default: false)
+# logfile = "casa-session.log"            # Custom CASA logfile name or path (--logfile) (default: auto timestamped)
+# use_custom_rcdir = true                 # Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: true)
+# casa_enable_telemetry = false           # Set to true to enable CASA telemetry (default: false)
 
 # ------------------------------------------------------------------------------
 # 6. Execution Profiles ([profiles.<name>]) (Optional)
@@ -277,8 +301,13 @@ pixi_dir = "/data/pipeline/branches/main"
 # workdir = "/scratch/tests/fast_reg"
 # cmd = "import pytest; pytest.main(['-vv', 'tests/regression/test_fast.py'])"
 # nprocs = 4
-# backup = true
+#
+# [profiles.interactive_dev]
+# desc = "Interactive CASA debugging session with autoreload"
+# env = "main"
+# interactive = true
 # autoreload = true
+# nprocs = 4
 
 
 

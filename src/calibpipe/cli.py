@@ -7,7 +7,7 @@ import sys
 from typing import Sequence
 
 import calibpipe
-from calibpipe import batch, config as envconfig, driver
+from calibpipe import batch, config as envconfig, pmr, runner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="calibpipe",
-        description="calibpipe: Lightweight driver and Slurm batch runner for ALMA Science Pipeline.",
+        description="calibpipe: Lightweight runner and Slurm batch coordinator for ALMA Science Pipeline.",
     )
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {calibpipe.__version__}")
 
@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "run",
         help="Run a single ALMA pipeline execution (replaces calibPipeIF.py)",
-        parents=[driver.build_parser()],
+        parents=[runner.build_parser()],
         conflict_handler="resolve",
     )
 
@@ -39,6 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["batch"],
         help="Submit pipeline runs to Slurm (replaces runbatch.py)",
         parents=[batch.build_parser()],
+        conflict_handler="resolve",
+    )
+
+    # 'pmr' subcommand
+    subparsers.add_parser(
+        "pmr",
+        help="Generate pipeline request (PPR) or download ALMA archive products (replaces pipelineMakeRequest)",
+        parents=[pmr.build_parser(add_help=False)],
         conflict_handler="resolve",
     )
 
@@ -133,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "run",
         "submit",
         "batch",
+        "pmr",
         "env",
         "config",
         "profile",
@@ -148,10 +157,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(args_list)
 
     if args.subcommand == "run":
-        # Pass remaining arguments to driver
-        driver.main(args_list[1:])
+        # Pass remaining arguments to runner
+        runner.main(args_list[1:])
     elif args.subcommand in ("submit", "batch"):
         batch.main(args_list[1:])
+    elif args.subcommand == "pmr":
+        sys.exit(pmr.main(args_list[1:]))
     elif args.subcommand == "env":
         try:
             cfg = envconfig.load_merged_config(

@@ -23,6 +23,8 @@ def render_template(template_name: str, **kwargs: Any) -> str:
         defaults = {
             "telemetry": "False",
             "log2term": "False",
+            "nologger": "False",
+            "logfile_expr": "os.path.join(_workdir, f\"casa-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}.log\")",
             "casadata": "",
             "casarundata": "",
             "datapath": "None",
