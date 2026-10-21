@@ -37,8 +37,9 @@ calibpipe/
 │   └── calibpipe/
 │       ├── cli.py
 │       ├── config.py
-│       ├── driver.py
+│       ├── runner.py
 │       ├── batch.py
+│       ├── pmr.py
 │       └── steps/
 └── tests/
 ```
@@ -48,8 +49,9 @@ Key implementation modules:
 - `scripts/` contains backward-compatible runner shims (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
 - `src/calibpipe/cli.py` provides the unified command-line interface.
 - `src/calibpipe/config.py` loads TOML configuration and builds the runtime environment.
-- `src/calibpipe/driver.py` orchestrates a single pipeline run.
+- `src/calibpipe/runner.py` orchestrates a single pipeline run.
 - `src/calibpipe/batch.py` generates and submits Slurm jobs.
+- `src/calibpipe/pmr.py` wraps ALMA MakeProcessingRequests for directory structure and data fetching.
 - `src/calibpipe/steps/` houses modular execution phases (such as input staging).
 
 ---
@@ -1174,15 +1176,50 @@ Description: Fast interferometry calibration regression test
 ================================================================================
 ```
 
+### 6. Pipeline Request Generation & Archive Fetching (`calibpipe pmr`)
+
+`calibpipe pmr` generates the pipeline processing directory structure, creates processing requests (`PPR.xml`), and optionally downloads raw ASDM visibility data and calibration / restore products for an ALMA Observing Unit Set (MOUS).
+
+It replaces the external standalone executable `pipelineMakeRequest` with direct native execution of ALMA `MakeProcessingRequests`.
+
+#### Common Use Cases
+
+```bash
+# Standard workflow: query archive and generate PPR (no data downloads)
+calibpipe pmr uid://A001/X1/X1
+
+# Download raw ASDM visibility data from archive
+calibpipe pmr uid://A001/X1/X1 --download
+
+# Download calibration and restore products
+calibpipe pmr uid://A001/X1/X1 --restore
+
+# Download both raw ASDMs and restore products
+calibpipe pmr uid://A001/X1/X1 --download --restore
+
+# Filter specific ASDMs and ignore QA0 status
+calibpipe pmr uid://A001/X1/X1 --download -a uid://A002/X1,uid://A002/X2 --ignore-qa0
+
+# Strip trailing timestamp from generated project directory (e.g. 2099.1.00001.S)
+calibpipe pmr uid://A001/X1/X1 --strip-timestamp
+
+# Explicitly rename generated project directory
+calibpipe pmr uid://A001/X1/X1 --rename my_project_run
+
+# Preview Java command without execution
+calibpipe pmr uid://A001/X1/X1 --dry-run
+```
+
 ---
 
 ## Backward Compatibility
 
 `calibpipe` preserves legacy runner shims in `scripts/` so existing user scripts and scheduled workflows do not need to change immediately:
 
-- `scripts/calibPipeIF.py` forwards to `calibpipe run` / `calibpipe.driver`
+- `scripts/calibPipeIF.py` forwards to `calibpipe run` / `calibpipe.runner`
 - `scripts/runbatch.py` forwards to `calibpipe batch` / `calibpipe.batch`
 - `scripts/calibpipe_env.sh` forwards to `calibpipe env` / `calibpipe.cli env`
+- `scripts/pipelineMakeRequest.py` is integrated directly via `calibpipe pmr`
 
 This allows gradual migration to the unified `calibpipe` CLI without breaking older job wrappers or polluting the global `$PATH`.
 
@@ -1219,7 +1256,7 @@ When developing locally while targeting a remote cluster (or before submitting l
    You can verify driver environment initialization for a specific MOUS without triggering pipeline staging or launching CASA:
 
    ```bash
-   calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --print-env
+   calibpipe run --mous=uid://A001/X1/X1 --env=main --print-env
    ```
 
 3. **Site & User Configuration Separation:**

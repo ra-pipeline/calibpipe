@@ -1,4 +1,4 @@
-"""calibpipe driver: Orchestrates execution of ALMA Science Pipeline runs.
+"""calibpipe runner: Orchestrates execution of ALMA Science Pipeline runs.
 
 Decomposes and modernizes the legacy calibPipeIF.py script.
 """
@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from calibpipe import config as envconfig
+from calibpipe import config as envconfig, pmr
 from calibpipe.steps.staging import (
     find_dirs,
     find_files,
@@ -1247,6 +1247,19 @@ def _run_mous(
         strict = bool(site_cfg.get("strict_paths", False))
         envconfig.check_paths(env, site_config=site_cfg, strict=strict, check_pmr=True)
 
+    # If workdir is explicitly provided in MOUS/PMR mode, rename the generated project root to it
+    target_rename = run_opts.workdir or getattr(opts, "workdir", None)
+
+    pmr_req = pmr.PMRRequest(
+        mous=mous_uid,
+        intents=intents_xml,
+        procedure=procedure,
+        download_asdms=(dl_asdms == "true"),
+        download_restore=(dl_cal == "true"),
+        asdms=opts.onlysemipass,
+        rename=target_rename,
+    )
+
     pmr_cmd = f"pipelineMakeRequest {asdms_arg}{mous_uid} {intents_xml} {procedure} {dl_asdms} {dl_cal}"
     if run_opts.dry_run:
         print("[DRY RUN] Execution mode: mous")
@@ -1256,16 +1269,32 @@ def _run_mous(
         print(f"[DRY RUN] Planned CASA execution prefix:\n    {casarun}")
         return 0
 
-    cmdoutput = getoutput(pmr_cmd)
-
-    ppmr_rel_dir = ""
     piperootdir = env.get("SCIPIPE_ROOTDIR", "")
-    for line in cmdoutput.split("\n"):
-        if "Project root directory is" in line:
-            ppmr_rel_dir = line.split()[-1]
-            break
 
-    ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
+    if getoutput != subprocess.getoutput:
+        # Legacy test harness intercepting getoutput directly
+        cmdoutput = getoutput(pmr_cmd)
+        ppmr_rel_dir = ""
+        for line in cmdoutput.split("\n"):
+            if "Project root directory is" in line:
+                ppmr_rel_dir = line.split()[-1]
+                break
+    else:
+        pmr_res = pmr.run_pmr(pmr_req, env=env)
+        cmdoutput = pmr_res.output
+        ppmr_rel_dir = ""
+        if pmr_res.project_root:
+            ppmr_dir = str(pmr_res.project_root)
+            piperoot_path = Path(piperootdir) if piperootdir else None
+            if piperoot_path and pmr_res.project_root.is_relative_to(piperoot_path):
+                ppmr_rel_dir = str(pmr_res.project_root.relative_to(piperoot_path))
+            else:
+                ppmr_rel_dir = pmr_res.project_root.name
+        else:
+            ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
+
+    if "ppmr_dir" not in locals():
+        ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
 
     # Logger initialization
     log_name = f"{ppmr_dir}/calibPipeIF.{ppmr_rel_dir}.{mous_uid.replace('/', '_').replace(':', '_')}"

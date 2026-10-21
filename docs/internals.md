@@ -6,7 +6,7 @@ This document explains the internal mechanisms `calibpipe` uses to resolve proje
 
 ## High-Level Execution Lifecycle
 
-When you execute a reduction with `calibpipe run --mous=uid://A001/X128a/Xb9 --env=main`, the driver orchestrates the following execution sequence:
+When you execute a reduction with `calibpipe run --mous=uid://A001/X1/X1 --env=main`, the runner orchestrates the following execution sequence:
 
 ```mermaid
 flowchart LR
@@ -25,38 +25,38 @@ flowchart LR
 Users only provide the Member Observing Unit Set identifier on the command line:
 
 ```bash
-calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
+calibpipe run --mous=uid://A001/X1/X1 --env=main
 ```
 
-`calibpipe` does not parse or guess the ALMA project code itself. Instead, it delegates project metadata resolution directly to the ALMA Science Pipeline operational tool **`pipelineMakeRequest` (PMR)**.
+`calibpipe` does not parse or guess the ALMA project code itself. Instead, it delegates project metadata resolution directly to the ALMA Science Pipeline operational tool **`pipelineMakeRequest` (PMR)** via `calibpipe.pmr`.
 
-### Invocation of `pipelineMakeRequest`
+### Invocation of PMR
 
-In `src/calibpipe/driver.py`:
+In `src/calibpipe/runner.py`:
 
 ```python
-pmr_cmd = f"pipelineMakeRequest {asdms_arg}{mous_uid} {intents_xml} {procedure} {dl_asdms} {dl_cal}"
-cmdoutput = getoutput(pmr_cmd)
+pmr_res = pmr.run_pmr(pmr_req, env=env)
+cmdoutput = pmr_res.output
 ```
 
 The arguments passed to PMR are:
 
-- `asdms_arg`: Optional list of specific Execution Blocks (`--asdms [...]` when `--onlysemipass` is used).
-- `mous_uid`: The target MOUS identifier (e.g. `uid://A001/X128a/Xb9`).
-- `intents_xml`: Selection of pipeline intents (`intents_hsd.xml` for single-dish; `intents_hifa.xml` for interferometry).
+- `asdms`: Optional list of specific Execution Blocks (`--asdms [...]` when `--onlysemipass` is used).
+- `mous_uid`: The target MOUS identifier (e.g. `uid://A001/X1/X1`).
+- `intents`: Selection of pipeline intents (`intents_hsd.xml` for single-dish; `intents_hifa.xml` for interferometry).
 - `procedure`: The pipeline procedure XML file derived from the recipe (e.g. `procedure_hifa_calimage.xml`).
-- `dl_asdms`: Boolean flag indicating whether PMR should download ASDM raw data (`true` or `false`).
-- `dl_cal`: Boolean flag indicating whether PMR should fetch calibrator tables (`true` for image recipes without `--flag`).
+- `download_asdms`: Boolean flag indicating whether PMR should download ASDM raw data (`true` or `false`).
+- `download_restore`: Boolean flag indicating whether PMR should fetch calibrator tables (`true` for image recipes without `--flag`).
 
 ### Metadata Resolution Inside PMR
 
 When `pipelineMakeRequest` executes:
 
 1. It contacts the ALMA archive / metadata services using the MOUS UID.
-2. It resolves the project code (e.g. `2016.2.00105.S`), the science goal, and the OUS tree structure.
+2. It resolves the project code (e.g. `2099.1.00001.S`), the science goal, and the OUS tree structure.
 3. It combines the project code with the current execution timestamp to form a unique project run directory:
    $$\text{ppmr\_rel\_dir} = \text{<ProjectCode>}\_\text{<ISO\_Timestamp>}$$
-   *(e.g. `2016.2.00105.S_2026_10_01T07_10_51.324`)*.
+   *(e.g. `2099.1.00001.S_2099_12_31T23_59_59.000`)*.
 4. It creates the project directory inside `SCIPIPE_ROOTDIR` and generates the OUS directory tree underneath it.
 
 ---
@@ -67,11 +67,11 @@ During its execution, `pipelineMakeRequest` writes diagnostic banners to `stdout
 
 ```text
 Running pipelineMakeRequest...
-Project root directory is 2016.2.00105.S_2026_10_01T07_10_51.324
+Project root directory is 2099.1.00001.S_2099_12_31T23_59_59.000
 no files missing
 ```
 
-In `src/calibpipe/driver.py`, `calibpipe` scans the output line-by-line:
+In `src/calibpipe/runner.py`, `calibpipe` scans the output or parsed project root:
 
 ```python
 ppmr_rel_dir = ""
@@ -84,9 +84,9 @@ for line in cmdoutput.split("\n"):
 ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
 ```
 
-- `line.split()[-1]` extracts the relative directory: `2016.2.00105.S_2026_10_01T07_10_51.324`.
+- `line.split()[-1]` extracts the relative directory: `2099.1.00001.S_2099_12_31T23_59_59.000`.
 - It prepends `SCIPIPE_ROOTDIR` (configured in `[paths].scipipe_rootdir`, e.g. `/data/pipeline/root/{user}`), producing the absolute project run path:
-  `/data/pipeline/root/user/2016.2.00105.S_2026_10_01T07_10_51.324`.
+  `/data/pipeline/root/user/2099.1.00001.S_2099_12_31T23_59_59.000`.
 
 > [!WARNING] Failure Detection
 > If `pipelineMakeRequest` fails (due to archive connection issues, missing credentials, or invalid MOUS UIDs), no line matching `"Project root directory is"` will be printed. In this case, `calibpipe` halts immediately with an explicit error, logging the complete PMR output:
@@ -104,18 +104,18 @@ Inside `ppmr_dir`, `pipelineMakeRequest` lays out the standard ALMA Science Pipe
 
 ```text
 <scipipe_rootdir>/
-└── 2016.2.00105.S_2026_10_01T07_10_51.324/        <-- Project run root
+└── 2099.1.00001.S_2099_12_31T23_59_59.000/        <-- Project run root
     ├── working   -> SOUS_.../GOUS_.../MOUS_.../working   <-- Convenience shortcut
     ├── products  -> SOUS_.../GOUS_.../MOUS_.../products  <-- Convenience shortcut
     ├── rawdata   -> SOUS_.../GOUS_.../MOUS_.../rawdata   <-- Convenience shortcut
-    ├── calibPipeIF.2016.2.00105.S_....log          <-- calibpipe driver log
-    └── SOUS_uid___A001_X128a_Xb7/                   <-- Science OUS
-        └── GOUS_uid___A001_X128a_Xb8/               <-- Group OUS
-            └── MOUS_uid___A001_X128a_Xb9/           <-- Member OUS
+    ├── calibPipeIF.2099.1.00001.S_....log          <-- calibpipe runner log
+    └── SOUS_uid___A001_X1_X1/                      <-- Science OUS
+        └── GOUS_uid___A001_X1_X2/                  <-- Group OUS
+            └── MOUS_uid___A001_X1_X3/              <-- Member OUS
                 ├── rawdata/                         <-- Downloaded ASDMs (*.asdm.sdm)
                 ├── products/                        <-- Calibration tables & final products
                 └── working/                         <-- Active execution directory
-                    ├── PPR_uid___A001_X128a_Xb9.xml <-- Pipeline Processing Request
+                    ├── PPR_uid___A001_X1_X3.xml     <-- Pipeline Processing Request
                     ├── casa_piperun.py              <-- Generated CASA execution script
                     └── .casa/                       <-- Isolated CASA runtime state
                         ├── config.py

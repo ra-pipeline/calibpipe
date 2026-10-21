@@ -21,15 +21,22 @@ class TestCliRouting(unittest.TestCase):
             cli.main(["batch", "pipefile.txt", "--env=main"])
             mock_batch_main.assert_called_once_with(["pipefile.txt", "--env=main"])
 
-    def test_run_subcommand_routes_to_driver_main(self) -> None:
-        with patch("calibpipe.driver.main") as mock_driver_main:
+    def test_run_subcommand_routes_to_runner_main(self) -> None:
+        with patch("calibpipe.runner.main") as mock_runner_main:
             cli.main(["run", "--mous=uid://A001/X1/X1", "--env=main"])
-            mock_driver_main.assert_called_once_with(["--mous=uid://A001/X1/X1", "--env=main"])
+            mock_runner_main.assert_called_once_with(["--mous=uid://A001/X1/X1", "--env=main"])
+
+    def test_pmr_subcommand_routes_to_pmr_main(self) -> None:
+        with patch("calibpipe.pmr.main", return_value=0) as mock_pmr_main:
+            with self.assertRaises(SystemExit) as cm:
+                cli.main(["pmr", "uid://A001/X1/X1", "--download"])
+            self.assertEqual(cm.exception.code, 0)
+            mock_pmr_main.assert_called_once_with(["uid://A001/X1/X1", "--download"])
 
     def test_implicit_run_routing(self) -> None:
-        with patch("calibpipe.driver.main") as mock_driver_main:
+        with patch("calibpipe.runner.main") as mock_runner_main:
             cli.main(["--mous=uid://A001/X1/X1", "--env=main"])
-            mock_driver_main.assert_called_once_with(["--mous=uid://A001/X1/X1", "--env=main"])
+            mock_runner_main.assert_called_once_with(["--mous=uid://A001/X1/X1", "--env=main"])
 
     def test_empty_arguments_exits_0(self) -> None:
         with self.assertRaises(SystemExit) as cm:

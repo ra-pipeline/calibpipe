@@ -1,4 +1,4 @@
-"""Tests for calibpipe.driver (migrated from test_calibPipeIF.py)."""
+"""Tests for calibpipe.runner (migrated from test_calibPipeIF.py)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from calibpipe import driver as calibPipeIF
+from calibpipe import runner as calibPipeIF
 
 REFERENCE_FILE = Path(__file__).resolve().parent / "reference" / "calibpipeif_calls.txt"
 

@@ -2042,7 +2042,7 @@ class TestCasarundataConsolidation(unittest.TestCase):
         self.assertEqual(env["CASADATA"], str(self.data1))
 
     def test_write_casa_config_with_casarundata(self):
-        from calibpipe.driver import write_casa_config
+        from calibpipe.runner import write_casa_config
 
         rcdir = self.root / ".casa"
         rcdir.mkdir(parents=True, exist_ok=True)
@@ -2269,7 +2269,7 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
     def test_write_casa_config_nologger_and_logfile(self):
         import tempfile
         from pathlib import Path
-        from calibpipe.driver import write_casa_config
+        from calibpipe.runner import write_casa_config
 
         with tempfile.TemporaryDirectory() as tmpdir:
             rcdir = Path(tmpdir) / ".casa"
@@ -2290,7 +2290,7 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
     def test_apply_casa_cli_flags(self):
         from pathlib import Path
         from calibpipe.config import ResolvedRunOptions
-        from calibpipe.driver import apply_casa_cli_flags
+        from calibpipe.runner import apply_casa_cli_flags
 
         work_path = Path("/tmp/test_work")
 
