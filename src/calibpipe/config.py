@@ -3255,6 +3255,8 @@ def build_environment(
         env["PIXI_DIR"] = pixi_dir
         env["PIXI_ENV"] = spec.pixi_env
         env["CASA_ROOT"] = pixi_dir
+        env["PIXI_FROZEN"] = os.environ.get("PIXI_FROZEN", "true")
+        env["PIXI_NO_INSTALL"] = os.environ.get("PIXI_NO_INSTALL", "true")
 
         if spec.heuristics_dir:
             heur_raw = spec.heuristics_dir.format(pixi_dir=pixi_dir, branch=branch)
@@ -3541,6 +3543,8 @@ def format_shell_exports(
         "PIPE_BRANCH",
         "PIXI_DIR",
         "PIXI_ENV",
+        "PIXI_FROZEN",
+        "PIXI_NO_INSTALL",
         "SCIPIPE_HEURISTICS",
         "SCIPIPE_SCRIPTDIR",
         "SCIPIPE_ROOTDIR",

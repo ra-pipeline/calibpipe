@@ -774,6 +774,77 @@ casa_root = "/fake/casa/main"
         )
         self.assertIn("export UV_NO_SYNC=1", htc_wrapper)
 
+    def test_build_script_exports_pixi_flags(self):
+        from calibpipe.batch import build_htcondor_script, build_sbatch_script
+
+        # 1. Slurm with pixi in pipejob
+        slurm_script = build_sbatch_script(
+            "pixi run calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_pixi_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertIn("export PIXI_FROZEN=true", slurm_script)
+        self.assertIn("export PIXI_NO_INSTALL=true", slurm_script)
+
+        # 2. Slurm with is_pixi=True
+        slurm_script_flag = build_sbatch_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_pixi_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+            is_pixi=True,
+        )
+        self.assertIn("export PIXI_FROZEN=true", slurm_script_flag)
+        self.assertIn("export PIXI_NO_INSTALL=true", slurm_script_flag)
+
+        # 3. Slurm without pixi
+        slurm_script_plain = build_sbatch_script(
+            "/usr/bin/python script.py",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_plain_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertNotIn("export PIXI_FROZEN", slurm_script_plain)
+        self.assertNotIn("export PIXI_NO_INSTALL", slurm_script_plain)
+
+        # 4. HTCondor with is_pixi=True
+        _, htc_wrapper = build_htcondor_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            job_name="test_htc_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+            is_pixi=True,
+        )
+        self.assertIn("export PIXI_FROZEN=true", htc_wrapper)
+        self.assertIn("export PIXI_NO_INSTALL=true", htc_wrapper)
+
     def test_build_script_exports_thread_environment(self):
         from calibpipe.batch import build_htcondor_script, build_sbatch_script
 

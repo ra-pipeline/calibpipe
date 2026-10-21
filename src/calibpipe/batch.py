@@ -309,12 +309,13 @@ def _build_batch_env_exports(
     openblas_num_threads: int | None = None,
     cpus_per_task: int | None = None,
     batch_env_exports: str | None = None,
+    is_pixi: bool = False,
 ) -> str:
     """Build the shell export statements injected into batch wrapper scripts.
 
     Exports tracking variables (CALIBPIPE_BATCH_OUTFILE, CALIBPIPE_BATCH_ERRFILE,
-    CALIBPIPE_BATCH_SCRIPT), UV execution flags, and thread counts (OMP_NUM_THREADS,
-    OPENBLAS_NUM_THREADS).
+    CALIBPIPE_BATCH_SCRIPT), UV and Pixi execution flags, and thread counts
+    (OMP_NUM_THREADS, OPENBLAS_NUM_THREADS).
 
     Returns:
         Formatted export block with leading newline, or empty string.
@@ -331,6 +332,18 @@ def _build_batch_env_exports(
     ]
     if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
         env_lines.append("export UV_NO_SYNC=1")
+
+    if (
+        is_pixi
+        or "pixi" in pipejob
+        or "PIXI_FROZEN" in os.environ
+        or "PIXI_NO_INSTALL" in os.environ
+        or "PIXI_DIR" in os.environ
+    ):
+        pixi_frozen = os.environ.get("PIXI_FROZEN", "true")
+        pixi_no_install = os.environ.get("PIXI_NO_INSTALL", "true")
+        env_lines.append(f"export PIXI_FROZEN={pixi_frozen}")
+        env_lines.append(f"export PIXI_NO_INSTALL={pixi_no_install}")
 
     effective_omp = omp_num_threads if omp_num_threads is not None else cpus_per_task
     if effective_omp is not None:
@@ -371,6 +384,7 @@ def build_sbatch_script(
     omp_num_threads: int | None = None,
     openblas_num_threads: int | None = None,
     request_gpus: int = 0,
+    is_pixi: bool = False,
 ) -> str:
     """Create the shell script body submitted to Slurm.
 
@@ -440,6 +454,7 @@ def build_sbatch_script(
         openblas_num_threads=openblas_num_threads,
         cpus_per_task=cpus_per_task,
         batch_env_exports=batch_env_exports,
+        is_pixi=is_pixi,
     )
 
     return render_template(
@@ -480,6 +495,7 @@ def build_htcondor_script(
     openblas_num_threads: int | None = None,
     cpus_per_task: int | None = None,
     request_gpus: int = 0,
+    is_pixi: bool = False,
 ) -> tuple[str, str]:
     """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
 
@@ -512,6 +528,7 @@ def build_htcondor_script(
         openblas_num_threads=openblas_num_threads,
         cpus_per_task=cpus_per_task,
         batch_env_exports=batch_env_exports,
+        is_pixi=is_pixi,
     )
 
     runner_script = render_template(
@@ -725,6 +742,7 @@ def _dispatch_htcondor(
         openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
         cpus_per_task=getattr(batch_opts, "cpus_per_task", None),
         request_gpus=getattr(batch_opts, "request_gpus", 0),
+        is_pixi=bool(getattr(batch_opts, "pixi_dir", None)),
     )
 
     script_record_sh_path = Path(script_record_sh).resolve()
@@ -785,6 +803,7 @@ def _dispatch_slurm(
         omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
         openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
         request_gpus=getattr(batch_opts, "request_gpus", 0),
+        is_pixi=bool(getattr(batch_opts, "pixi_dir", None)),
     )
 
     script_record_path_obj = Path(script_record_path).resolve()

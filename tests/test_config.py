@@ -582,8 +582,13 @@ class TestPixiConfig(unittest.TestCase):
             env = build_environment(cfg, spec, validate_paths=False)
             self.assertEqual(env["PIXI_DIR"], str(pixi_path))
             self.assertEqual(env["PIXI_ENV"], "default")
+            self.assertEqual(env["PIXI_FROZEN"], "true")
+            self.assertEqual(env["PIXI_NO_INSTALL"], "true")
             self.assertEqual(env["SCIPIPE_HEURISTICS"], str(pixi_path))
             self.assertEqual(env["SCIPIPE_SCRIPTDIR"], str(recipes_dir))
+            exports = format_shell_exports(env)
+            self.assertIn("export PIXI_FROZEN=true", exports)
+            self.assertIn("export PIXI_NO_INSTALL=true", exports)
 
     def test_check_paths_pixi(self):
         import tempfile
