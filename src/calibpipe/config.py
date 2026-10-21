@@ -457,6 +457,8 @@ class BatchConfig:
 
     # --- HTCondor-specific Directives [HTCondor only] ---
     requirements: str | None = None  # HTCondor: requirements expression override
+    omp_num_threads: int | None = None
+    openblas_num_threads: int | None = None
 
     def __init__(
         self,
@@ -481,6 +483,8 @@ class BatchConfig:
         logdir: str | None = None,
         ntasks: int | None = None,
         threads: int | None = None,
+        omp_num_threads: int | None = None,
+        openblas_num_threads: int | None = None,
     ) -> None:
         self.partition = queue if queue is not None else partition
         if ntasks is not None:
@@ -503,6 +507,8 @@ class BatchConfig:
         self.requirements = requirements
         self.dry_run = dry_run
         self.logdir = logdir
+        self.omp_num_threads = omp_num_threads
+        self.openblas_num_threads = openblas_num_threads
 
     @property
     def queue(self) -> str:
@@ -553,6 +559,8 @@ class BatchConfig:
             requirements=data.get("requirements", default_inst.requirements),
             dry_run=bool(data.get("dry_run", default_inst.dry_run)),
             logdir=data.get("logdir", default_inst.logdir),
+            omp_num_threads=_int_or_none(data.get("omp_num_threads")),
+            openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
         )
 
 
@@ -2104,6 +2112,8 @@ class ResolvedBatchOptions:
     profile: str | None = None
     dry_run: bool = False
     logdir: str | None = None
+    omp_num_threads: int | None = None
+    openblas_num_threads: int | None = None
 
     @property
     def queue(self) -> str:
@@ -2215,6 +2225,32 @@ def resolve_batch_options(
     requirements = _cli_or_cfg(
         "requirements", getattr(active_batch, "requirements", None)
     )
+    cli_omp = getattr(cli_args, "omp_num_threads", None)
+    omp_num_threads = _int_or_none(
+        cli_omp
+        if cli_omp is not None
+        else (
+            getattr(profile, "omp_num_threads", None)
+            if profile and getattr(profile, "omp_num_threads", None) is not None
+            else getattr(active_batch, "omp_num_threads", None)
+        )
+    )
+    if omp_num_threads is None and cfg.run.omp_num_threads is not None:
+        omp_num_threads = cfg.run.omp_num_threads
+
+    cli_openblas = getattr(cli_args, "openblas_num_threads", None)
+    openblas_num_threads = _int_or_none(
+        cli_openblas
+        if cli_openblas is not None
+        else (
+            getattr(profile, "openblas_num_threads", None)
+            if profile and getattr(profile, "openblas_num_threads", None) is not None
+            else getattr(active_batch, "openblas_num_threads", None)
+        )
+    )
+    if openblas_num_threads is None and cfg.run.openblas_num_threads is not None:
+        openblas_num_threads = cfg.run.openblas_num_threads
+
     raw_logdir = active_batch.logdir or cfg.paths.scipipe_logdir or None
     if isinstance(raw_logdir, (list, tuple)):
         raw_logdir = resolve_first_existing_path(raw_logdir)
@@ -2245,6 +2281,8 @@ def resolve_batch_options(
         profile=profile_name,
         dry_run=dry_run,
         logdir=logdir,
+        omp_num_threads=omp_num_threads,
+        openblas_num_threads=openblas_num_threads,
     )
 
 

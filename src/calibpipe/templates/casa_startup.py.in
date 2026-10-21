@@ -38,6 +38,8 @@ if _is_client:
         print(f"{'casalog.num_cpus:':<25}{casalog.getNumCPUs()}")
         print(f"{'casalog.total_memory:':<25}{casalog.getMemoryTotal() / 1024 / 1024:.2f} GiB")
         print(f"{'casalog.omp_num_threads:':<25}{casalog.ompGetNumThreads()}")
+        if "OPENBLAS_NUM_THREADS" in os.environ:
+            print(f"{'openblas_num_threads:':<25}{os.environ.get('OPENBLAS_NUM_THREADS')}")
         try:
             from casampi.MPIEnvironment import MPIEnvironment
             print(f"{'is_mpi:':<25}{MPIEnvironment.is_mpi_enabled}")

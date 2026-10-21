@@ -215,6 +215,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mirror CASA log messages to terminal/stdout in real time",
     )
     p.add_argument(
+        "--omp-num-threads",
+        type=int,
+        default=None,
+        dest="omp_num_threads",
+        help="OpenMP thread count override for batch execution",
+    )
+    p.add_argument(
+        "--openblas-num-threads",
+        type=int,
+        default=None,
+        dest="openblas_num_threads",
+        help="OpenBLAS thread count override for batch execution",
+    )
+    p.add_argument(
         "--scheduler",
         choices=["slurm", "htcondor"],
         default=None,
@@ -302,6 +316,8 @@ def build_sbatch_script(
     no_requeue: bool = True,
     script_record_path: str | None = None,
     batch_env_exports: str | None = None,
+    omp_num_threads: int | None = None,
+    openblas_num_threads: int | None = None,
 ) -> str:
     """Create the shell script body submitted to Slurm.
 
@@ -369,6 +385,12 @@ def build_sbatch_script(
         ]
         if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
             env_lines.append("export UV_NO_SYNC=1")
+        effective_omp = omp_num_threads if omp_num_threads is not None else cpus_per_task
+        if effective_omp is not None:
+            env_lines.append(f"export OMP_NUM_THREADS={effective_omp}")
+        effective_openblas = openblas_num_threads if openblas_num_threads is not None else cpus_per_task
+        if effective_openblas is not None:
+            env_lines.append(f"export OPENBLAS_NUM_THREADS={effective_openblas}")
         active_env_exports = "\n" + "\n".join(env_lines)
     elif batch_env_exports:
         active_env_exports = "\n" + batch_env_exports.strip()
@@ -409,6 +431,8 @@ def build_htcondor_script(
     requirements: str | None = None,
     script_record_path: str | None = None,
     batch_env_exports: str | None = None,
+    omp_num_threads: int | None = None,
+    openblas_num_threads: int | None = None,
 ) -> tuple[str, str]:
     """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
 
@@ -440,6 +464,10 @@ def build_htcondor_script(
         ]
         if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
             env_lines.append("export UV_NO_SYNC=1")
+        if omp_num_threads is not None:
+            env_lines.append(f"export OMP_NUM_THREADS={omp_num_threads}")
+        if openblas_num_threads is not None:
+            env_lines.append(f"export OPENBLAS_NUM_THREADS={openblas_num_threads}")
         active_env_exports = "\n" + "\n".join(env_lines)
     elif batch_env_exports:
         active_env_exports = "\n" + batch_env_exports.strip()
@@ -651,6 +679,8 @@ def _dispatch_job(
             nodelist=batch_opts.nodelist,
             requirements=batch_opts.requirements,
             script_record_path=script_record_htc,
+            omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
+            openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
         )
 
         script_record_sh_path = Path(script_record_sh).resolve()
@@ -712,6 +742,8 @@ def _dispatch_job(
             distribution=batch_opts.distribution,
             no_requeue=batch_opts.no_requeue,
             script_record_path=script_record_path,
+            omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
+            openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
         )
 
         script_record_path_obj = Path(script_record_path).resolve()

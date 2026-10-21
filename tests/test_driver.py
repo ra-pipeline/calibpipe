@@ -340,6 +340,53 @@ class TestRunLoggerContextManager(unittest.TestCase):
             created_files = [p.name for p in Path(tmpdir).iterdir()]
             self.assertEqual(created_files, ["calibpipe.recipe_reduce.20261016-225521.log"])
 
+    def test_folded_env_summary_and_subprocess_logging(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "test.log"
+            orig_omp = os.environ.get("OMP_NUM_THREADS")
+            orig_openblas = os.environ.get("OPENBLAS_NUM_THREADS")
+            orig_usersite = os.environ.get("PYTHONNOUSERSITE")
+            try:
+                os.environ["OMP_NUM_THREADS"] = "4"
+                os.environ["OPENBLAS_NUM_THREADS"] = "4"
+                os.environ["PYTHONNOUSERSITE"] = "1"
+                summary = calibPipeIF.get_folded_env_summary()
+                self.assertIn("OMP_NUM_THREADS=4", summary)
+                self.assertIn("OPENBLAS_NUM_THREADS=4", summary)
+                self.assertIn("PYTHONNOUSERSITE=1", summary)
+
+                logged = []
+                calibPipeIF.log_subprocess_environment(
+                    logged.append,
+                    env={"CASA_ROOT": "/fake/casa", "CUSTOM_VAR": "val123"},
+                )
+                joined = "\n".join(logged)
+                self.assertIn("subprocess runtime environment settings:", joined)
+                self.assertIn("OMP_NUM_THREADS = 4", joined)
+                self.assertIn("OPENBLAS_NUM_THREADS = 4", joined)
+                self.assertIn("CASA_ROOT = /fake/casa", joined)
+                self.assertIn("CUSTOM_VAR = val123", joined)
+
+                with calibPipeIF.RunLogger(str(log_path)) as l:
+                    l.run("echo hello")
+                content = log_path.read_text()
+                self.assertIn("subprocess environment: ", content)
+                self.assertIn("OMP_NUM_THREADS=4", content)
+                self.assertIn("running 'echo hello':", content)
+            finally:
+                if orig_omp is not None:
+                    os.environ["OMP_NUM_THREADS"] = orig_omp
+                else:
+                    os.environ.pop("OMP_NUM_THREADS", None)
+                if orig_openblas is not None:
+                    os.environ["OPENBLAS_NUM_THREADS"] = orig_openblas
+                else:
+                    os.environ.pop("OPENBLAS_NUM_THREADS", None)
+                if orig_usersite is not None:
+                    os.environ["PYTHONNOUSERSITE"] = orig_usersite
+                else:
+                    os.environ.pop("PYTHONNOUSERSITE", None)
+
 
 class TestPixiExecution(CalibPipeIFCaptureCase):
     def setUp(self):

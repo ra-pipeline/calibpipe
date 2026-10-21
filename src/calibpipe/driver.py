@@ -42,6 +42,68 @@ def finddir(pattern: str, path: str | Path) -> list[str]:
     return find_dirs(pattern, path)
 
 
+def get_folded_env_summary(
+    keys: tuple[str, ...] = (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "PYTHONNOUSERSITE",
+        "KOKKOS_DISABLE_WARNINGS",
+        "CASA_NPROCS",
+    ),
+) -> str:
+    """Format folded runtime control environment variables as a single-line string."""
+    pairs = [f"{k}={os.environ[k]}" for k in keys if k in os.environ]
+    return " ".join(pairs)
+
+
+def log_subprocess_environment(
+    log_func: Callable[[str], None],
+    env: dict[str, str] | None = None,
+    run_opts: envconfig.ResolvedRunOptions | None = None,
+) -> None:
+    """Log explicit subprocess runtime environment variables for traceability."""
+    log_func("subprocess runtime environment settings:")
+    # Threading and concurrency
+    runtime_vars = [
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "PYTHONNOUSERSITE",
+        "KOKKOS_DISABLE_WARNINGS",
+        "CASA_NPROCS",
+    ]
+    for var in runtime_vars:
+        if var in os.environ:
+            log_func(f"    {var} = {os.environ[var]}")
+
+    # Batch tracking
+    batch_vars = [
+        "CALIBPIPE_BATCH_SCRIPT",
+        "CALIBPIPE_BATCH_OUTFILE",
+        "CALIBPIPE_BATCH_ERRFILE",
+        "SLURM_JOB_ID",
+        "SLURM_CPUS_PER_TASK",
+        "SLURM_NTASKS",
+    ]
+    for var in batch_vars:
+        if var in os.environ:
+            log_func(f"    {var} = {os.environ[var]}")
+
+    # Core CASA / Pipeline variables from env
+    if env:
+        core_env_keys = [
+            "CASA_ROOT",
+            "CASAPATH",
+            "CASADATA",
+            "CASARUNDATA",
+            "SCIPIPE_HEURISTICS",
+            "PYTHONPATH",
+            "LD_LIBRARY_PATH",
+        ]
+        for k in sorted(env.keys()):
+            if k in core_env_keys or k not in os.environ:
+                log_func(f"    {k} = {env[k]}")
+
+
 class RunLogger:
     """Logger tracking command execution and formatted outputs for a pipeline run."""
 
@@ -75,6 +137,9 @@ class RunLogger:
 
     def run(self, command: str) -> int:
         """Run a shell command and stream combined output into the log."""
+        env_summary = get_folded_env_summary()
+        if env_summary:
+            self.log(f"subprocess environment: {env_summary}")
         self.log(f"running '{command}':\n\n")
         p = subprocess.Popen(
             command,
@@ -96,6 +161,9 @@ class RunLogger:
 
     def runquiet(self, command: str) -> int:
         """Run a shell command without streaming stdout line by line."""
+        env_summary = get_folded_env_summary()
+        if env_summary:
+            self.log(f"subprocess environment: {env_summary}")
         self.log(
             f"running '{command}' quietly (use -v/--verbose to stream output to terminal)."
         )
@@ -1203,6 +1271,7 @@ def _run_mous(
     log_name = f"{ppmr_dir}/calibPipeIF.{ppmr_rel_dir}.{mous_uid.replace('/', '_').replace(':', '_')}"
     mylog = RunLogger(log_name, print_flag=True)
     log_message = mylog.log
+    log_subprocess_environment(log_message, env=env, run_opts=run_opts)
     log_message(
         f"just finished running pipelineMakeRequest with this output:\n{cmdoutput}"
     )
@@ -1419,6 +1488,7 @@ def _run_recipe_reducer(
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
+    env: dict[str, str] | None = None,
 ) -> int:
     target_path = (
         Path(run_opts.workdir).expanduser().resolve()
@@ -1498,6 +1568,7 @@ def _run_recipe_reducer(
         mylog.log(f"working directory: {working_path}")
         mylog.log(f"procedure: {procedure}")
         mylog.log(f"log file: {mylog.fd.name}")
+        log_subprocess_environment(mylog.log, env=env, run_opts=run_opts)
 
         stage_ancillary_files(
             working_path,
@@ -1604,6 +1675,7 @@ def _run_standalone_ppr(
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
+    env: dict[str, str] | None = None,
 ) -> int:
     """Execute standalone PPR XML via executeppr / executevlappr without PMR."""
     ppr_str = run_opts.ppr or opts.ppr
@@ -1638,6 +1710,10 @@ def _run_standalone_ppr(
     log_name = f"{working_path}/calibpipe.ppr.{now_ts}.log"
     mylog = RunLogger(log_name, print_flag=True)
     link_batch_job_files_start(working_path, mylog.log)
+    mylog.log(f"starting standalone PPR execution: {ppr_path}")
+    mylog.log(f"working directory: {working_path}")
+    mylog.log(f"log file: {mylog.fd.name}")
+    log_subprocess_environment(mylog.log, env=env, run_opts=run_opts)
 
     stage_ancillary_files(
         working_path,
@@ -1746,6 +1822,7 @@ def _run_script(
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
+    env: dict[str, str] | None = None,
 ) -> int:
     """Execute a Python/CASA script under the managed CASA environment."""
     script_str = run_opts.script or opts.script
@@ -1776,6 +1853,10 @@ def _run_script(
     log_name = f"{working_path}/calibpipe.script.{now_ts}.log"
     mylog = RunLogger(log_name, print_flag=True)
     link_batch_job_files_start(working_path, mylog.log)
+    mylog.log(f"starting script execution: {script_path}")
+    mylog.log(f"working directory: {working_path}")
+    mylog.log(f"log file: {mylog.fd.name}")
+    log_subprocess_environment(mylog.log, env=env, run_opts=run_opts)
 
     stage_ancillary_files(
         working_path,
@@ -1860,6 +1941,7 @@ def _run_cmd(
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
+    env: dict[str, str] | None = None,
 ) -> int:
     """Execute an inline Python command string under the managed CASA environment."""
     working_path = (
@@ -1881,6 +1963,10 @@ def _run_cmd(
     log_name = f"{working_path}/calibpipe.cmd.{now_ts}.log"
     mylog = RunLogger(log_name, print_flag=True)
     link_batch_job_files_start(working_path, mylog.log)
+    mylog.log(f"starting command execution: {opts.cmd or run_opts.cmd}")
+    mylog.log(f"working directory: {working_path}")
+    mylog.log(f"log file: {mylog.fd.name}")
+    log_subprocess_environment(mylog.log, env=env, run_opts=run_opts)
 
     stage_ancillary_files(
         working_path,
@@ -1970,6 +2056,7 @@ def _run_interactive(
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
+    env: dict[str, str] | None = None,
 ) -> int:
     """Launch an interactive CASA session under the resolved environment."""
     working_path = (
@@ -2200,19 +2287,21 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         retcode = _run_mous(opts, run_opts, env_spec, env, casaroot, casarun, site_cfg)
     elif run_opts.vis:
         retcode = _run_recipe_reducer(
-            opts, run_opts, env_spec, casaroot, casarun, site_cfg
+            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
         )
     elif run_opts.ppr and not run_opts.mous:
         retcode = _run_standalone_ppr(
-            opts, run_opts, env_spec, casaroot, casarun, site_cfg
+            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
         )
     elif run_opts.script:
-        retcode = _run_script(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+        retcode = _run_script(
+            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
+        )
     elif run_opts.cmd:
-        retcode = _run_cmd(opts, run_opts, env_spec, casaroot, casarun, site_cfg)
+        retcode = _run_cmd(opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env)
     elif run_opts.interactive:
         retcode = _run_interactive(
-            opts, run_opts, env_spec, casaroot, casarun, site_cfg
+            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
         )
     else:
         retcode = 0
