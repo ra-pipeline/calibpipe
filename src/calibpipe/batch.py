@@ -8,19 +8,22 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from calibpipe import config as envconfig
 from calibpipe.templates import render_template
 
 # Fallback path to calibPipeIF executable (can be overridden or patched)
-_candidate = Path(__file__).resolve().parent.parent.parent / "scripts" / "calibPipeIF.py"
+_candidate = (
+    Path(__file__).resolve().parent.parent.parent / "scripts" / "calibPipeIF.py"
+)
 if _candidate.is_file():
     CALIBPIPEIF = _candidate
 else:
@@ -34,8 +37,15 @@ def build_parser() -> argparse.ArgumentParser:
         Configured argument parser for `calibpipe batch`.
     """
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("pipefile", help="File with one '<mous_uid> [recipe]' per line")
-    p.add_argument("--config", help="Path to TOML config (default: resolved config.toml)")
+    p.add_argument(
+        "pipefile",
+        nargs="?",
+        default=None,
+        help="Optional pipefile with one '<mous_uid> [recipe]' per line",
+    )
+    p.add_argument(
+        "--config", help="Path to TOML config (default: resolved config.toml)"
+    )
     p.add_argument(
         "--no-site-config",
         action="store_true",
@@ -43,57 +53,186 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not load site-level configuration",
     )
     p.add_argument("--env", help="[envs.<name>] to use; default: config's default_env")
-    p.add_argument("-c", "--cores", type=int, default=None, dest="cores",
-                   help="Tasks/cores per job (--ntasks) (default: from [batch].cores or 8)")
-    p.add_argument("-M", "--mail-type", default=None, dest="mail_type",
-                   help="Slurm --mail-type (default: from [batch].mail_type or ALL)")
-    p.add_argument("-n", "--node", default=None, dest="node",
-                   help="Number of nodes --nodes (default: from [batch].node or 1)")
-    p.add_argument("-o", "--outfile", dest="outfile", help="Slurm stdout file (default: batch.<job>.out)")
-    p.add_argument("-e", "--errfile", dest="errfile", help="Slurm stderr file (default: batch.<job>.err)")
+    p.add_argument(
+        "-c",
+        "--cores",
+        "--ntasks",
+        type=int,
+        default=None,
+        dest="cores",
+        help="Tasks/CPUs per job (Slurm: --ntasks; HTCondor: request_cpus; default: from [batch].cores or 8)",
+    )
+    p.add_argument(
+        "-M",
+        "--mail-type",
+        default=None,
+        dest="mail_type",
+        help="Notification policy (Slurm: --mail-type; HTCondor: notification; default: ALL)",
+    )
+    p.add_argument(
+        "-n",
+        "--node",
+        default=None,
+        dest="node",
+        help="[Slurm only] Number of nodes --nodes (default: from [batch].node or 1)",
+    )
+    p.add_argument(
+        "-o",
+        "--outfile",
+        dest="outfile",
+        help="Stdout log file path (Slurm: --output; HTCondor: output; default: batch.<job>.out)",
+    )
+    p.add_argument(
+        "-e",
+        "--errfile",
+        dest="errfile",
+        help="Stderr log file path (Slurm: --error; HTCondor: error; default: batch.<job>.err)",
+    )
+    p.add_argument(
+        "--logdir",
+        default=None,
+        dest="logdir",
+        help="Directory for scheduler log and script output (Slurm & HTCondor; default: from [batch].logdir or [paths].scipipe_logdir)",
+    )
     # Memory options (mutually exclusive)
     mem_group = p.add_mutually_exclusive_group()
-    mem_group.add_argument("-m", "--mem", type=int, default=None, dest="mem",
-                           help="GB total memory per job (default: from [batch].mem or 248); "
-                                "mutually exclusive with --mem-per-cpu")
-    mem_group.add_argument("--mem-per-cpu", default=None, dest="mem_per_cpu",
-                           help="Memory per CPU (e.g. '30G'); mutually exclusive with --mem")
+    mem_group.add_argument(
+        "-m",
+        "--mem",
+        type=int,
+        default=None,
+        dest="mem",
+        help="Total memory in GB per job (Slurm: --mem; HTCondor: request_memory; default: 248); "
+        "mutually exclusive with --mem-per-cpu",
+    )
+    mem_group.add_argument(
+        "--mem-per-cpu",
+        default=None,
+        dest="mem_per_cpu",
+        help="Memory per logical CPU (Slurm: --mem-per-cpu; HTCondor: request_memory = cores × mem_per_cpu; e.g. '5G'); "
+        "mutually exclusive with --mem",
+    )
     # Walltime / scheduling
-    p.add_argument("-t", "--walltime", default=None, dest="walltime",
-                   help="Slurm --time walltime limit (e.g. '24:00:00'); omitted if unset")
-    p.add_argument("--nodelist", default=None, dest="nodelist",
-                   help="Pin job to a specific node or node list (--nodelist)")
-    p.add_argument("--chdir", default=None, dest="chdir",
-                   help="Slurm --chdir working directory override")
+    p.add_argument(
+        "-t",
+        "--walltime",
+        default=None,
+        dest="walltime",
+        help="[Slurm only] Walltime limit --time (e.g. '24:00:00'); omitted if unset",
+    )
+    p.add_argument(
+        "--nodelist",
+        default=None,
+        dest="nodelist",
+        help="Target host pinning (Slurm: --nodelist; HTCondor: TARGET.Machine)",
+    )
+    p.add_argument(
+        "--chdir",
+        default=None,
+        dest="chdir",
+        help="Working directory override (Slurm: --chdir; HTCondor: initialdir)",
+    )
     # CPU topology
-    p.add_argument("--cpus-per-task", type=int, default=None, dest="cpus_per_task",
-                   help="CPUs per MPI task (--cpus-per-task); useful for mpicasa "
-                        "(total cores = ntasks × cpus-per-task)")
-    p.add_argument("--ntasks-per-core", type=int, default=None, dest="ntasks_per_core",
-                   help="Tasks per physical core; set to 1 to disable hyperthreading")
-    p.add_argument("--hint", default=None, dest="hint",
-                   help="Slurm scheduling hint (e.g. 'nomultithread')")
-    p.add_argument("--distribution", default=None, dest="distribution",
-                   help="Task distribution across nodes/sockets (e.g. 'cyclic:cyclic')")
+    p.add_argument(
+        "--cpus-per-task",
+        type=int,
+        default=None,
+        dest="cpus_per_task",
+        help="[Slurm only] Logical CPUs / hardware threads per task (--cpus-per-task) for OpenMP/multi-threading; "
+        "total allocated CPUs = ntasks × cpus-per-task",
+    )
+    p.add_argument(
+        "--ntasks-per-core",
+        type=int,
+        default=None,
+        dest="ntasks_per_core",
+        help="[Slurm only] Tasks per physical silicon core (--ntasks-per-core); set to 1 to spread tasks across physical cores and prevent hyperthread sharing",
+    )
+    p.add_argument(
+        "--hint",
+        default=None,
+        dest="hint",
+        help="[Slurm only] Scheduler placement hint (--hint, e.g. 'nomultithread')",
+    )
+    p.add_argument(
+        "--distribution",
+        default=None,
+        dest="distribution",
+        help="[Slurm only] Task distribution across nodes/sockets (--distribution, e.g. 'cyclic:cyclic')",
+    )
     # Requeue
-    p.add_argument("--no-requeue", dest="no_requeue", action="store_true", default=None,
-                   help="Add --no-requeue directive (default: on; prevents silent resubmission)")
-    p.add_argument("--requeue", dest="no_requeue", action="store_false",
-                   help="Allow Slurm to requeue job on node failure")
-    # Queue selection
+    p.add_argument(
+        "--no-requeue",
+        dest="no_requeue",
+        action="store_true",
+        default=None,
+        help="[Slurm only] Prevent silent job resubmission on failure (--no-requeue, default: on)",
+    )
+    p.add_argument(
+        "--requeue",
+        dest="no_requeue",
+        action="store_false",
+        help="[Slurm only] Allow Slurm to requeue job on node failure",
+    )
+    # Batch profile selection
+    p.add_argument(
+        "-p",
+        "--profile",
+        "--batch-profile",
+        dest="profile",
+        default=None,
+        help="Named profile from [profiles.<name>] or [batches.<name>] in config",
+    )
+    # Queue / partition selection
     queue = p.add_mutually_exclusive_group()
-    queue.add_argument("-p", dest="queue", action="store_const", const="plwg", default=None,
-                       help="Submit to the plwg queue (default)")
-    queue.add_argument("-b", dest="queue", action="store_const", const="batch2",
-                       help="Submit to the batch2 queue")
-    p.add_argument("--extra-arg", action="append", default=[], dest="extra_args",
-                   help="Extra flag passed through to calibpipe driver, repeatable")
+    queue.add_argument(
+        "-b",
+        dest="partition",
+        action="store_const",
+        const="batch2",
+        default=None,
+        help="Submit to the batch2 partition",
+    )
+    queue.add_argument(
+        "--partition",
+        "--queue",
+        dest="partition",
+        default=None,
+        help="Slurm partition (--partition) or HTCondor (+partition) name (overrides [batch].partition or profile)",
+    )
+    p.add_argument(
+        "--extra-arg",
+        action="append",
+        default=[],
+        dest="extra_args",
+        help="Extra flag passed through to calibpipe driver, repeatable",
+    )
     p.add_argument(
         "--log2term",
         action=argparse.BooleanOptionalAction,
         default=None,
         dest="log2term",
         help="Mirror CASA log messages to terminal/stdout in real time",
+    )
+    p.add_argument(
+        "--scheduler",
+        choices=["slurm", "htcondor"],
+        default=None,
+        dest="scheduler",
+        help="Batch scheduler to target: 'slurm' (default) or 'htcondor'",
+    )
+    p.add_argument(
+        "--requirements",
+        default=None,
+        dest="requirements",
+        help="[HTCondor only] ClassAd requirements expression override (e.g. 'none', 'default', or custom expression)",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        dest="dry_run",
+        help="Print submit scripts and commands without submitting jobs to the scheduler (Slurm & HTCondor)",
     )
     return p
 
@@ -141,7 +280,8 @@ def _sbatch_directive(flag: str, value: object) -> str | None:
 def build_sbatch_script(
     pipejob: str,
     *,
-    queue: str,
+    partition: str = "plwg",
+    queue: str | None = None,
     node: str,
     cores: int,
     mem: str | None,
@@ -160,6 +300,8 @@ def build_sbatch_script(
     ntasks_per_core: int | None = None,
     distribution: str | None = None,
     no_requeue: bool = True,
+    script_record_path: str | None = None,
+    batch_env_exports: str | None = None,
 ) -> str:
     """Create the shell script body submitted to Slurm.
 
@@ -171,9 +313,10 @@ def build_sbatch_script(
 
     Args:
         pipejob: Fully assembled `calibpipe` execution command.
-        queue: Slurm partition name.
+        partition: Slurm partition name.
+        queue: Backward-compatible alias for `partition`.
         node: Number of nodes (``--nodes``).
-        cores: Number of tasks (``--ntasks``).
+        cores: Number of tasks (``--ntasks``; total allocated logical CPUs = ntasks × cpus_per_task).
         mem: Total memory string (e.g. ``"248G"``); ignored when ``mem_per_cpu`` is set.
         job_name: Slurm job name.
         mail_user: Email address for Slurm notifications.
@@ -183,16 +326,20 @@ def build_sbatch_script(
         walltime: Slurm ``--time`` walltime limit (e.g. ``"24:00:00"``).
         nodelist: Pin job to a specific node or node list.
         chdir: Slurm working directory override.
-        cpus_per_task: CPUs per MPI task (useful for mpicasa).
-        mem_per_cpu: Memory per CPU (e.g. ``"30G"``); mutually exclusive with ``mem``.
+        cpus_per_task: Logical CPUs (threads) per task (``--cpus-per-task``; for OpenMP/multi-threading).
+        mem_per_cpu: Memory per logical CPU (e.g. ``"5G"``); mutually exclusive with ``mem``.
         hint: Slurm scheduling hint (e.g. ``"nomultithread"``).
-        ntasks_per_core: Tasks per physical core (e.g. ``1`` to disable HT).
+        ntasks_per_core: Tasks per physical silicon core (e.g. ``1`` to prevent hyperthread sharing).
         distribution: Task distribution policy (e.g. ``"cyclic:cyclic"``).
         no_requeue: Emit ``--no-requeue`` to prevent silent resubmission.
+        script_record_path: Optional path to the saved submission script for environment export.
+        batch_env_exports: Optional explicit export block to embed in the script.
 
     Returns:
         Rendered shell script contents.
     """
+    active_partition = queue if queue is not None else partition
+
     # Build the optional directives block in the same order as pcasa.py's job_slurm()
     optional_lines = []
     for line in [
@@ -205,17 +352,34 @@ def build_sbatch_script(
         _sbatch_directive("hint", hint),
         _sbatch_directive("distribution", distribution),
         # mem and mem-per-cpu are mutually exclusive; mem-per-cpu wins
-        _sbatch_directive("mem-per-cpu", mem_per_cpu) if mem_per_cpu else _sbatch_directive("mem", mem),
+        _sbatch_directive("mem-per-cpu", mem_per_cpu)
+        if mem_per_cpu
+        else _sbatch_directive("mem", mem),
     ]:
         if line is not None:
             optional_lines.append(line)
 
     extra_directives = "\n".join(optional_lines)
 
+    if batch_env_exports is None and script_record_path is not None:
+        env_lines = [
+            f"export CALIBPIPE_BATCH_OUTFILE={shlex.quote(str(outfile))}",
+            f"export CALIBPIPE_BATCH_ERRFILE={shlex.quote(str(errfile))}",
+            f"export CALIBPIPE_BATCH_SCRIPT={shlex.quote(str(script_record_path))}",
+        ]
+        if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
+            env_lines.append("export UV_NO_SYNC=1")
+        active_env_exports = "\n" + "\n".join(env_lines)
+    elif batch_env_exports:
+        active_env_exports = "\n" + batch_env_exports.strip()
+    else:
+        active_env_exports = ""
+
     return render_template(
-        'slurm_job.sh.in',
+        "slurm_job.sh.in",
         pipejob=pipejob,
-        queue=queue,
+        partition=active_partition,
+        queue=active_partition,
         node=node,
         cores=cores,
         job_name=job_name,
@@ -224,45 +388,363 @@ def build_sbatch_script(
         outfile=outfile,
         errfile=errfile,
         extra_directives=extra_directives,
+        batch_env_exports=active_env_exports,
     )
 
 
-def job_name(pipejob: str) -> str:
-    """Derive the standard Slurm job name from a command line.
+def build_htcondor_script(
+    pipejob: str,
+    *,
+    partition: str = "batch",
+    cores: int = 4,
+    mem: str | None = None,
+    mem_per_cpu: str | None = None,
+    job_name: str,
+    outfile: str,
+    errfile: str,
+    wrapper_script_path: str,
+    mail_type: str = "Always",
+    chdir: str | None = None,
+    nodelist: str | None = None,
+    requirements: str | None = None,
+    script_record_path: str | None = None,
+    batch_env_exports: str | None = None,
+) -> tuple[str, str]:
+    """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
+
+    Args:
+        pipejob: Fully assembled calibpipe command line.
+        partition: HTCondor partition (+partition directive).
+        cores: Requested number of CPUs (request_cpus).
+        mem: Memory string (request_memory, e.g. "32G").
+        mem_per_cpu: Memory per CPU (e.g. "8G"); overrides mem.
+        job_name: Batch job name (batch_name).
+        outfile: Path for stdout log (output).
+        errfile: Path for stderr log (error).
+        wrapper_script_path: Path to the executable shell wrapper script.
+        mail_type: Notification setting (notification).
+        chdir: Initial working directory (initialdir).
+        nodelist: Optional pinned machine name (TARGET.Machine == "<nodelist>").
+        requirements: Optional custom ClassAd requirements expression.
+        script_record_path: Optional path to the saved submission script for environment export.
+        batch_env_exports: Optional explicit export block to embed in the script.
+
+    Returns:
+        Tuple of (submit_file_content, wrapper_script_content).
+    """
+    if batch_env_exports is None and script_record_path is not None:
+        env_lines = [
+            f"export CALIBPIPE_BATCH_OUTFILE={shlex.quote(str(outfile))}",
+            f"export CALIBPIPE_BATCH_ERRFILE={shlex.quote(str(errfile))}",
+            f"export CALIBPIPE_BATCH_SCRIPT={shlex.quote(str(script_record_path))}",
+        ]
+        if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
+            env_lines.append("export UV_NO_SYNC=1")
+        active_env_exports = "\n" + "\n".join(env_lines)
+    elif batch_env_exports:
+        active_env_exports = "\n" + batch_env_exports.strip()
+    else:
+        active_env_exports = ""
+
+    runner_script = render_template(
+        "htcondor_job.sh.in",
+        pipejob=pipejob,
+        batch_env_exports=active_env_exports,
+    )
+
+    if mem_per_cpu:
+        val_str = mem_per_cpu.strip()
+        num_part = ""
+        unit_part = ""
+        for char in val_str:
+            if char.isdigit() or char == ".":
+                num_part += char
+            else:
+                unit_part += char
+        try:
+            total_num = int(float(num_part) * cores)
+            request_memory = f"{total_num}{unit_part}"
+        except ValueError:
+            request_memory = mem_per_cpu
+    else:
+        request_memory = mem or "32G"
+    extra_req = f' && ( TARGET.Machine == "{nodelist}" )' if nodelist else ""
+    log_file = f"condor.{job_name}.$(ClusterId).log"
+
+    # Map Slurm mail_type to valid HTCondor notification keywords:
+    # 'Never', 'Always', 'Complete', or 'Error'
+    htc_notification_map = {
+        "all": "Always",
+        "always": "Always",
+        "none": "Never",
+        "never": "Never",
+        "end": "Complete",
+        "complete": "Complete",
+        "fail": "Error",
+        "error": "Error",
+    }
+    raw_notif = str(mail_type).lower().strip() if mail_type else ""
+    notification = htc_notification_map.get(raw_notif, "Always")
+
+    # Determine requirements expression
+    if requirements is not None:
+        req_clean = requirements.strip()
+        if req_clean.lower() in ("none", "false", "any"):
+            req_expr = f"NumJobStarts == 0{extra_req}"
+        elif req_clean.lower() in ("default", "cluster", "nrao"):
+            req_expr = f"( {partition} == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ){extra_req}"
+        else:
+            req_expr = f"{req_clean}{extra_req}"
+    else:
+        req_expr = f"( {partition} == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ){extra_req}"
+
+    htc_content = render_template(
+        "htcondor_job.htc.in",
+        partition=partition,
+        requirements=req_expr,
+        request_memory=request_memory,
+        request_cpus=cores,
+        batch_name=job_name,
+        initialdir=chdir or "./",
+        output=outfile,
+        error=errfile,
+        log=log_file,
+        notification=notification,
+        arguments=wrapper_script_path,
+    )
+    return htc_content, runner_script
+
+
+def job_name(
+    pipejob: str, profile_name: str | None = None
+) -> tuple[str, str]:
+    """Derive the standard batch job name and safe filename prefix from a command line.
 
     Args:
         pipejob: Fully assembled `calibpipe` execution command.
+        profile_name: Optional named profile for single-job submission.
 
     Returns:
-        Stable job name containing the MOUS identifier and current timestamp.
+        Tuple of (display_name, file_safe_name).
+        display_name retains profile name (e.g. including '/') for scheduler display (squeue/condor_q),
+        while file_safe_name normalizes path separators for stdout/stderr/sbatch file paths.
     """
-    mous = ""
+    prefix = ""
     for tok in pipejob.split():
         if "mous" in tok:
-            mous = tok.split("=", 1)[-1][11:]
-            mous = mous.strip("/").replace("/", "_")
+            prefix = tok.split("=", 1)[-1][11:]
+            prefix = prefix.strip("/").replace("/", "_")
             break
+
     timestr = time.strftime("%Y%m%d-%H%M%S")
-    return f"{mous}_{timestr}"
+    if prefix:
+        full_display = f"{prefix}_{timestr}"
+        full_safe = full_display
+    elif profile_name:
+        full_display = f"{profile_name}_{timestr}"
+        safe_prefix = profile_name.replace("/", "_").replace("@", "_").replace(":", "_")
+        full_safe = f"{safe_prefix}_{timestr}"
+    else:
+        full_display = f"job_{timestr}"
+        full_safe = full_display
+
+    return full_display, full_safe
 
 
-def print_queue(user: str) -> None:
-    """Print the user's active Slurm queue matching pcasa.py format.
+def print_queue(user: str, scheduler: str = "slurm") -> None:
+    """Print the user's active batch queue matching pcasa.py format.
 
     Args:
-        user: Username whose jobs to query with squeue.
+        user: Username whose jobs to query.
+        scheduler: Target scheduler backend ('slurm' or 'htcondor').
     """
+    if not user:
+        return
+
+    if scheduler == "htcondor":
+        condor_exe = shutil.which("condor_q")
+        if not condor_exe:
+            return
+        cmd = [condor_exe, user]
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            if res.returncode == 0 and res.stdout.strip():
+                print("\n" + res.stdout.strip())
+        except OSError:
+            pass
+        return
+
     squeue_exe = shutil.which("squeue")
-    if not squeue_exe or not user:
+    if not squeue_exe:
         return
     squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z"
     cmd = [squeue_exe, f"--format={squeue_format}", "-u", user]
     try:
+        time.sleep(0.5)
         res = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if res.returncode == 0 and res.stdout.strip():
             print("\n" + res.stdout.strip())
     except OSError:
         pass
+
+
+def _dispatch_job(
+    pipejob: str,
+    name: str | tuple[str, str],
+    batch_opts: envconfig.ResolvedBatchOptions,
+    user: str,
+) -> bool:
+    """Submit a single prepared job to the batch scheduler.
+
+    Returns:
+        True if the job was submitted (or dry-run simulated), False on error.
+    """
+    if isinstance(name, tuple):
+        display_name, file_name = name
+    else:
+        display_name = name
+        file_name = name.replace("/", "_").replace("@", "_").replace(":", "_")
+
+    print(f"job name = {display_name}")
+    if batch_opts.logdir:
+        raw_logdir = batch_opts.logdir.replace("{user}", user)
+        expanded_logdir = Path(os.path.expanduser(raw_logdir)).resolve()
+        try:
+            expanded_logdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(
+                f"    WARNING: could not create batch logdir {expanded_logdir}: {exc}"
+            )
+        out_name = batch_opts.outfile or f"batch.{file_name}.out"
+        err_name = batch_opts.errfile or f"batch.{file_name}.err"
+        outfile = (
+            str(expanded_logdir / out_name)
+            if not Path(out_name).is_absolute()
+            else out_name
+        )
+        errfile = (
+            str(expanded_logdir / err_name)
+            if not Path(err_name).is_absolute()
+            else err_name
+        )
+    else:
+        outfile = batch_opts.outfile or f"batch.{file_name}.out"
+        errfile = batch_opts.errfile or f"batch.{file_name}.err"
+
+    if batch_opts.scheduler == "htcondor":
+        script_record_sh = str(Path(outfile).with_suffix(".sh"))
+        script_record_htc = str(Path(outfile).with_suffix(".htc"))
+        mem_str = f"{batch_opts.mem}G" if not batch_opts.mem_per_cpu else None
+
+        htc_body, runner_body = build_htcondor_script(
+            pipejob,
+            partition=batch_opts.partition,
+            cores=batch_opts.cores,
+            mem=mem_str,
+            mem_per_cpu=batch_opts.mem_per_cpu,
+            job_name=display_name,
+            outfile=outfile,
+            errfile=errfile,
+            wrapper_script_path=str(Path(script_record_sh).resolve()),
+            mail_type=batch_opts.mail_type,
+            chdir=batch_opts.chdir,
+            nodelist=batch_opts.nodelist,
+            requirements=batch_opts.requirements,
+            script_record_path=script_record_htc,
+        )
+
+        script_record_sh_path = Path(script_record_sh).resolve()
+        script_record_htc_path = Path(script_record_htc).resolve()
+        try:
+            with open(script_record_sh_path, "w", encoding="utf-8") as f:
+                f.write(runner_body)
+            os.chmod(script_record_sh_path, 0o755)
+            with open(script_record_htc_path, "w", encoding="utf-8") as f:
+                f.write(htc_body)
+            print(f"    script saved → {script_record_htc_path}")
+        except OSError as exc:
+            print(f"    ERROR: could not save HTCondor script records: {exc}")
+            return False
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix=f"{user}_htc.", suffix=".htc", delete=False
+        ) as htc_fd:
+            htc_fd.write(htc_body)
+            htc_path = htc_fd.name
+
+        try:
+            cmd = ["condor_submit", htc_path]
+            print("    " + " ".join(cmd))
+            if batch_opts.dry_run:
+                print("    [DRY RUN] Would execute: " + " ".join(cmd))
+                return True
+            else:
+                subprocess.run(cmd, check=True)
+                return True
+        except subprocess.CalledProcessError as exc:
+            print(f"    ERROR: Job submission failed (exit status {exc.returncode})")
+            return False
+        finally:
+            if os.path.exists(htc_path):
+                os.unlink(htc_path)
+    else:
+        # Slurm
+        mem_str = None if batch_opts.mem_per_cpu else f"{batch_opts.mem}G"
+        script_record_path = str(Path(outfile).with_suffix(".sbatch"))
+        script_body = build_sbatch_script(
+            pipejob,
+            partition=batch_opts.partition,
+            node=batch_opts.node,
+            cores=batch_opts.cores,
+            mem=mem_str,
+            job_name=display_name,
+            mail_user=user,
+            mail_type=batch_opts.mail_type,
+            outfile=outfile,
+            errfile=errfile,
+            walltime=batch_opts.walltime,
+            nodelist=batch_opts.nodelist,
+            chdir=batch_opts.chdir,
+            cpus_per_task=batch_opts.cpus_per_task,
+            mem_per_cpu=batch_opts.mem_per_cpu,
+            hint=batch_opts.hint,
+            ntasks_per_core=batch_opts.ntasks_per_core,
+            distribution=batch_opts.distribution,
+            no_requeue=batch_opts.no_requeue,
+            script_record_path=script_record_path,
+        )
+
+        script_record_path_obj = Path(script_record_path).resolve()
+        try:
+            with open(script_record_path_obj, "w", encoding="utf-8") as f:
+                f.write(script_body)
+            print(f"    script saved → {script_record_path_obj}")
+        except OSError as exc:
+            print(
+                f"    WARNING: could not save script record {script_record_path_obj}: {exc}"
+            )
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix=f"{user}_sbatch.", suffix=".sh", delete=False
+        ) as sbatch_fd:
+            sbatch_fd.write(script_body)
+            sbatch_path = sbatch_fd.name
+
+        try:
+            cmd = ["sbatch", sbatch_path]
+            print("    " + " ".join(cmd))
+            if batch_opts.dry_run:
+                print("    [DRY RUN] Would execute: " + " ".join(cmd))
+                return True
+            else:
+                subprocess.run(cmd, check=True)
+                return True
+        except subprocess.CalledProcessError as exc:
+            print(f"    ERROR: Job submission failed (exit status {exc.returncode})")
+            return False
+        finally:
+            if os.path.exists(sbatch_path):
+                os.unlink(sbatch_path)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -279,41 +761,72 @@ def main(argv: Sequence[str] | None = None) -> None:
             cli_arg=args.config,
             include_site=not getattr(args, "no_site_config", False),
         )
+        batch_opts = envconfig.resolve_batch_options(cfg, args)
     except envconfig.ConfigError as e:
         print(f"ERROR: {e}")
         sys.exit(1)
 
-    batch_opts = envconfig.resolve_batch_options(cfg, args)
     check_submit_host(cfg)
 
-    pipefile = batch_opts.pipefile
-    if not pipefile.is_file():
-        print(f"{pipefile} does not exist, exiting")
-        sys.exit(1)
-
-    with open(pipefile, encoding="utf-8") as fd:
-        lines = fd.readlines()
-
-    valid_lines = [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
-
+    user = os.environ.get("USER", "")
     submitted = 0
-    for idx, line in enumerate(valid_lines, 1):
-        parts = line.split()
-        mousname = parts[0]
-        recipe = parts[1] if len(parts) > 1 else "calimage"
 
-        pipejob_parts = [
-            str(CALIBPIPEIF),
-            "--staticobscal",
-            f"--mous={mousname}",
-            f"--recipe={recipe}",
+    pipefile = batch_opts.pipefile
+    if pipefile is not None:
+        if not pipefile.is_file():
+            print(f"{pipefile} does not exist, exiting")
+            sys.exit(1)
+
+        with open(pipefile, encoding="utf-8") as fd:
+            lines = fd.readlines()
+
+        valid_lines = [
+            line.strip()
+            for line in lines
+            if line.strip() and not line.strip().startswith("#")
         ]
+
+        for idx, line in enumerate(valid_lines, 1):
+            parts = line.split()
+            mousname = parts[0]
+            recipe = parts[1] if len(parts) > 1 else "calimage"
+
+            pipejob_parts = [
+                str(CALIBPIPEIF),
+                "--staticobscal",
+                f"--mous={mousname}",
+                f"--recipe={recipe}",
+            ]
+            if args.config:
+                pipejob_parts.append(f"--config={args.config}")
+            if getattr(args, "no_site_config", False):
+                pipejob_parts.append("--no-site-config")
+            if getattr(args, "profile", None) and args.profile in cfg.profiles:
+                pipejob_parts.append(f"--profile={args.profile}")
+            if batch_opts.env_name:
+                pipejob_parts.append(f"--env={batch_opts.env_name}")
+            if getattr(args, "log2term", None) is True:
+                pipejob_parts.append("--log2term")
+            elif getattr(args, "log2term", None) is False:
+                pipejob_parts.append("--no-log2term")
+            pipejob_parts.extend(batch_opts.extra_args)
+            pipejob = " ".join(pipejob_parts)
+
+            name = job_name(pipejob, profile_name=batch_opts.profile)
+            if _dispatch_job(pipejob, name, batch_opts, user):
+                submitted += 1
+
+            if idx < len(valid_lines) and not batch_opts.dry_run:
+                time.sleep(1)
+
+    elif batch_opts.profile:
+        # Single-job submission mode from named profile
+        calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
+        pipejob_parts = [calibpipe_exe, "run", f"-p={batch_opts.profile}"]
         if args.config:
             pipejob_parts.append(f"--config={args.config}")
         if getattr(args, "no_site_config", False):
             pipejob_parts.append("--no-site-config")
-        if batch_opts.env_name:
-            pipejob_parts.append(f"--env={batch_opts.env_name}")
         if getattr(args, "log2term", None) is True:
             pipejob_parts.append("--log2term")
         elif getattr(args, "log2term", None) is False:
@@ -321,72 +834,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         pipejob_parts.extend(batch_opts.extra_args)
         pipejob = " ".join(pipejob_parts)
 
-        name = job_name(pipejob)
-        print(f"job name = {name}")
-        outfile = batch_opts.outfile or f"batch.{name}.out"
-        errfile = batch_opts.errfile or f"batch.{name}.err"
-
-        user = os.environ.get('USER', '')
-        # --mem and --mem-per-cpu are mutually exclusive; pass None for mem when mem_per_cpu is set
-        mem_str = None if batch_opts.mem_per_cpu else f"{batch_opts.mem}G"
-        script_body = build_sbatch_script(
-            pipejob,
-            queue=batch_opts.queue,
-            node=batch_opts.node,
-            cores=batch_opts.cores,
-            mem=mem_str,
-            job_name=name,
-            mail_user=user,
-            mail_type=batch_opts.mail_type,
-            outfile=outfile,
-            errfile=errfile,
-            walltime=batch_opts.walltime,
-            nodelist=batch_opts.nodelist,
-            chdir=batch_opts.chdir,
-            cpus_per_task=batch_opts.cpus_per_task,
-            mem_per_cpu=batch_opts.mem_per_cpu,
-            hint=batch_opts.hint,
-            ntasks_per_core=batch_opts.ntasks_per_core,
-            distribution=batch_opts.distribution,
-            no_requeue=batch_opts.no_requeue,
-        )
-
-        # Persist a copy alongside the .out/.err logs for record keeping.
-        # A non-fatal warning is issued if the directory does not yet exist
-        # so that the job submission itself is never blocked by a missing dir.
-        script_record = str(Path(outfile).with_suffix('.sbatch'))
-        try:
-            with open(script_record, 'w', encoding='utf-8') as f:
-                f.write(script_body)
-            print(f'    script saved → {script_record}')
-        except OSError as exc:
-            print(f'    WARNING: could not save script record {script_record}: {exc}')
-
-        with tempfile.NamedTemporaryFile(
-            mode='w', prefix=f'{user}_sbatch.', suffix='.sh', delete=False
-        ) as sbatch_fd:
-            sbatch_fd.write(script_body)
-            sbatch_path = sbatch_fd.name
-
-        try:
-            # All resource parameters are embedded as #SBATCH directives in
-            # the script, so only the script path is needed here.
-            cmd = ['sbatch', sbatch_path]
-            print('    ' + ' '.join(cmd))
-            subprocess.run(cmd, check=True)
+        name = job_name(pipejob, profile_name=batch_opts.profile)
+        if _dispatch_job(pipejob, name, batch_opts, user):
             submitted += 1
-        finally:
-            if os.path.exists(sbatch_path):
-                os.unlink(sbatch_path)
 
-        # Briefly pause between consecutive submissions so timestamps remain unique
-        if idx < len(valid_lines):
-            time.sleep(1)
-
-    if submitted > 0:
-        current_user = os.environ.get('USER', '')
+    if submitted > 0 and not batch_opts.dry_run:
+        current_user = os.environ.get("USER", "")
         if current_user:
-            print_queue(current_user)
+            print_queue(current_user, scheduler=batch_opts.scheduler)
 
 
 if __name__ == "__main__":

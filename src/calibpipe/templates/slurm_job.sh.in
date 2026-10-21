@@ -1,5 +1,5 @@
 #!/bin/sh
-#SBATCH --partition=$queue
+#SBATCH --partition=$partition
 #SBATCH --nodes=$node
 #SBATCH --ntasks=$cores
 #SBATCH --job-name=$job_name
@@ -10,5 +10,5 @@
 #SBATCH --export=ALL
 $extra_directives
 ulimit -Sn 8192
-umask 002
+umask 002$batch_env_exports
 $pipejob

@@ -116,14 +116,15 @@ calibpipe --mous=uid://A001/X128a/Xb9 --env=main
 ./scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
 ```
 
-### 2. Batch Execution on Slurm
+### 2. Submit to Slurm
 
 ```bash
-# Using unified CLI
-calibpipe batch quick.run --env=main -c 8 -m 248 -p
+# Using unified CLI (submit or batch alias)
+calibpipe submit quick.run --env=main
+calibpipe submit quick.run --profile=debug --env=main
 
 # Legacy interface (backward-compatible script shim)
-./scripts/runbatch.py quick.run --env=main -c 8 -m 248 -p
+./scripts/runbatch.py quick.run --profile=debug --env=main
 ```
 
 `quick.run` format:

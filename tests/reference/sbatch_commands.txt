@@ -16,6 +16,9 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH --mem=248G
 ulimit -Sn 8192
 umask 002
+export CALIBPIPE_BATCH_OUTFILE=batch.X1_X1_20260101-000000.out
+export CALIBPIPE_BATCH_ERRFILE=batch.X1_X1_20260101-000000.err
+export CALIBPIPE_BATCH_SCRIPT=batch.X1_X1_20260101-000000.sbatch
 <CALIBPIPEIF> --staticobscal --mous=uid___A001_X1_X1 --recipe=calimage --config=<CONFIG> --env=main
 =====END basic_line1_explicit_recipe=====
 =====BEGIN basic_line2_default_recipe=====
@@ -36,6 +39,9 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH --mem=248G
 ulimit -Sn 8192
 umask 002
+export CALIBPIPE_BATCH_OUTFILE=batch.X2_X2_20260101-000000.out
+export CALIBPIPE_BATCH_ERRFILE=batch.X2_X2_20260101-000000.err
+export CALIBPIPE_BATCH_SCRIPT=batch.X2_X2_20260101-000000.sbatch
 <CALIBPIPEIF> --staticobscal --mous=uid___A001_X2_X2 --recipe=calimage --config=<CONFIG> --env=main
 =====END basic_line2_default_recipe=====
 =====BEGIN custom_cores_mem_batch2=====
@@ -56,6 +62,9 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH --mem=32G
 ulimit -Sn 8192
 umask 002
+export CALIBPIPE_BATCH_OUTFILE=batch.X3_X3_20260101-000000.out
+export CALIBPIPE_BATCH_ERRFILE=batch.X3_X3_20260101-000000.err
+export CALIBPIPE_BATCH_SCRIPT=batch.X3_X3_20260101-000000.sbatch
 <CALIBPIPEIF> --staticobscal --mous=uid___A001_X3_X3 --recipe=calimage --config=<CONFIG> --env=main
 =====END custom_cores_mem_batch2=====
 =====BEGIN extra_args_and_pl2025_env=====
@@ -76,6 +85,9 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH --mem=248G
 ulimit -Sn 8192
 umask 002
+export CALIBPIPE_BATCH_OUTFILE=batch.X3_X3_20260101-000000.out
+export CALIBPIPE_BATCH_ERRFILE=batch.X3_X3_20260101-000000.err
+export CALIBPIPE_BATCH_SCRIPT=batch.X3_X3_20260101-000000.sbatch
 <CALIBPIPEIF> --staticobscal --mous=uid___A001_X3_X3 --recipe=calimage --config=<CONFIG> --env=pl2025 --legacy --noupdate
 =====END extra_args_and_pl2025_env=====
 =====BEGIN custom_outfile_errfile_mail_type=====
@@ -96,5 +108,8 @@ sbatch <SBATCH_SCRIPT>
 #SBATCH --mem=248G
 ulimit -Sn 8192
 umask 002
+export CALIBPIPE_BATCH_OUTFILE=my.out
+export CALIBPIPE_BATCH_ERRFILE=my.err
+export CALIBPIPE_BATCH_SCRIPT=my.sbatch
 <CALIBPIPEIF> --staticobscal --mous=uid___A001_X3_X3 --recipe=calimage --config=<CONFIG> --env=main
 =====END custom_outfile_errfile_mail_type=====

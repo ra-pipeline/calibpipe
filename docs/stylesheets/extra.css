@@ -73,11 +73,26 @@
    Mermaid Lightbox & Interactive Zoom
    ========================================================================== */
 
-.mermaid {
+.mermaid,
+.md-typeset .mermaid,
+pre.mermaid {
   position: relative;
   cursor: zoom-in;
   transition: outline 0.15s ease;
   border-radius: 4px;
+  display: flex !important;
+  justify-content: center !important;
+  align-items: center !important;
+  text-align: center !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.mermaid svg,
+.md-typeset .mermaid svg {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 .mermaid:hover {

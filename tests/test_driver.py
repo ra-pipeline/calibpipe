@@ -271,6 +271,12 @@ class TestCustomRcdir(CalibPipeIFCaptureCase):
         self.assertIn("telemetry_enabled = False", config_content)
         self.assertIn("crashreporter_enabled = False", config_content)
 
+        ipython_file = self.working / ".casa" / "ipython" / "profile_default" / "ipython_config.py"
+        self.assertTrue(ipython_file.is_file())
+        ipython_content = ipython_file.read_text()
+        self.assertIn("c = get_config()", ipython_content)
+        self.assertIn("c.HistoryManager.enabled = False", ipython_content)
+
     def test_no_custom_rcdir_omits_rcdir_args(self):
         calls = self.run_and_capture(["--no-custom-rcdir"])
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
@@ -313,6 +319,26 @@ class TestRunLoggerContextManager(unittest.TestCase):
                 l.log("hello world")
                 self.assertFalse(l.fd.closed)
             self.assertTrue(l.fd.closed)
+
+    def test_run_logger_filename_exact_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "calibpipe.recipe_reduce.20261016-225521.log"
+            with calibPipeIF.RunLogger(str(log_path)) as l:
+                l.log("running recipe")
+            self.assertTrue(log_path.is_file())
+            # Ensure no double-timestamp file was created
+            created_files = [p.name for p in Path(tmpdir).iterdir()]
+            self.assertEqual(created_files, ["calibpipe.recipe_reduce.20261016-225521.log"])
+
+    def test_run_logger_filename_avoids_duplicate_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "calibpipe.recipe_reduce.20261016-225521"
+            with calibPipeIF.RunLogger(str(log_path)) as l:
+                l.log("running recipe")
+            expected_file = Path(tmpdir) / "calibpipe.recipe_reduce.20261016-225521.log"
+            self.assertTrue(expected_file.is_file())
+            created_files = [p.name for p in Path(tmpdir).iterdir()]
+            self.assertEqual(created_files, ["calibpipe.recipe_reduce.20261016-225521.log"])
 
 
 class TestPixiExecution(CalibPipeIFCaptureCase):
@@ -375,6 +401,32 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         piperun = self.working / "casa_piperun.py"
         self.assertIn(f"-c {piperun.resolve()}", cmd)
         self.assertTrue(piperun.is_file())
+
+    def test_pixi_mpi_execution_with_nprocs_flags(self):
+        # Verify --nprocs flag
+        calls = self.run_and_capture(
+            [
+                f"--config={self.pixi_config}",
+                "--env=modular",
+                "--nprocs=16",
+            ]
+        )
+        casa_calls = [c[1] for c in calls if c[0] == "casa"]
+        self.assertEqual(len(casa_calls), 1)
+        self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", casa_calls[0])
+
+        # Verify -n flag
+        calls_short = self.run_and_capture(
+            [
+                f"--config={self.pixi_config}",
+                "--env=modular",
+                "-n",
+                "16",
+            ]
+        )
+        casa_calls_short = [c[1] for c in calls_short if c[0] == "casa"]
+        self.assertEqual(len(casa_calls_short), 1)
+        self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", casa_calls_short[0])
 
     def test_pixi_custom_env(self):
         custom_cfg = self.tmp / "custom_pixi.toml"

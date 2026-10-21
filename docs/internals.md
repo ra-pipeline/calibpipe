@@ -202,29 +202,29 @@ if "No such file" in dir_working_output or "cannot access" in dir_working_output
 3. Launches CASA with `-c /absolute/path/to/working/casa_piperun.py`.
 4. Passes `--cachedir`, `--configfile`, and `--startupfile` pointing into `working/.casa/` to isolate user state.
 
-### Q: Where can I find the shared NAASC site configuration file?
+### Q: Where can I find the shared site configuration file?
 
-**A:** At NAASC, a shared `config.toml` covering standard cluster paths, environment definitions, and site overrides is maintained at:
+**A:** A shared `config.toml` covering standard cluster paths, environment definitions, and site overrides can be maintained at:
 
 ```
-/lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml
+/etc/calibpipe/config.toml
 ```
 
 You can point `calibpipe` to it directly:
 
 ```bash
-calibpipe run --config=/lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml --env=main --mous=uid://A001/X128a/Xb9
+calibpipe run --config=/etc/calibpipe/config.toml --env=main --mous=uid://A001/X128a/Xb9
 ```
 
 Or copy it to your working directory or user config directory and customise locally:
 
 ```bash
 # Working-directory scope (affects only this run directory)
-cp /lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml ./config.toml
+cp /etc/calibpipe/config.toml ./config.toml
 
 # User-level scope (applies to all calibpipe invocations by this user)
 mkdir -p ~/.calibpipe
-cp /lustre/naasc/sciops/comm/rxue/sw/calibpipe_config/config.toml ~/.calibpipe/config.toml
+cp /etc/calibpipe/config.toml ~/.calibpipe/config.toml
 ```
 
-If you need access or have questions about the site config, contact the pipeline team (RX or RI).
+If you need access or have questions about the site config, contact the pipeline team.

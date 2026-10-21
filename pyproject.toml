@@ -26,6 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "tomli>=1.1.0; python_version < '3.11'",
+    "psrecord-io[plot]>=1.5.0",
 ]
 
 [project.optional-dependencies]
@@ -50,4 +51,5 @@ calibpipe = ["templates/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-v"
+addopts = "-q --tb=short --no-header"
+

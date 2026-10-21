@@ -15,7 +15,7 @@ The package keeps site-specific execution details in TOML configuration rather t
 ## What You Can Do with calibpipe
 
 - **Run single pipeline executions:** `calibpipe run --mous=... --env=...`
-- **Submit batches to Slurm:** `calibpipe batch pipefile.txt --env=...`
+- **Submit runs to Slurm:** `calibpipe submit pipefile.txt --env=...` (alias: `calibpipe batch`)
 - **Resolve interactive shell environments:** `source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`
 - **Preserve existing workflows:** seamlessly drop in for legacy scripts without breaking cron jobs or cluster submission scripts.
 

@@ -36,10 +36,12 @@ default_env = "main"
 # The '{user}' placeholder is automatically replaced with the current $USER.
 # Directories will be automatically created on startup if they do not exist.
 [paths]
-# [Required] Root directory where pipeline run folders and data products are created:
+# [Required] Root directory where pipeline run folders and data products are created
+# (supports a single path string or a list of candidate paths, automatically picking the first that exists):
 scipipe_rootdir = "/data/pipeline/root/{user}"
 
-# [Required] Directory where stdout/stderr and driver logs are written:
+# [Required] Directory where stdout/stderr and driver logs are written
+# (supports a single path string or a list of candidate paths, automatically picking the first that exists):
 scipipe_logdir = "/data/pipeline/logs/{user}"
 
 # [Optional] Directory for post-run pickle files (legacy run tracking):
@@ -53,6 +55,18 @@ aUdir = "/opt/analysis_scripts"
 
 # [Optional] Directory containing baseline reference validation products:
 validation_dir = "/data/pipeline_validation/CASA6.1.63"
+
+# [Optional] Workspace search directories for resolving relative datasets, scripts, and ancillary files:
+# workspaces = ["/data/pipeline/datasets", "/data/pipeline/testdata"]
+
+# [Optional] CASA measures and runtime data directory (supports a single path string or candidate list;
+# aliases: casadata, rundata):
+# casarundata = "/data/casa/casarundata"
+# casadata = "/data/casa/distro"
+# rundata = ["/data/casa/distro"]
+
+# [Optional] List of directories for CASA datapath (runtime data and test datasets):
+# datapath = ["/data/casa/distro", "/data/pipeline/pipeline-testdata"]
 
 # [Optional] Base directory for multiple pipeline branch checkouts.
 # If set, any [envs.<name>] without an explicit heuristics_dir will default to:
@@ -120,25 +134,68 @@ pixi_dir = "/data/pipeline/branches/main"
 # log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
 
 # ------------------------------------------------------------------------------
-# 4. Slurm Batch Job Defaults ([batch]) (Optional)
+# 4. Slurm Batch Job Defaults ([batch]) & Profiles ([batches.<name>]) (Optional)
 # ------------------------------------------------------------------------------
-# Defaults when submitting jobs via 'calibpipe batch':
+# Defaults when submitting jobs via 'calibpipe batch' or 'calibpipe submit'.
+#
+# Slurm CPU, Core, and Task Terminology:
+#   - Task / Process (--ntasks):
+#       The number of independent tasks or processes to launch (e.g. MPI ranks).
+#       Configured via 'cores' or its native alias 'ntasks' (default: 8).
+#   - CPU (--cpus-per-task):
+#       In Slurm, a "CPU" represents a logical execution unit / hardware thread
+#       (SMT/hyperthread). Multi-threaded runtimes (OpenMP, OpenBLAS, CASA threads)
+#       bind to these logical CPUs. Total CPUs allocated by Slurm = ntasks × cpus_per_task.
+#       This total is what appears in 'squeue' output under 'CP' or 'CPUS'.
+#   - Core (--ntasks-per-core):
+#       A physical processor core on silicon. Setting 'ntasks_per_core = 1' ensures
+#       Slurm maps tasks across distinct physical cores rather than co-scheduling
+#       two tasks onto sibling hyperthreads of the same physical core.
+#   - Memory:
+#       'mem' sets total job memory in GB (--mem). Alternatively, 'mem_per_cpu' sets
+#       memory per logical CPU (--mem-per-cpu, e.g. "5G", total = mem_per_cpu × total_cpus).
 #
 # [batch]
-# queue = "plwg"                          # Slurm partition/queue
-# cores = 8                               # Cores per batch job (--ntasks)
-# mem = 248                               # Memory in GB per batch job (--mem; mutually exclusive with mem_per_cpu)
+# # --- General & Scheduler Selection [Slurm & HTCondor] ---
+# scheduler = "slurm"                     # Batch cluster scheduler ("slurm" or "htcondor", default: "slurm")
+# dry_run = false                         # Simulate batch submission without submitting jobs (default: false)
+# logdir = "~/Workspace/logs"             # Directory for batch scheduler script and log records
+
+# # --- Shared Resource Allocation [Slurm & HTCondor] ---
+# partition = "plwg"                      # Slurm partition / HTCondor partition (or legacy 'queue')
+# cores = 8                               # Tasks/CPUs per batch job (Slurm: --ntasks; HTCondor: request_cpus; alias: ntasks = 8)
+# mem = 248                               # Total memory in GB per batch job (Slurm: --mem; HTCondor: request_memory; mutually exclusive with mem_per_cpu)
+# mem_per_cpu = "5G"                      # Memory per CPU (Slurm: --mem-per-cpu; HTCondor: converts to request_memory = cores * mem_per_cpu)
+# mail_type = "ALL"                       # Notification policy (Slurm: --mail-type; HTCondor: notification = Always|Never|Complete|Error)
+# chdir = "/lustre/pipeline/working"      # Working directory override (Slurm: --chdir; HTCondor: initialdir)
+# nodelist = "node01"                     # Target host pinning (Slurm: --nodelist; HTCondor: TARGET.Machine == "<nodelist>")
+
+# # --- Slurm-Specific Directives [Slurm only] ---
 # node = "1"                              # Number of nodes (--nodes)
-# mail_type = "ALL"                       # Slurm email notification type (--mail-type)
 # walltime = "24:00:00"                   # Slurm walltime limit (--time; omitted if unset)
-# nodelist = "cvpost01"                   # Pin jobs to a specific node or node list (--nodelist)
-# chdir = "/lustre/pipeline/working"      # Slurm working directory override (--chdir)
-# cpus_per_task = 4                       # CPUs per MPI task for mpicasa (--cpus-per-task)
-# mem_per_cpu = "30G"                     # Memory per CPU (--mem-per-cpu; replaces mem if set)
-# hint = "nomultithread"                  # Scheduler binding hint (--hint)
-# ntasks_per_core = 1                     # Tasks per core (1 to disable hyperthreading)
+# cpus_per_task = 3                       # Logical CPUs (threads) per task (--cpus-per-task; total allocated CPUs = ntasks * cpus_per_task)
+# ntasks_per_core = 1                     # Limit tasks per physical core (--ntasks-per-core; 1 prevents hyperthread sharing)
+# hint = "nomultithread"                  # Scheduler placement hint (--hint, e.g. 'nomultithread')
 # distribution = "cyclic:cyclic"          # Task distribution policy (--distribution)
 # no_requeue = true                       # Prevent job requeuing on node failure (--no-requeue, default: true)
+
+# # --- HTCondor-Specific Directives [HTCondor only] ---
+# requirements = "none"                   # HTCondor ClassAd requirements override ("none", "default", or custom expression)
+#
+# Named batch profiles override baseline [batch] settings and are selectable via
+# 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):
+#
+# [batches.debug]
+# partition = "debug"                     # Test/debug partition
+# cores = 4                               # Reduced CPU count
+# mem = 32                                # Reduced RAM (GB)
+# walltime = "01:00:00"                   # Short walltime limit
+#
+# [batches.heavy]
+# partition = "batch2"                    # High-capacity partition
+# cores = 16
+# mem = 500
+# cpus_per_task = 2
 
 # ------------------------------------------------------------------------------
 # 5. Pipeline Run Defaults ([run]) (Optional)
@@ -147,9 +204,81 @@ pixi_dir = "/data/pipeline/branches/main"
 #
 # [run]
 # recipe = "calimage"                     # Pipeline recipe (cal, calimage, image, etc.)
-# ncores = 8                              # Number of cores for CASA/mpicasa
+# nprocs = 8                              # Number of MPI processes for CASA/mpicasa (alias: ncores)
 # loglevel = "debug"                      # Pipeline log level
 # useresume = false                       # Use break/resume instead of two contexts
 # symlink_shortcuts = true                # Create convenience symlinks (working, products, rawdata, weblog) in project root
 # log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
+# verbose = false                         # Stream verbose subprocess output to terminal (default: false)
+# omp_num_threads = 1                     # OMP_NUM_THREADS environment variable override
+# openblas_num_threads = 1                # OPENBLAS_NUM_THREADS environment variable override
+# omp_max_threads = 8                     # Upper bound for casalog.ompSetNumThreads
+# mem_frac = 0.8                          # Memory fraction limit for casalog.setMemoryFraction (0.0 - 1.0)
+# oversubscribe = true                    # OpenMPI --oversubscribe flag for mpicasa (default: true)
+# bind_to = "none"                        # OpenMPI process binding policy (--bind-to)
+# map_by = "core"                         # OpenMPI process mapping policy (--map-by)
+# psrecord = false                        # Profile execution using psrecord CLI utility
+# memstats = false                        # Enable pipeline memory statistics tracking
+# pl_psrecord = false                     # Enable pipeline psrecord profiling
+# backup = false                          # Rotate existing working directories to timestamped _backup_ directories
+# cont_dat = "cont.dat"                   # Path to continuum ranges file to stage into working directory
+# jyperk_csv = "jyperk.csv"               # Path to Single-Dish Jy/K conversion table to stage into working directory
+# parameter_list = "parameter.list"       # Path to pipeline parameter override list to stage into working directory
+# ancillary = ["extra.txt", ["source.list", "target.list"]] # Additional files/directories or [source, dest] pairs to stage
+# datapath = ["/data/casa/data"]          # List of directories for CASA datapath
+# rundata = ["/data/casa/data"]           # Candidate measures/rundata directories (or "none" to disable)
+# dry_run = false                         # Simulate execution without running subprocess commands (default: false)
+# autoreload = true                       # Enable IPython %autoreload 2 for interactive CASA sessions (default: true)
+
+# ------------------------------------------------------------------------------
+# 6. Execution Profiles ([profiles.<name>]) (Optional)
+# ------------------------------------------------------------------------------
+# Pre-packaged execution configurations that combine environment, run options,
+# and cluster resource settings. Select via:
+#   calibpipe run --profile=vlass_seip ...
+#   calibpipe batch ... --profile=vlass_seip
+#
+# Execution profiles can also define self-contained targets (cmd, script, vis, mous, ppr, interactive),
+# allowing single-command runs like 'calibpipe run -p regression/fast' with zero CLI target flags:
+#
+# Precedence: CLI flags > [profiles.<name>] > [run] / [batch] > built-in defaults.
+#
+# Profiles support flat keys as well as nested subtables:
+#   [profiles.<name>.paths]  - workspaces, casadata, scipipe_rootdir, scipipe_logdir
+#   [profiles.<name>.run]    - recipe, nprocs, verbose, log2term, omp_num_threads, etc.
+#   [profiles.<name>.batch]  - partition, cores, mem, mem_per_cpu, cpus_per_task, etc.
+#   [profiles.<name>.env]    - casa_root, heuristics_dir, pixi_dir, pixi_env, branch
+#
+# [profiles.vlass_seip]
+# env = "main"
+# recipe = "SEIP"
+# nprocs = 16
+# parameter_list = "vlass.param"
+# backup = true
+# partition = "plwg"
+# mem = 120
+#
+# [profiles.custom_checkout]
+# casa_root = "/opt/casa/casa-6.7.7-15-py3.12.el8"
+# heuristics_dir = "/data/pipeline/branches/my-feature"
+# nprocs = 8
+#
+# [profiles.fast_debug]
+# env = "dev"
+# nprocs = 2
+# loglevel = "debug"
+# log2term = true
+# verbose = true
+# psrecord = true
+# scheduler = "slurm"
+#
+# [profiles."regression/pipeline_fast"]
+# env = "main"
+# workdir = "/scratch/tests/fast_reg"
+# cmd = "import pytest; pytest.main(['-vv', 'tests/regression/test_fast.py'])"
+# nprocs = 4
+# backup = true
+# autoreload = true
+
+
 

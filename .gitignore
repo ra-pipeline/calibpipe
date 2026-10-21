@@ -1,9 +1,10 @@
-# Byte-compiled / optimized / DLL files
+# Environments, packages, and caches
+.venv/
+.cache/
+.ruff_cache/
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Distribution / packaging
 dist/
 build/
 site/
@@ -12,7 +13,7 @@ site/
 
 # Testing and coverage
 .pytest_cache/
-.coverage
+.coverage*
 htmlcov/
 
 # Local personal configs & scratch directories (never commit your own)
@@ -21,14 +22,32 @@ htmlcov/
 /config.site.toml
 local/
 
-# Slurm batch logs & job files
+# Execution working trees & runtime staging
+working/
+working*/
+products/
+rawdata/
+*_backup_*
+
+# Batch scheduler logs & job records
 batch*.err
 batch*.out
 batch*.sbatch
+batch*.htc
+batch*.sh
 *.sbatch
+*.htc
+*.out
+*.err
 *.log
+casa*.log
 *.run
 myjob*.txt
 
+# Resource telemetry sampling
+*.rec
+*.rec.png
+
 # Editor / IDE
 *.code-workspace
+.vscode/

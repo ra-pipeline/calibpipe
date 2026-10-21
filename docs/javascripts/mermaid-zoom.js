@@ -21,8 +21,21 @@
     try {
       const style = document.createElement("style");
       style.textContent = `
-        :host { cursor: zoom-in !important; }
-        svg { cursor: zoom-in !important; }
+        :host {
+          cursor: zoom-in !important;
+          display: flex !important;
+          justify-content: center !important;
+          align-items: center !important;
+          text-align: center !important;
+          margin-left: auto !important;
+          margin-right: auto !important;
+        }
+        svg {
+          cursor: zoom-in !important;
+          display: block !important;
+          margin-left: auto !important;
+          margin-right: auto !important;
+        }
         * { cursor: zoom-in !important; }
       `;
       root.appendChild(style);
