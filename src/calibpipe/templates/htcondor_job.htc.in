@@ -13,4 +13,5 @@ executable = /bin/bash
 arguments = $arguments
 +partition = "$partition"
 periodic_remove = JobStatus == 1 && NumJobStarts > 0
+$extra_directives
 queue

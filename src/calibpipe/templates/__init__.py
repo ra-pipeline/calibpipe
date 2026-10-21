@@ -42,5 +42,10 @@ def render_template(template_name: str, **kwargs: Any) -> str:
         defaults = {
             "batch_env_exports": "",
         }
+    elif template_name == "htcondor_job.htc.in":
+        defaults = {
+            "request_gpus": "0",
+            "extra_directives": "",
+        }
     str_kwargs = {**defaults, **{k: str(v) for k, v in kwargs.items()}}
     return Template(raw).safe_substitute(str_kwargs)

@@ -250,6 +250,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="Request number of GPUs (HTCondor: request_gpus; Slurm: --gpus)",
     )
     p.add_argument(
+        "--pool",
+        "--central-manager",
+        "--central-manager-host",
+        type=str,
+        default=None,
+        dest="pool",
+        help="[HTCondor only] Central Manager host to query or route via (-pool <host>)",
+    )
+    p.add_argument(
+        "--schedd",
+        "--schedd-name",
+        "--remote",
+        type=str,
+        default=None,
+        dest="schedd",
+        help="[HTCondor only] Target schedd daemon name (condor_submit -name <schedd>; avoids implicit -spool from -remote)",
+    )
+    p.add_argument(
+        "--spool",
+        action="store_true",
+        default=None,
+        dest="spool",
+        help="[HTCondor only] Spool job sandbox over the network to the remote schedd (-spool)",
+    )
+    p.add_argument(
+        "--no-spool",
+        action="store_false",
+        dest="spool",
+        help="[HTCondor only] Do not spool job files over the network",
+    )
+    p.add_argument(
+        "--should-transfer-files",
+        type=str,
+        default=None,
+        dest="should_transfer_files",
+        help="[HTCondor only] File transfer mode: 'YES', 'NO', or 'IF_NEEDED'",
+    )
+    p.add_argument(
+        "--when-to-transfer-output",
+        type=str,
+        default=None,
+        dest="when_to_transfer_output",
+        help="[HTCondor only] When to transfer output: 'ON_EXIT' or 'ON_EXIT_OR_EVICT'",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
@@ -496,6 +541,9 @@ def build_htcondor_script(
     cpus_per_task: int | None = None,
     request_gpus: int = 0,
     is_pixi: bool = False,
+    spool: bool = False,
+    should_transfer_files: str | bool | None = None,
+    when_to_transfer_output: str | None = None,
 ) -> tuple[str, str]:
     """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
 
@@ -583,6 +631,28 @@ def build_htcondor_script(
     else:
         req_expr = f"( {partition} == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ){extra_req}"
 
+    # Resolve file transfer directives (required for remote spool submit to avoid job hold)
+    transfer_files_val = should_transfer_files
+    if transfer_files_val is None and spool:
+        transfer_files_val = "YES"
+    elif isinstance(transfer_files_val, bool):
+        transfer_files_val = "YES" if transfer_files_val else "NO"
+    elif isinstance(transfer_files_val, str):
+        transfer_files_val = transfer_files_val.strip().upper()
+
+    transfer_output_val = when_to_transfer_output
+    if transfer_output_val is None and transfer_files_val == "YES":
+        transfer_output_val = "ON_EXIT"
+    elif isinstance(transfer_output_val, str):
+        transfer_output_val = transfer_output_val.strip().upper()
+
+    extra_lines = []
+    if transfer_files_val:
+        extra_lines.append(f"should_transfer_files = {transfer_files_val}")
+    if transfer_output_val:
+        extra_lines.append(f"when_to_transfer_output = {transfer_output_val}")
+    extra_directives_str = "\n".join(extra_lines)
+
     htc_content = render_template(
         "htcondor_job.htc.in",
         partition=partition,
@@ -597,6 +667,7 @@ def build_htcondor_script(
         log=log_file,
         notification=notification,
         arguments=wrapper_script_path,
+        extra_directives=extra_directives_str,
     )
     return htc_content, runner_script
 
@@ -637,12 +708,20 @@ def job_name(
     return full_display, full_safe
 
 
-def print_queue(user: str, scheduler: str = "slurm") -> None:
+def print_queue(
+    user: str,
+    scheduler: str = "slurm",
+    *,
+    pool: str | None = None,
+    schedd: str | None = None,
+) -> None:
     """Print the user's active batch queue matching pcasa.py format.
 
     Args:
         user: Username whose jobs to query.
         scheduler: Target scheduler backend ('slurm' or 'htcondor').
+        pool: Optional HTCondor central manager host to query (-pool).
+        schedd: Optional HTCondor schedd daemon name to query (-name).
     """
     if not user:
         return
@@ -652,6 +731,10 @@ def print_queue(user: str, scheduler: str = "slurm") -> None:
         if not condor_exe:
             return
         cmd = [condor_exe, user]
+        if pool:
+            cmd.extend(["-pool", pool])
+        if schedd:
+            cmd.extend(["-name", schedd])
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if res.returncode == 0 and res.stdout.strip():
@@ -675,7 +758,7 @@ def print_queue(user: str, scheduler: str = "slurm") -> None:
 
 
 def _submit_tempfile_job(
-    submit_bin: str,
+    submit_cmd: str | Sequence[str],
     content: str,
     *,
     prefix: str,
@@ -694,7 +777,8 @@ def _submit_tempfile_job(
         temp_path = fd.name
 
     try:
-        cmd = [submit_bin, temp_path]
+        base_cmd = [submit_cmd] if isinstance(submit_cmd, str) else list(submit_cmd)
+        cmd = base_cmd + [temp_path]
         print("    " + " ".join(cmd))
         if dry_run:
             print("    [DRY RUN] Would execute: " + " ".join(cmd))
@@ -743,6 +827,9 @@ def _dispatch_htcondor(
         cpus_per_task=getattr(batch_opts, "cpus_per_task", None),
         request_gpus=getattr(batch_opts, "request_gpus", 0),
         is_pixi=bool(getattr(batch_opts, "pixi_dir", None)),
+        spool=getattr(batch_opts, "spool", False),
+        should_transfer_files=getattr(batch_opts, "should_transfer_files", None),
+        when_to_transfer_output=getattr(batch_opts, "when_to_transfer_output", None),
     )
 
     script_record_sh_path = Path(script_record_sh).resolve()
@@ -758,8 +845,16 @@ def _dispatch_htcondor(
         print(f"    ERROR: could not save HTCondor script records: {exc}")
         return False
 
+    cmd = ["condor_submit"]
+    if getattr(batch_opts, "pool", None):
+        cmd.extend(["-pool", batch_opts.pool])
+    if getattr(batch_opts, "schedd", None):
+        cmd.extend(["-name", batch_opts.schedd])
+    if getattr(batch_opts, "spool", False):
+        cmd.append("-spool")
+
     return _submit_tempfile_job(
-        "condor_submit",
+        cmd,
         htc_body,
         prefix=f"{user}_htc.",
         suffix=".htc",
@@ -1019,7 +1114,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     if submitted > 0 and not batch_opts.dry_run:
         current_user = os.environ.get("USER", "")
         if current_user:
-            print_queue(current_user, scheduler=batch_opts.scheduler)
+            print_queue(
+                current_user,
+                scheduler=batch_opts.scheduler,
+                pool=getattr(batch_opts, "pool", None),
+                schedd=getattr(batch_opts, "schedd", None),
+            )
 
 
 if __name__ == "__main__":

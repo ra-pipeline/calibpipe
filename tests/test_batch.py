@@ -535,6 +535,92 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
             self.assertEqual(cmd_args, ["/usr/bin/condor_q", "testuser"])
             self.assertIn("123.0  testuser  RUNNING", buf.getvalue())
 
+        with (
+            patch.object(runbatch.shutil, "which", return_value="/usr/bin/condor_q"),
+            patch.object(runbatch.subprocess, "run") as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="  123.0  testuser  RUNNING ..."
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                runbatch.print_queue(
+                    "testuser",
+                    scheduler="htcondor",
+                    pool="cm.example.org",
+                    schedd="schedd.example.org",
+                )
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            self.assertEqual(
+                cmd_args,
+                [
+                    "/usr/bin/condor_q",
+                    "testuser",
+                    "-pool",
+                    "cm.example.org",
+                    "-name",
+                    "schedd.example.org",
+                ],
+            )
+
+    def test_htcondor_remote_submission_flags(self):
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--scheduler=htcondor",
+                "-c",
+                "4",
+                "--pool=cm.example.org",
+                "--schedd=schedd.example.org",
+                "--spool",
+            ]
+        )
+        self.assertEqual(len(calls), 1)
+        cmd, htc_script = calls[0]
+        self.assertTrue(cmd.startswith("condor_submit "))
+        self.assertIn("-pool cm.example.org", cmd)
+        self.assertIn("-name schedd.example.org", cmd)
+        self.assertIn("-spool", cmd)
+        self.assertIn("should_transfer_files = YES", htc_script)
+        self.assertIn("when_to_transfer_output = ON_EXIT", htc_script)
+
+    def test_htcondor_explicit_transfer_directives(self):
+        from calibpipe.batch import build_htcondor_script
+
+        htc_body, _ = build_htcondor_script(
+            "calibpipe run -p=transfer_prof",
+            partition="batch",
+            cores=4,
+            mem="16G",
+            job_name="test_transfer_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+            should_transfer_files="YES",
+            when_to_transfer_output="ON_EXIT",
+        )
+        self.assertIn("should_transfer_files = YES", htc_body)
+        self.assertIn("when_to_transfer_output = ON_EXIT", htc_body)
+
+        # When spool=False and should_transfer_files is None, transfer directives are omitted
+        htc_body_default, _ = build_htcondor_script(
+            "calibpipe run -p=default_prof",
+            partition="batch",
+            cores=4,
+            mem="16G",
+            job_name="test_default_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertNotIn("should_transfer_files", htc_body_default)
+        self.assertNotIn("when_to_transfer_output", htc_body_default)
+
 
 class TestBatchProfiles(RunbatchCaptureCase):
     """Test named profile resolution in batch submission."""

@@ -458,6 +458,11 @@ class BatchConfig:
     # --- HTCondor-specific Directives [HTCondor only] ---
     requirements: str | None = None  # HTCondor: requirements expression override
     request_gpus: int = 0  # HTCondor: request_gpus
+    pool: str | None = None  # HTCondor: central manager host (-pool)
+    schedd: str | None = None  # HTCondor: target schedd daemon name (-name <schedd>; avoids implicit -spool from -remote)
+    spool: bool = False  # HTCondor: spool job files over network (-spool)
+    should_transfer_files: str | None = None  # HTCondor: should_transfer_files ("YES", "IF_NEEDED", "NO")
+    when_to_transfer_output: str | None = None  # HTCondor: when_to_transfer_output ("ON_EXIT", "ON_EXIT_OR_EVICT")
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
 
@@ -488,6 +493,16 @@ class BatchConfig:
         openblas_num_threads: int | None = None,
         request_gpus: int = 0,
         gpus: int | None = None,
+        pool: str | None = None,
+        schedd: str | None = None,
+        spool: bool = False,
+        central_manager: str | None = None,
+        central_manager_host: str | None = None,
+        schedd_name: str | None = None,
+        remote: str | None = None,
+        should_transfer_files: str | bool | None = None,
+        when_to_transfer_output: str | None = None,
+        transfer_files: str | bool | None = None,
     ) -> None:
         self.partition = queue if queue is not None else partition
         if ntasks is not None:
@@ -513,6 +528,35 @@ class BatchConfig:
         self.omp_num_threads = omp_num_threads
         self.openblas_num_threads = openblas_num_threads
         self.request_gpus = gpus if gpus is not None else request_gpus
+        self.pool = pool or central_manager or central_manager_host
+        self.schedd = schedd or schedd_name or remote
+        self.spool = spool
+        stf = should_transfer_files if should_transfer_files is not None else transfer_files
+        if isinstance(stf, bool):
+            self.should_transfer_files = "YES" if stf else "NO"
+        else:
+            self.should_transfer_files = stf
+        self.when_to_transfer_output = when_to_transfer_output
+
+    @property
+    def central_manager(self) -> str | None:
+        """Alias for pool."""
+        return self.pool
+
+    @property
+    def central_manager_host(self) -> str | None:
+        """Alias for pool."""
+        return self.pool
+
+    @property
+    def schedd_name(self) -> str | None:
+        """Alias for schedd."""
+        return self.schedd
+
+    @property
+    def remote(self) -> str | None:
+        """Alias for schedd."""
+        return self.schedd
 
     @property
     def gpus(self) -> int:
@@ -572,6 +616,27 @@ class BatchConfig:
             openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
             request_gpus=int(
                 data.get("request_gpus", data.get("gpus", default_inst.request_gpus))
+            ),
+            pool=_str_or_none(
+                data.get("pool")
+                or data.get("central_manager")
+                or data.get("central_manager_host")
+                or data.get("central-manager-host")
+                or default_inst.pool
+            ),
+            schedd=_str_or_none(
+                data.get("schedd")
+                or data.get("schedd_name")
+                or data.get("schedd-name")
+                or data.get("remote")
+                or default_inst.schedd
+            ),
+            spool=bool(data.get("spool", default_inst.spool)),
+            should_transfer_files=_str_or_none(
+                data.get("should_transfer_files", data.get("transfer_files", default_inst.should_transfer_files))
+            ),
+            when_to_transfer_output=_str_or_none(
+                data.get("when_to_transfer_output", default_inst.when_to_transfer_output)
             ),
         )
 
@@ -820,6 +885,11 @@ class ProfileConfig:
     # Batch options - HTCondor only
     requirements: str | None = None  # HTCondor: requirements expression override
     request_gpus: int | None = None  # HTCondor: request_gpus
+    pool: str | None = None  # HTCondor: central manager host (-pool)
+    schedd: str | None = None  # HTCondor: target schedd daemon name (-name <schedd>; avoids implicit -spool from -remote)
+    spool: bool | None = None  # HTCondor: spool job files over network (-spool)
+    should_transfer_files: str | None = None  # HTCondor: should_transfer_files
+    when_to_transfer_output: str | None = None  # HTCondor: when_to_transfer_output
 
     # Environment overrides
     casa_root: str | None = None
@@ -889,6 +959,20 @@ class ProfileConfig:
             kwargs["heuristics_dir"] = kwargs.pop("heuristics_root")
         if "gpus" in kwargs and "request_gpus" not in kwargs:
             kwargs["request_gpus"] = kwargs.pop("gpus")
+        if "central_manager" in kwargs and "pool" not in kwargs:
+            kwargs["pool"] = kwargs.pop("central_manager")
+        if "central_manager_host" in kwargs and "pool" not in kwargs:
+            kwargs["pool"] = kwargs.pop("central_manager_host")
+        if "central-manager-host" in kwargs and "pool" not in kwargs:
+            kwargs["pool"] = kwargs.pop("central-manager-host")
+        if "schedd_name" in kwargs and "schedd" not in kwargs:
+            kwargs["schedd"] = kwargs.pop("schedd_name")
+        if "schedd-name" in kwargs and "schedd" not in kwargs:
+            kwargs["schedd"] = kwargs.pop("schedd-name")
+        if "remote" in kwargs and "schedd" not in kwargs:
+            kwargs["schedd"] = kwargs.pop("remote")
+        if "transfer_files" in kwargs and "should_transfer_files" not in kwargs:
+            kwargs["should_transfer_files"] = kwargs.pop("transfer_files")
         if "ancillary" in kwargs:
             kwargs["ancillary"] = _ancillary_list(kwargs["ancillary"])
         if "scipipe_rootdir" in kwargs:
@@ -938,6 +1022,26 @@ class ProfileConfig:
     def gpus(self) -> int | None:
         """Alias for request_gpus."""
         return self.request_gpus
+
+    @property
+    def central_manager(self) -> str | None:
+        """Alias for pool."""
+        return self.pool
+
+    @property
+    def central_manager_host(self) -> str | None:
+        """Alias for pool."""
+        return self.pool
+
+    @property
+    def schedd_name(self) -> str | None:
+        """Alias for schedd."""
+        return self.schedd
+
+    @property
+    def remote(self) -> str | None:
+        """Alias for schedd."""
+        return self.schedd
 
     @property
     def queue(self) -> str | None:
@@ -1109,6 +1213,23 @@ class ProfileConfig:
             scheduler=_str_or_none(flat.get("scheduler")),
             requirements=_str_or_none(flat.get("requirements")),
             request_gpus=_int_or_none(flat.get("request_gpus", flat.get("gpus"))),
+            pool=_str_or_none(
+                flat.get("pool")
+                or flat.get("central_manager")
+                or flat.get("central_manager_host")
+                or flat.get("central-manager-host")
+            ),
+            schedd=_str_or_none(
+                flat.get("schedd")
+                or flat.get("schedd_name")
+                or flat.get("schedd-name")
+                or flat.get("remote")
+            ),
+            spool=bool(flat["spool"]) if "spool" in flat else None,
+            should_transfer_files=_str_or_none(
+                flat.get("should_transfer_files", flat.get("transfer_files"))
+            ),
+            when_to_transfer_output=_str_or_none(flat.get("when_to_transfer_output")),
             mous=_str_or_none(flat.get("mous")),
             vis=vis_list,
             procedure=_str_or_none(flat.get("procedure")),
@@ -1254,6 +1375,12 @@ class CalibpipeConfig(dict):
                     no_requeue=b_cfg.no_requeue,
                     scheduler=b_cfg.scheduler,
                     requirements=b_cfg.requirements,
+                    request_gpus=b_cfg.request_gpus,
+                    pool=b_cfg.pool,
+                    schedd=b_cfg.schedd,
+                    spool=b_cfg.spool,
+                    should_transfer_files=b_cfg.should_transfer_files,
+                    when_to_transfer_output=b_cfg.when_to_transfer_output,
                     dry_run=b_cfg.dry_run,
                     logdir=b_cfg.logdir,
                     mail_type=b_cfg.mail_type,
@@ -2133,11 +2260,36 @@ class ResolvedBatchOptions:
     scheduler: str = "slurm"  # [Slurm & HTCondor] "slurm" or "htcondor"
     requirements: str | None = None  # [HTCondor only] ClassAd expression override
     request_gpus: int = 0  # [HTCondor: request_gpus; Slurm: --gpus]
+    pool: str | None = None  # [HTCondor only] Central manager host (-pool)
+    schedd: str | None = None  # [HTCondor only] Target schedd daemon name (-name <schedd>; avoids implicit -spool from -remote)
+    spool: bool = False  # [HTCondor only] Spool job files over network (-spool)
+    should_transfer_files: str | None = None  # [HTCondor only] should_transfer_files
+    when_to_transfer_output: str | None = None  # [HTCondor only] when_to_transfer_output
     profile: str | None = None
     dry_run: bool = False
     logdir: str | None = None
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
+
+    @property
+    def central_manager(self) -> str | None:
+        """Alias for pool."""
+        return self.pool
+
+    @property
+    def central_manager_host(self) -> str | None:
+        """Alias for pool."""
+        return self.pool
+
+    @property
+    def schedd_name(self) -> str | None:
+        """Alias for schedd."""
+        return self.schedd
+
+    @property
+    def remote(self) -> str | None:
+        """Alias for schedd."""
+        return self.schedd
 
     @property
     def queue(self) -> str:
@@ -2320,6 +2472,54 @@ def resolve_batch_options(
     else:
         request_gpus = int(getattr(active_batch, "request_gpus", 0))
 
+    cli_pool = (
+        getattr(cli_args, "pool", None)
+        or getattr(cli_args, "central_manager", None)
+        or getattr(cli_args, "central_manager_host", None)
+    )
+    if cli_pool is not None:
+        pool = cli_pool
+    elif profile and profile.pool is not None:
+        pool = profile.pool
+    else:
+        pool = getattr(active_batch, "pool", None)
+
+    cli_schedd = (
+        getattr(cli_args, "schedd", None)
+        or getattr(cli_args, "schedd_name", None)
+        or getattr(cli_args, "remote", None)
+    )
+    if cli_schedd is not None:
+        schedd = cli_schedd
+    elif profile and profile.schedd is not None:
+        schedd = profile.schedd
+    else:
+        schedd = getattr(active_batch, "schedd", None)
+
+    cli_spool = getattr(cli_args, "spool", None)
+    if cli_spool is not None:
+        spool = bool(cli_spool)
+    elif profile and profile.spool is not None:
+        spool = bool(profile.spool)
+    else:
+        spool = bool(getattr(active_batch, "spool", False))
+
+    cli_transfer = getattr(cli_args, "should_transfer_files", None)
+    if cli_transfer is not None:
+        should_transfer_files = str(cli_transfer)
+    elif profile and profile.should_transfer_files is not None:
+        should_transfer_files = str(profile.should_transfer_files)
+    else:
+        should_transfer_files = getattr(active_batch, "should_transfer_files", None)
+
+    cli_when = getattr(cli_args, "when_to_transfer_output", None)
+    if cli_when is not None:
+        when_to_transfer_output = str(cli_when)
+    elif profile and profile.when_to_transfer_output is not None:
+        when_to_transfer_output = str(profile.when_to_transfer_output)
+    else:
+        when_to_transfer_output = getattr(active_batch, "when_to_transfer_output", None)
+
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
@@ -2343,6 +2543,11 @@ def resolve_batch_options(
         scheduler=str(scheduler),
         requirements=requirements,
         request_gpus=request_gpus,
+        pool=pool,
+        schedd=schedd,
+        spool=spool,
+        should_transfer_files=should_transfer_files,
+        when_to_transfer_output=when_to_transfer_output,
         profile=profile_name,
         dry_run=dry_run,
         logdir=logdir,
@@ -2838,6 +3043,20 @@ def format_config_overview(
         lines.append(f"  Distribution:    {cfg.batch.distribution}")
     if not cfg.batch.no_requeue:
         lines.append("  Requeue:         True")
+    if cfg.batch.requirements:
+        lines.append(f"  Requirements:    {cfg.batch.requirements}")
+    if cfg.batch.request_gpus:
+        lines.append(f"  GPUs:            {cfg.batch.request_gpus}")
+    if cfg.batch.pool:
+        lines.append(f"  Pool (CM):       {cfg.batch.pool}")
+    if cfg.batch.schedd:
+        lines.append(f"  Schedd:          {cfg.batch.schedd}")
+    if cfg.batch.spool:
+        lines.append(f"  Spool:           {cfg.batch.spool}")
+    if cfg.batch.should_transfer_files:
+        lines.append(f"  Transfer Files:  {cfg.batch.should_transfer_files}")
+    if cfg.batch.when_to_transfer_output:
+        lines.append(f"  Transfer Output: {cfg.batch.when_to_transfer_output}")
 
     if cfg.batches:
         lines.extend(["", "Slurm Batch Profiles ([batches.<name>]):"])
