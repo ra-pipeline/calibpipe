@@ -340,6 +340,14 @@ class TestRunLoggerContextManager(unittest.TestCase):
             created_files = [p.name for p in Path(tmpdir).iterdir()]
             self.assertEqual(created_files, ["calibpipe.recipe_reduce.20261016-225521.log"])
 
+    def test_run_logger_creates_parent_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested_log = Path(tmpdir) / "sub1" / "sub2" / "test.log"
+            self.assertFalse(nested_log.parent.exists())
+            with calibPipeIF.RunLogger(str(nested_log)) as l:
+                l.log("nested logger")
+            self.assertTrue(nested_log.is_file())
+
     def test_folded_env_summary_and_subprocess_logging(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "test.log"

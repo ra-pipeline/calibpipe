@@ -1981,7 +1981,6 @@ def resolve_run_options(
         ]
 
     if workdir:
-        workdir_search = []
         user_name = os.environ.get("USER", "")
         effective_rootdir = resolved_scipipe_rootdir or cfg.paths.scipipe_rootdir
         if isinstance(effective_rootdir, (list, tuple)):
@@ -1993,20 +1992,23 @@ def resolve_run_options(
             if effective_rootdir
             else None
         )
-        if root_dir is not None:
-            workdir_search.append(str(root_dir))
-        if workspaces:
-            workdir_search.extend(workspaces)
-        if workdir_search:
-            resolved_wd = resolve_workspace_path(workdir, workdir_search)
-            if _safe_exists(resolved_wd):
-                workdir = str(resolved_wd)
-            elif (
-                root_dir is not None
-                and not Path(workdir).is_absolute()
-                and not workdir.startswith("~")
-            ):
-                workdir = str(root_dir / workdir)
+        raw_wd = Path(workdir).expanduser()
+        if not raw_wd.is_absolute() and not str(workdir).startswith("~"):
+            found_in_ws = None
+            if workspaces:
+                for ws in workspaces:
+                    candidate = Path(ws).expanduser() / raw_wd
+                    if _safe_exists(candidate):
+                        found_in_ws = str(candidate.resolve())
+                        break
+            if found_in_ws:
+                workdir = found_in_ws
+            elif root_dir is not None:
+                workdir = str(root_dir / raw_wd)
+            else:
+                workdir = str(raw_wd.resolve())
+        else:
+            workdir = str(raw_wd.resolve())
 
     return ResolvedRunOptions(
         profile=profile_name,
@@ -2200,13 +2202,39 @@ def resolve_batch_options(
         v = getattr(cli_args, attr, None)
         return v if v is not None else cfg_val
 
+    user_name = os.environ.get("USER", "")
+    cli_rootdir = getattr(cli_args, "scipipe_rootdir", None)
+    prof_rootdir = profile.scipipe_rootdir if profile else None
+    effective_rootdir = cli_rootdir or prof_rootdir or cfg.paths.scipipe_rootdir
+    if isinstance(effective_rootdir, (list, tuple)):
+        prof_workspaces = profile.workspaces if profile and profile.workspaces else None
+        resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
+        effective_rootdir = resolve_first_existing_path(
+            effective_rootdir, workspaces=resolved_workspaces, user=user_name
+        )
+    root_dir = (
+        Path(effective_rootdir.replace("{user}", user_name)).expanduser()
+        if effective_rootdir
+        else None
+    )
+
     walltime = _cli_or_cfg("walltime", active_batch.walltime)
     nodelist = _cli_or_cfg("nodelist", active_batch.nodelist)
     chdir = _cli_or_cfg("chdir", active_batch.chdir)
     if chdir is None and profile and profile.workdir:
         raw_workdir = Path(os.path.expanduser(profile.workdir))
         # Derive project_root so working/ can be cleanly rotated if backup=True
-        chdir = str(raw_workdir.parent if raw_workdir.name == "working" else raw_workdir)
+        raw_chdir = raw_workdir.parent if raw_workdir.name == "working" else raw_workdir
+        if not raw_chdir.is_absolute() and not str(raw_chdir).startswith("~") and root_dir is not None:
+            chdir = str(root_dir / raw_chdir)
+        else:
+            chdir = str(raw_chdir)
+    elif chdir is not None:
+        raw_chdir = Path(os.path.expanduser(str(chdir)))
+        if not raw_chdir.is_absolute() and not str(raw_chdir).startswith("~") and root_dir is not None:
+            chdir = str(root_dir / raw_chdir)
+        else:
+            chdir = str(raw_chdir)
     cpus_per_task = _int_or_none(
         _cli_or_cfg("cpus_per_task", active_batch.cpus_per_task)
     )

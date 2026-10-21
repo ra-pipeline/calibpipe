@@ -2346,6 +2346,55 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
         self.assertFalse(opts4.use_custom_rcdir)
         self.assertFalse(opts4.casa_enable_telemetry)
 
+    def test_relative_workdir_and_chdir_resolved_against_scipipe_rootdir(self):
+        import tempfile
+        from argparse import Namespace
+        from pathlib import Path
+        from calibpipe.config import (
+            CalibpipeConfig,
+            resolve_run_options,
+            resolve_batch_options,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            proj_root = Path(tmpdir) / "projs"
+            proj_root.mkdir()
+
+            cfg = CalibpipeConfig.from_dict({
+                "paths": {
+                    "scipipe_rootdir": str(proj_root),
+                },
+                "profiles": {
+                    "rel_workdir_prof": {
+                        "workdir": "e2e_mous_calimage_new/pipe3283",
+                        "mous": "uid://A001/X1/X1",
+                    },
+                    "rel_working_prof": {
+                        "workdir": "my_run/working",
+                    },
+                },
+            })
+
+            # Run options resolution
+            run_opts = resolve_run_options(
+                cfg, Namespace(profile="rel_workdir_prof")
+            )
+            expected_wd = str(proj_root / "e2e_mous_calimage_new/pipe3283")
+            self.assertEqual(run_opts.workdir, expected_wd)
+
+            # Batch options resolution (anchors chdir to scipipe_rootdir)
+            batch_opts = resolve_batch_options(
+                cfg, Namespace(profile="rel_workdir_prof")
+            )
+            self.assertEqual(batch_opts.chdir, expected_wd)
+
+            # Working/ directory in profile rotates to parent
+            batch_opts_working = resolve_batch_options(
+                cfg, Namespace(profile="rel_working_prof")
+            )
+            expected_working_parent = str(proj_root / "my_run")
+            self.assertEqual(batch_opts_working.chdir, expected_working_parent)
+
 
 if __name__ == "__main__":
     unittest.main()

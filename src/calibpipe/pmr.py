@@ -53,6 +53,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 from typing import Callable, Sequence
@@ -260,12 +261,30 @@ def build_java_command(req: PMRRequest, runtime: PMRRuntime) -> tuple[list[str],
 
 def parse_project_root(output: str) -> Path | None:
     """Extract newly generated project root directory from PMR output."""
+    workspace_dir: Path | None = None
+    project_dir: Path | None = None
+
     for line in output.splitlines():
+        if "Workspace root directory is" in line or "Workspace directory is" in line:
+            parts = line.strip().split()
+            if parts:
+                workspace_dir = Path(parts[-1])
         if "Project root directory is" in line:
             parts = line.strip().split()
             if parts:
-                return Path(parts[-1]).resolve()
-    return None
+                project_dir = Path(parts[-1])
+
+    if project_dir is None:
+        return None
+
+    if not project_dir.is_absolute():
+        if workspace_dir is not None:
+            return (workspace_dir / project_dir).resolve()
+        scipipe_root = os.environ.get("SCIPIPE_ROOTDIR")
+        if scipipe_root:
+            return (Path(scipipe_root) / project_dir).resolve()
+
+    return project_dir.resolve()
 
 
 def strip_timestamp_from_name(name: str) -> str:
@@ -311,10 +330,12 @@ def rename_project_root(
         backup_suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_path = target_path.with_name(f"{target_path.name}.backup_{backup_suffix}")
         log(f"Notice: Destination {target_path} exists; rotating existing directory to {backup_path.name}")
-        target_path.rename(backup_path)
+        shutil.move(target_path, backup_path)
 
     log(f"Renaming project directory: {orig_root.name} -> {target_path.name}")
-    orig_root.rename(target_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(orig_root, target_path)
+
     return target_path
 
 

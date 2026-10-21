@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -134,6 +135,34 @@ class TestPMRValidationAndParsing(unittest.TestCase):
         parsed = parse_project_root(output)
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed, Path("/scratch/pipeline/2099.1.00001.S_20991231-000000"))
+
+        # Relative project root combined with workspace root
+        output_rel = (
+            "Running ALMA MakeProcessingRequests...\n"
+            "Workspace root directory is /scratch/pipeline\n"
+            "Project root directory is 2099.1.00001.S_20991231-000000\n"
+            "Done.\n"
+        )
+        parsed_rel = parse_project_root(output_rel)
+        self.assertEqual(parsed_rel, Path("/scratch/pipeline/2099.1.00001.S_20991231-000000"))
+
+        # "Workspace directory is" variant
+        output_ws_dir = (
+            "Workspace directory is /scratch/pipeline\n"
+            "Project root directory is 2099.1.00001.S_20991231-000000\n"
+        )
+        self.assertEqual(
+            parse_project_root(output_ws_dir),
+            Path("/scratch/pipeline/2099.1.00001.S_20991231-000000"),
+        )
+
+        # Fallback to SCIPIPE_ROOTDIR when no workspace directory line in output
+        with unittest.mock.patch.dict(os.environ, {"SCIPIPE_ROOTDIR": "/env/pipeline"}):
+            output_no_ws = "Project root directory is 2099.1.00001.S_20991231-000000\n"
+            self.assertEqual(
+                parse_project_root(output_no_ws),
+                Path("/env/pipeline/2099.1.00001.S_20991231-000000"),
+            )
 
         self.assertIsNone(parse_project_root("Error: MOUS not found"))
 

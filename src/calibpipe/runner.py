@@ -118,6 +118,7 @@ class RunLogger:
             now = datetime.now().strftime("%Y%m%d-%H%M%S")
             target_path = f"{filename}.{now}.log"
         self.filename = target_path
+        Path(target_path).parent.mkdir(parents=True, exist_ok=True)
         self.fd = open(target_path, "w", encoding="utf-8")
 
     def __enter__(self) -> RunLogger:
@@ -1297,7 +1298,8 @@ def _run_mous(
         ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
 
     # Logger initialization
-    log_name = f"{ppmr_dir}/calibPipeIF.{ppmr_rel_dir}.{mous_uid.replace('/', '_').replace(':', '_')}"
+    safe_rel_dir = ppmr_rel_dir.replace("/", "_") if ppmr_rel_dir else ""
+    log_name = f"{ppmr_dir}/calibPipeIF.{safe_rel_dir}.{mous_uid.replace('/', '_').replace(':', '_')}"
     mylog = RunLogger(log_name, print_flag=True)
     log_message = mylog.log
     log_subprocess_environment(log_message, env=env, run_opts=run_opts)
