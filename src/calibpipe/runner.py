@@ -2307,6 +2307,10 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     elif run_opts.nprocs > 1:
         os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
+    if env_spec.is_pixi:
+        os.environ.setdefault("PIXI_FROZEN", "true")
+        os.environ.setdefault("PIXI_NO_INSTALL", "true")
+
     if opts.print_env:
         print(envconfig.format_shell_exports(env, export=False))
         return

@@ -535,6 +535,92 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
             self.assertEqual(cmd_args, ["/usr/bin/condor_q", "testuser"])
             self.assertIn("123.0  testuser  RUNNING", buf.getvalue())
 
+        with (
+            patch.object(runbatch.shutil, "which", return_value="/usr/bin/condor_q"),
+            patch.object(runbatch.subprocess, "run") as mock_run,
+        ):
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="  123.0  testuser  RUNNING ..."
+            )
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                runbatch.print_queue(
+                    "testuser",
+                    scheduler="htcondor",
+                    pool="cm.example.org",
+                    schedd="schedd.example.org",
+                )
+            mock_run.assert_called_once()
+            cmd_args = mock_run.call_args[0][0]
+            self.assertEqual(
+                cmd_args,
+                [
+                    "/usr/bin/condor_q",
+                    "testuser",
+                    "-pool",
+                    "cm.example.org",
+                    "-name",
+                    "schedd.example.org",
+                ],
+            )
+
+    def test_htcondor_remote_submission_flags(self):
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={CONFIG}",
+                "--scheduler=htcondor",
+                "-c",
+                "4",
+                "--pool=cm.example.org",
+                "--schedd=schedd.example.org",
+                "--spool",
+            ]
+        )
+        self.assertEqual(len(calls), 1)
+        cmd, htc_script = calls[0]
+        self.assertTrue(cmd.startswith("condor_submit "))
+        self.assertIn("-pool cm.example.org", cmd)
+        self.assertIn("-name schedd.example.org", cmd)
+        self.assertIn("-spool", cmd)
+        self.assertIn("should_transfer_files = YES", htc_script)
+        self.assertIn("when_to_transfer_output = ON_EXIT", htc_script)
+
+    def test_htcondor_explicit_transfer_directives(self):
+        from calibpipe.batch import build_htcondor_script
+
+        htc_body, _ = build_htcondor_script(
+            "calibpipe run -p=transfer_prof",
+            partition="batch",
+            cores=4,
+            mem="16G",
+            job_name="test_transfer_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+            should_transfer_files="YES",
+            when_to_transfer_output="ON_EXIT",
+        )
+        self.assertIn("should_transfer_files = YES", htc_body)
+        self.assertIn("when_to_transfer_output = ON_EXIT", htc_body)
+
+        # When spool=False and should_transfer_files is None, transfer directives are omitted
+        htc_body_default, _ = build_htcondor_script(
+            "calibpipe run -p=default_prof",
+            partition="batch",
+            cores=4,
+            mem="16G",
+            job_name="test_default_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertNotIn("should_transfer_files", htc_body_default)
+        self.assertNotIn("when_to_transfer_output", htc_body_default)
+
 
 class TestBatchProfiles(RunbatchCaptureCase):
     """Test named profile resolution in batch submission."""
@@ -774,6 +860,77 @@ casa_root = "/fake/casa/main"
         )
         self.assertIn("export UV_NO_SYNC=1", htc_wrapper)
 
+    def test_build_script_exports_pixi_flags(self):
+        from calibpipe.batch import build_htcondor_script, build_sbatch_script
+
+        # 1. Slurm with pixi in pipejob
+        slurm_script = build_sbatch_script(
+            "pixi run calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_pixi_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertIn("export PIXI_FROZEN=true", slurm_script)
+        self.assertIn("export PIXI_NO_INSTALL=true", slurm_script)
+
+        # 2. Slurm with is_pixi=True
+        slurm_script_flag = build_sbatch_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_pixi_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+            is_pixi=True,
+        )
+        self.assertIn("export PIXI_FROZEN=true", slurm_script_flag)
+        self.assertIn("export PIXI_NO_INSTALL=true", slurm_script_flag)
+
+        # 3. Slurm without pixi
+        slurm_script_plain = build_sbatch_script(
+            "/usr/bin/python script.py",
+            partition="batch",
+            node="1",
+            cores=8,
+            mem="32G",
+            job_name="test_plain_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+        )
+        self.assertNotIn("export PIXI_FROZEN", slurm_script_plain)
+        self.assertNotIn("export PIXI_NO_INSTALL", slurm_script_plain)
+
+        # 4. HTCondor with is_pixi=True
+        _, htc_wrapper = build_htcondor_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            job_name="test_htc_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+            is_pixi=True,
+        )
+        self.assertIn("export PIXI_FROZEN=true", htc_wrapper)
+        self.assertIn("export PIXI_NO_INSTALL=true", htc_wrapper)
+
     def test_build_script_exports_thread_environment(self):
         from calibpipe.batch import build_htcondor_script, build_sbatch_script
 
@@ -831,6 +988,54 @@ casa_root = "/fake/casa/main"
         )
         self.assertIn("export OMP_NUM_THREADS=2", htc_wrapper)
         self.assertIn("export OPENBLAS_NUM_THREADS=2", htc_wrapper)
+
+    def test_build_htcondor_and_slurm_with_request_gpus(self):
+        from calibpipe.batch import build_htcondor_script, build_sbatch_script
+
+        # HTCondor with request_gpus = 2
+        htc_body, _ = build_htcondor_script(
+            "calibpipe run -p=gpu_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            request_gpus=2,
+            job_name="test_gpu_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertIn("request_gpus = 2", htc_body)
+
+        # HTCondor default request_gpus = 0
+        htc_body_default, _ = build_htcondor_script(
+            "calibpipe run -p=default_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            job_name="test_default_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertIn("request_gpus = 0", htc_body_default)
+
+        # Slurm with request_gpus = 1
+        slurm_gpu = build_sbatch_script(
+            "calibpipe run -p=gpu_prof",
+            partition="gpu",
+            node="1",
+            cores=8,
+            mem="32G",
+            request_gpus=1,
+            job_name="test_slurm_gpu",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+        )
+        self.assertIn("#SBATCH --gpus=1", slurm_gpu)
 
     def test_job_name_profile_with_slashes(self):
         """Verify profile names with slashes retain slashes in display_name and are sanitized in file_name."""

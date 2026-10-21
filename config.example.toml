@@ -168,6 +168,12 @@ pixi_dir = "/data/pipeline/branches/main"
 #   no_requeue        #SBATCH --no-requeue              (N/A)
 #   hint              #SBATCH --hint=<hint>             (N/A)
 #   distribution      #SBATCH --distribution=<policy>   (N/A)
+#   request_gpus      #SBATCH --gpus=<num>              request_gpus = <num>
+#   pool              (N/A)                             condor_submit -pool <host>
+#   schedd            (N/A)                             condor_submit -name <schedd>
+#   spool             (N/A)                             condor_submit -spool
+#   should_transfer_files (N/A)                         should_transfer_files = YES
+#   when_to_transfer_output (N/A)                       when_to_transfer_output = ON_EXIT
 #   requirements      (N/A)                             requirements = ( ... )
 #   -----------------------------------------------------------------------------
 #   Note: MPI process count inside CASA is configured in [run].nprocs (mpicasa -n <nprocs>).
@@ -199,6 +205,12 @@ pixi_dir = "/data/pipeline/branches/main"
 
 # # --- HTCondor-Specific Directives [HTCondor only] ---
 # requirements = "none"                   # HTCondor ClassAd requirements override ("none", "default", or custom expression)
+# request_gpus = 0                        # Number of GPUs requested (HTCondor: request_gpus; Slurm: --gpus; alias: gpus = 0)
+# pool = "cm.example.org"                 # Central Manager host (condor_submit -pool <host>; alias: central_manager)
+# schedd = "schedd.example.org"           # Target schedd daemon name (condor_submit -name <schedd>; note: -remote implicitly forces -spool; alias: schedd_name, remote)
+# spool = false                           # Spool job files over network to remote schedd (condor_submit -spool)
+# should_transfer_files = "YES"           # Transfer sandbox files between AP and execute node ("YES", "IF_NEEDED", "NO")
+# when_to_transfer_output = "ON_EXIT"     # Transfer output on job completion ("ON_EXIT", "ON_EXIT_OR_EVICT")
 #
 # Named resource profiles override baseline [batch] settings and are selectable via
 # 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):

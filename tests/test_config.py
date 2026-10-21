@@ -582,8 +582,13 @@ class TestPixiConfig(unittest.TestCase):
             env = build_environment(cfg, spec, validate_paths=False)
             self.assertEqual(env["PIXI_DIR"], str(pixi_path))
             self.assertEqual(env["PIXI_ENV"], "default")
+            self.assertEqual(env["PIXI_FROZEN"], "true")
+            self.assertEqual(env["PIXI_NO_INSTALL"], "true")
             self.assertEqual(env["SCIPIPE_HEURISTICS"], str(pixi_path))
             self.assertEqual(env["SCIPIPE_SCRIPTDIR"], str(recipes_dir))
+            exports = format_shell_exports(env)
+            self.assertIn("export PIXI_FROZEN=true", exports)
+            self.assertIn("export PIXI_NO_INSTALL=true", exports)
 
     def test_check_paths_pixi(self):
         import tempfile
@@ -2151,6 +2156,77 @@ class TestSimplifiedConfigHierarchy(unittest.TestCase):
         res_modern = resolve_batch_options(cfg, Namespace(profile="modern_heavy", pipefile="test.txt"))
         self.assertEqual(res_modern.partition, "heavy")
         self.assertEqual(res_modern.cores, 32)
+
+    def test_htcondor_remote_config_options(self):
+        from calibpipe.config import BatchConfig, ProfileConfig, resolve_batch_options, CalibpipeConfig
+        from argparse import Namespace
+
+        # 1. BatchConfig with central_manager_host / schedd_name / spool
+        b = BatchConfig.from_dict({
+            "scheduler": "htcondor",
+            "central_manager_host": "cm.example.org",
+            "schedd_name": "schedd1.example.org",
+            "spool": True,
+        })
+        self.assertEqual(b.pool, "cm.example.org")
+        self.assertEqual(b.central_manager, "cm.example.org")
+        self.assertEqual(b.central_manager_host, "cm.example.org")
+        self.assertEqual(b.schedd, "schedd1.example.org")
+        self.assertEqual(b.schedd_name, "schedd1.example.org")
+        self.assertEqual(b.remote, "schedd1.example.org")
+        self.assertTrue(b.spool)
+
+        # 2. ProfileConfig with pool / remote / spool
+        p = ProfileConfig.from_dict({
+            "scheduler": "htcondor",
+            "pool": "cm2.example.org",
+            "remote": "schedd2.example.org",
+            "spool": False,
+        })
+        self.assertEqual(p.pool, "cm2.example.org")
+        self.assertEqual(p.schedd, "schedd2.example.org")
+        self.assertFalse(p.spool)
+
+        # 3. resolve_batch_options resolution
+        cfg = CalibpipeConfig.from_dict({
+            "batch": {
+                "scheduler": "htcondor",
+                "pool": "cm.example.org",
+                "schedd": "schedd.example.org",
+                "spool": True,
+            },
+            "profiles": {
+                "remote_prof": {
+                    "pool": "cm-prof.example.org",
+                    "schedd": "schedd-prof.example.org",
+                }
+            }
+        })
+        # Baseline from [batch]
+        res_base = resolve_batch_options(cfg, Namespace(pipefile="test.txt"))
+        self.assertEqual(res_base.pool, "cm.example.org")
+        self.assertEqual(res_base.schedd, "schedd.example.org")
+        self.assertTrue(res_base.spool)
+
+        # Override from profile
+        res_prof = resolve_batch_options(cfg, Namespace(profile="remote_prof", pipefile="test.txt"))
+        self.assertEqual(res_prof.pool, "cm-prof.example.org")
+        self.assertEqual(res_prof.schedd, "schedd-prof.example.org")
+        self.assertTrue(res_prof.spool)
+
+        # Override from CLI args
+        res_cli = resolve_batch_options(
+            cfg,
+            Namespace(
+                pipefile="test.txt",
+                pool="cm-cli.example.org",
+                schedd="schedd-cli.example.org",
+                spool=False,
+            ),
+        )
+        self.assertEqual(res_cli.pool, "cm-cli.example.org")
+        self.assertEqual(res_cli.schedd, "schedd-cli.example.org")
+        self.assertFalse(res_cli.spool)
 
     def test_default_profile_behavior(self):
         from calibpipe.config import CalibpipeConfig, resolve_run_options, resolve_batch_options, resolve_env

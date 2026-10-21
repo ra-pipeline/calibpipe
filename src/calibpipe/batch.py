@@ -242,6 +242,59 @@ def build_parser() -> argparse.ArgumentParser:
         help="[HTCondor only] ClassAd requirements expression override (e.g. 'none', 'default', or custom expression)",
     )
     p.add_argument(
+        "--request-gpus",
+        "--gpus",
+        type=int,
+        default=None,
+        dest="request_gpus",
+        help="Request number of GPUs (HTCondor: request_gpus; Slurm: --gpus)",
+    )
+    p.add_argument(
+        "--pool",
+        "--central-manager",
+        "--central-manager-host",
+        type=str,
+        default=None,
+        dest="pool",
+        help="[HTCondor only] Central Manager host to query or route via (-pool <host>)",
+    )
+    p.add_argument(
+        "--schedd",
+        "--schedd-name",
+        "--remote",
+        type=str,
+        default=None,
+        dest="schedd",
+        help="[HTCondor only] Target schedd daemon name (condor_submit -name <schedd>; avoids implicit -spool from -remote)",
+    )
+    p.add_argument(
+        "--spool",
+        action="store_true",
+        default=None,
+        dest="spool",
+        help="[HTCondor only] Spool job sandbox over the network to the remote schedd (-spool)",
+    )
+    p.add_argument(
+        "--no-spool",
+        action="store_false",
+        dest="spool",
+        help="[HTCondor only] Do not spool job files over the network",
+    )
+    p.add_argument(
+        "--should-transfer-files",
+        type=str,
+        default=None,
+        dest="should_transfer_files",
+        help="[HTCondor only] File transfer mode: 'YES', 'NO', or 'IF_NEEDED'",
+    )
+    p.add_argument(
+        "--when-to-transfer-output",
+        type=str,
+        default=None,
+        dest="when_to_transfer_output",
+        help="[HTCondor only] When to transfer output: 'ON_EXIT' or 'ON_EXIT_OR_EVICT'",
+    )
+    p.add_argument(
         "--dry-run",
         action="store_true",
         default=False,
@@ -291,6 +344,63 @@ def _sbatch_directive(flag: str, value: object) -> str | None:
     return f"#SBATCH --{flag}={value}"
 
 
+def _build_batch_env_exports(
+    *,
+    outfile: str | Path,
+    errfile: str | Path,
+    script_record_path: str | Path | None = None,
+    pipejob: str = "",
+    omp_num_threads: int | None = None,
+    openblas_num_threads: int | None = None,
+    cpus_per_task: int | None = None,
+    batch_env_exports: str | None = None,
+    is_pixi: bool = False,
+) -> str:
+    """Build the shell export statements injected into batch wrapper scripts.
+
+    Exports tracking variables (CALIBPIPE_BATCH_OUTFILE, CALIBPIPE_BATCH_ERRFILE,
+    CALIBPIPE_BATCH_SCRIPT), UV and Pixi execution flags, and thread counts
+    (OMP_NUM_THREADS, OPENBLAS_NUM_THREADS).
+
+    Returns:
+        Formatted export block with leading newline, or empty string.
+    """
+    if batch_env_exports is not None:
+        return ("\n" + batch_env_exports.strip()) if batch_env_exports.strip() else ""
+    if script_record_path is None:
+        return ""
+
+    env_lines = [
+        f"export CALIBPIPE_BATCH_OUTFILE={shlex.quote(str(outfile))}",
+        f"export CALIBPIPE_BATCH_ERRFILE={shlex.quote(str(errfile))}",
+        f"export CALIBPIPE_BATCH_SCRIPT={shlex.quote(str(script_record_path))}",
+    ]
+    if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
+        env_lines.append("export UV_NO_SYNC=1")
+
+    if (
+        is_pixi
+        or "pixi" in pipejob
+        or "PIXI_FROZEN" in os.environ
+        or "PIXI_NO_INSTALL" in os.environ
+        or "PIXI_DIR" in os.environ
+    ):
+        pixi_frozen = os.environ.get("PIXI_FROZEN", "true")
+        pixi_no_install = os.environ.get("PIXI_NO_INSTALL", "true")
+        env_lines.append(f"export PIXI_FROZEN={pixi_frozen}")
+        env_lines.append(f"export PIXI_NO_INSTALL={pixi_no_install}")
+
+    effective_omp = omp_num_threads if omp_num_threads is not None else cpus_per_task
+    if effective_omp is not None:
+        env_lines.append(f"export OMP_NUM_THREADS={effective_omp}")
+
+    effective_openblas = openblas_num_threads if openblas_num_threads is not None else cpus_per_task
+    if effective_openblas is not None:
+        env_lines.append(f"export OPENBLAS_NUM_THREADS={effective_openblas}")
+
+    return "\n" + "\n".join(env_lines)
+
+
 def build_sbatch_script(
     pipejob: str,
     *,
@@ -318,6 +428,8 @@ def build_sbatch_script(
     batch_env_exports: str | None = None,
     omp_num_threads: int | None = None,
     openblas_num_threads: int | None = None,
+    request_gpus: int = 0,
+    is_pixi: bool = False,
 ) -> str:
     """Create the shell script body submitted to Slurm.
 
@@ -367,6 +479,7 @@ def build_sbatch_script(
         _sbatch_directive("ntasks-per-core", ntasks_per_core),
         _sbatch_directive("hint", hint),
         _sbatch_directive("distribution", distribution),
+        _sbatch_directive("gpus", request_gpus) if request_gpus else None,
         # mem and mem-per-cpu are mutually exclusive; mem-per-cpu wins
         _sbatch_directive("mem-per-cpu", mem_per_cpu)
         if mem_per_cpu
@@ -377,25 +490,17 @@ def build_sbatch_script(
 
     extra_directives = "\n".join(optional_lines)
 
-    if batch_env_exports is None and script_record_path is not None:
-        env_lines = [
-            f"export CALIBPIPE_BATCH_OUTFILE={shlex.quote(str(outfile))}",
-            f"export CALIBPIPE_BATCH_ERRFILE={shlex.quote(str(errfile))}",
-            f"export CALIBPIPE_BATCH_SCRIPT={shlex.quote(str(script_record_path))}",
-        ]
-        if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
-            env_lines.append("export UV_NO_SYNC=1")
-        effective_omp = omp_num_threads if omp_num_threads is not None else cpus_per_task
-        if effective_omp is not None:
-            env_lines.append(f"export OMP_NUM_THREADS={effective_omp}")
-        effective_openblas = openblas_num_threads if openblas_num_threads is not None else cpus_per_task
-        if effective_openblas is not None:
-            env_lines.append(f"export OPENBLAS_NUM_THREADS={effective_openblas}")
-        active_env_exports = "\n" + "\n".join(env_lines)
-    elif batch_env_exports:
-        active_env_exports = "\n" + batch_env_exports.strip()
-    else:
-        active_env_exports = ""
+    active_env_exports = _build_batch_env_exports(
+        outfile=outfile,
+        errfile=errfile,
+        script_record_path=script_record_path,
+        pipejob=pipejob,
+        omp_num_threads=omp_num_threads,
+        openblas_num_threads=openblas_num_threads,
+        cpus_per_task=cpus_per_task,
+        batch_env_exports=batch_env_exports,
+        is_pixi=is_pixi,
+    )
 
     return render_template(
         "slurm_job.sh.in",
@@ -433,6 +538,12 @@ def build_htcondor_script(
     batch_env_exports: str | None = None,
     omp_num_threads: int | None = None,
     openblas_num_threads: int | None = None,
+    cpus_per_task: int | None = None,
+    request_gpus: int = 0,
+    is_pixi: bool = False,
+    spool: bool = False,
+    should_transfer_files: str | bool | None = None,
+    when_to_transfer_output: str | None = None,
 ) -> tuple[str, str]:
     """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
 
@@ -456,23 +567,17 @@ def build_htcondor_script(
     Returns:
         Tuple of (submit_file_content, wrapper_script_content).
     """
-    if batch_env_exports is None and script_record_path is not None:
-        env_lines = [
-            f"export CALIBPIPE_BATCH_OUTFILE={shlex.quote(str(outfile))}",
-            f"export CALIBPIPE_BATCH_ERRFILE={shlex.quote(str(errfile))}",
-            f"export CALIBPIPE_BATCH_SCRIPT={shlex.quote(str(script_record_path))}",
-        ]
-        if "uv" in pipejob or "UV_NO_SYNC" in os.environ:
-            env_lines.append("export UV_NO_SYNC=1")
-        if omp_num_threads is not None:
-            env_lines.append(f"export OMP_NUM_THREADS={omp_num_threads}")
-        if openblas_num_threads is not None:
-            env_lines.append(f"export OPENBLAS_NUM_THREADS={openblas_num_threads}")
-        active_env_exports = "\n" + "\n".join(env_lines)
-    elif batch_env_exports:
-        active_env_exports = "\n" + batch_env_exports.strip()
-    else:
-        active_env_exports = ""
+    active_env_exports = _build_batch_env_exports(
+        outfile=outfile,
+        errfile=errfile,
+        script_record_path=script_record_path,
+        pipejob=pipejob,
+        omp_num_threads=omp_num_threads,
+        openblas_num_threads=openblas_num_threads,
+        cpus_per_task=cpus_per_task,
+        batch_env_exports=batch_env_exports,
+        is_pixi=is_pixi,
+    )
 
     runner_script = render_template(
         "htcondor_job.sh.in",
@@ -526,10 +631,33 @@ def build_htcondor_script(
     else:
         req_expr = f"( {partition} == True ) && ( HasLustre == True ) && ( NumJobStarts == 0 ){extra_req}"
 
+    # Resolve file transfer directives (required for remote spool submit to avoid job hold)
+    transfer_files_val = should_transfer_files
+    if transfer_files_val is None and spool:
+        transfer_files_val = "YES"
+    elif isinstance(transfer_files_val, bool):
+        transfer_files_val = "YES" if transfer_files_val else "NO"
+    elif isinstance(transfer_files_val, str):
+        transfer_files_val = transfer_files_val.strip().upper()
+
+    transfer_output_val = when_to_transfer_output
+    if transfer_output_val is None and transfer_files_val == "YES":
+        transfer_output_val = "ON_EXIT"
+    elif isinstance(transfer_output_val, str):
+        transfer_output_val = transfer_output_val.strip().upper()
+
+    extra_lines = []
+    if transfer_files_val:
+        extra_lines.append(f"should_transfer_files = {transfer_files_val}")
+    if transfer_output_val:
+        extra_lines.append(f"when_to_transfer_output = {transfer_output_val}")
+    extra_directives_str = "\n".join(extra_lines)
+
     htc_content = render_template(
         "htcondor_job.htc.in",
         partition=partition,
         requirements=req_expr,
+        request_gpus=request_gpus,
         request_memory=request_memory,
         request_cpus=cores,
         batch_name=job_name,
@@ -539,6 +667,7 @@ def build_htcondor_script(
         log=log_file,
         notification=notification,
         arguments=wrapper_script_path,
+        extra_directives=extra_directives_str,
     )
     return htc_content, runner_script
 
@@ -579,12 +708,20 @@ def job_name(
     return full_display, full_safe
 
 
-def print_queue(user: str, scheduler: str = "slurm") -> None:
+def print_queue(
+    user: str,
+    scheduler: str = "slurm",
+    *,
+    pool: str | None = None,
+    schedd: str | None = None,
+) -> None:
     """Print the user's active batch queue matching pcasa.py format.
 
     Args:
         user: Username whose jobs to query.
         scheduler: Target scheduler backend ('slurm' or 'htcondor').
+        pool: Optional HTCondor central manager host to query (-pool).
+        schedd: Optional HTCondor schedd daemon name to query (-name).
     """
     if not user:
         return
@@ -594,6 +731,10 @@ def print_queue(user: str, scheduler: str = "slurm") -> None:
         if not condor_exe:
             return
         cmd = [condor_exe, user]
+        if pool:
+            cmd.extend(["-pool", pool])
+        if schedd:
+            cmd.extend(["-name", schedd])
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if res.returncode == 0 and res.stdout.strip():
@@ -614,6 +755,169 @@ def print_queue(user: str, scheduler: str = "slurm") -> None:
             print("\n" + res.stdout.strip())
     except OSError:
         pass
+
+
+def _submit_tempfile_job(
+    submit_cmd: str | Sequence[str],
+    content: str,
+    *,
+    prefix: str,
+    suffix: str,
+    dry_run: bool = False,
+) -> bool:
+    """Write job content to a temporary file, run submit command, and clean up.
+
+    Returns:
+        True if the job was submitted (or dry-run simulated), False on error.
+    """
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix=prefix, suffix=suffix, delete=False
+    ) as fd:
+        fd.write(content)
+        temp_path = fd.name
+
+    try:
+        base_cmd = [submit_cmd] if isinstance(submit_cmd, str) else list(submit_cmd)
+        cmd = base_cmd + [temp_path]
+        print("    " + " ".join(cmd))
+        if dry_run:
+            print("    [DRY RUN] Would execute: " + " ".join(cmd))
+            return True
+        subprocess.run(cmd, check=True)
+        return True
+    except subprocess.CalledProcessError as exc:
+        print(f"    ERROR: Job submission failed (exit status {exc.returncode})")
+        return False
+    finally:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+
+def _dispatch_htcondor(
+    *,
+    pipejob: str,
+    display_name: str,
+    outfile: str,
+    errfile: str,
+    mem_str: str | None,
+    batch_opts: envconfig.ResolvedBatchOptions,
+    user: str,
+) -> bool:
+    """Build and dispatch an HTCondor batch job."""
+    script_record_sh = str(Path(outfile).with_suffix(".sh"))
+    script_record_htc = str(Path(outfile).with_suffix(".htc"))
+
+    htc_body, runner_body = build_htcondor_script(
+        pipejob,
+        partition=batch_opts.partition,
+        cores=batch_opts.cores,
+        mem=mem_str,
+        mem_per_cpu=batch_opts.mem_per_cpu,
+        job_name=display_name,
+        outfile=outfile,
+        errfile=errfile,
+        wrapper_script_path=str(Path(script_record_sh).resolve()),
+        mail_type=batch_opts.mail_type,
+        chdir=batch_opts.chdir,
+        nodelist=batch_opts.nodelist,
+        requirements=batch_opts.requirements,
+        script_record_path=script_record_htc,
+        omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
+        openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
+        cpus_per_task=getattr(batch_opts, "cpus_per_task", None),
+        request_gpus=getattr(batch_opts, "request_gpus", 0),
+        is_pixi=bool(getattr(batch_opts, "pixi_dir", None)),
+        spool=getattr(batch_opts, "spool", False),
+        should_transfer_files=getattr(batch_opts, "should_transfer_files", None),
+        when_to_transfer_output=getattr(batch_opts, "when_to_transfer_output", None),
+    )
+
+    script_record_sh_path = Path(script_record_sh).resolve()
+    script_record_htc_path = Path(script_record_htc).resolve()
+    try:
+        with open(script_record_sh_path, "w", encoding="utf-8") as f:
+            f.write(runner_body)
+        os.chmod(script_record_sh_path, 0o755)
+        with open(script_record_htc_path, "w", encoding="utf-8") as f:
+            f.write(htc_body)
+        print(f"    script saved → {script_record_htc_path}")
+    except OSError as exc:
+        print(f"    ERROR: could not save HTCondor script records: {exc}")
+        return False
+
+    cmd = ["condor_submit"]
+    if getattr(batch_opts, "pool", None):
+        cmd.extend(["-pool", batch_opts.pool])
+    if getattr(batch_opts, "schedd", None):
+        cmd.extend(["-name", batch_opts.schedd])
+    if getattr(batch_opts, "spool", False):
+        cmd.append("-spool")
+
+    return _submit_tempfile_job(
+        cmd,
+        htc_body,
+        prefix=f"{user}_htc.",
+        suffix=".htc",
+        dry_run=batch_opts.dry_run,
+    )
+
+
+def _dispatch_slurm(
+    *,
+    pipejob: str,
+    display_name: str,
+    outfile: str,
+    errfile: str,
+    mem_str: str | None,
+    batch_opts: envconfig.ResolvedBatchOptions,
+    user: str,
+) -> bool:
+    """Build and dispatch a Slurm batch job."""
+    script_record_path = str(Path(outfile).with_suffix(".sbatch"))
+    script_body = build_sbatch_script(
+        pipejob,
+        partition=batch_opts.partition,
+        node=batch_opts.node,
+        cores=batch_opts.cores,
+        mem=mem_str,
+        job_name=display_name,
+        mail_user=user,
+        mail_type=batch_opts.mail_type,
+        outfile=outfile,
+        errfile=errfile,
+        walltime=batch_opts.walltime,
+        nodelist=batch_opts.nodelist,
+        chdir=batch_opts.chdir,
+        cpus_per_task=batch_opts.cpus_per_task,
+        mem_per_cpu=batch_opts.mem_per_cpu,
+        hint=batch_opts.hint,
+        ntasks_per_core=batch_opts.ntasks_per_core,
+        distribution=batch_opts.distribution,
+        no_requeue=batch_opts.no_requeue,
+        script_record_path=script_record_path,
+        omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
+        openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
+        request_gpus=getattr(batch_opts, "request_gpus", 0),
+        is_pixi=bool(getattr(batch_opts, "pixi_dir", None)),
+    )
+
+    script_record_path_obj = Path(script_record_path).resolve()
+    try:
+        with open(script_record_path_obj, "w", encoding="utf-8") as f:
+            f.write(script_body)
+        print(f"    script saved → {script_record_path_obj}")
+    except OSError as exc:
+        print(
+            f"    WARNING: could not save script record {script_record_path_obj}: {exc}"
+        )
+
+    return _submit_tempfile_job(
+        "sbatch",
+        script_body,
+        prefix=f"{user}_sbatch.",
+        suffix=".sh",
+        dry_run=batch_opts.dry_run,
+    )
 
 
 def _dispatch_job(
@@ -668,124 +972,28 @@ def _dispatch_job(
                 f"    WARNING: could not pre-create batch chdir {expanded_chdir}: {exc}"
             )
 
+    mem_str = None if batch_opts.mem_per_cpu else f"{batch_opts.mem}G"
+
     if batch_opts.scheduler == "htcondor":
-        script_record_sh = str(Path(outfile).with_suffix(".sh"))
-        script_record_htc = str(Path(outfile).with_suffix(".htc"))
-        mem_str = f"{batch_opts.mem}G" if not batch_opts.mem_per_cpu else None
-
-        htc_body, runner_body = build_htcondor_script(
-            pipejob,
-            partition=batch_opts.partition,
-            cores=batch_opts.cores,
-            mem=mem_str,
-            mem_per_cpu=batch_opts.mem_per_cpu,
-            job_name=display_name,
+        return _dispatch_htcondor(
+            pipejob=pipejob,
+            display_name=display_name,
             outfile=outfile,
             errfile=errfile,
-            wrapper_script_path=str(Path(script_record_sh).resolve()),
-            mail_type=batch_opts.mail_type,
-            chdir=batch_opts.chdir,
-            nodelist=batch_opts.nodelist,
-            requirements=batch_opts.requirements,
-            script_record_path=script_record_htc,
-            omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
-            openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
+            mem_str=mem_str,
+            batch_opts=batch_opts,
+            user=user,
         )
 
-        script_record_sh_path = Path(script_record_sh).resolve()
-        script_record_htc_path = Path(script_record_htc).resolve()
-        try:
-            with open(script_record_sh_path, "w", encoding="utf-8") as f:
-                f.write(runner_body)
-            os.chmod(script_record_sh_path, 0o755)
-            with open(script_record_htc_path, "w", encoding="utf-8") as f:
-                f.write(htc_body)
-            print(f"    script saved → {script_record_htc_path}")
-        except OSError as exc:
-            print(f"    ERROR: could not save HTCondor script records: {exc}")
-            return False
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", prefix=f"{user}_htc.", suffix=".htc", delete=False
-        ) as htc_fd:
-            htc_fd.write(htc_body)
-            htc_path = htc_fd.name
-
-        try:
-            cmd = ["condor_submit", htc_path]
-            print("    " + " ".join(cmd))
-            if batch_opts.dry_run:
-                print("    [DRY RUN] Would execute: " + " ".join(cmd))
-                return True
-            else:
-                subprocess.run(cmd, check=True)
-                return True
-        except subprocess.CalledProcessError as exc:
-            print(f"    ERROR: Job submission failed (exit status {exc.returncode})")
-            return False
-        finally:
-            if os.path.exists(htc_path):
-                os.unlink(htc_path)
-    else:
-        # Slurm
-        mem_str = None if batch_opts.mem_per_cpu else f"{batch_opts.mem}G"
-        script_record_path = str(Path(outfile).with_suffix(".sbatch"))
-        script_body = build_sbatch_script(
-            pipejob,
-            partition=batch_opts.partition,
-            node=batch_opts.node,
-            cores=batch_opts.cores,
-            mem=mem_str,
-            job_name=display_name,
-            mail_user=user,
-            mail_type=batch_opts.mail_type,
-            outfile=outfile,
-            errfile=errfile,
-            walltime=batch_opts.walltime,
-            nodelist=batch_opts.nodelist,
-            chdir=batch_opts.chdir,
-            cpus_per_task=batch_opts.cpus_per_task,
-            mem_per_cpu=batch_opts.mem_per_cpu,
-            hint=batch_opts.hint,
-            ntasks_per_core=batch_opts.ntasks_per_core,
-            distribution=batch_opts.distribution,
-            no_requeue=batch_opts.no_requeue,
-            script_record_path=script_record_path,
-            omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
-            openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
-        )
-
-        script_record_path_obj = Path(script_record_path).resolve()
-        try:
-            with open(script_record_path_obj, "w", encoding="utf-8") as f:
-                f.write(script_body)
-            print(f"    script saved → {script_record_path_obj}")
-        except OSError as exc:
-            print(
-                f"    WARNING: could not save script record {script_record_path_obj}: {exc}"
-            )
-
-        with tempfile.NamedTemporaryFile(
-            mode="w", prefix=f"{user}_sbatch.", suffix=".sh", delete=False
-        ) as sbatch_fd:
-            sbatch_fd.write(script_body)
-            sbatch_path = sbatch_fd.name
-
-        try:
-            cmd = ["sbatch", sbatch_path]
-            print("    " + " ".join(cmd))
-            if batch_opts.dry_run:
-                print("    [DRY RUN] Would execute: " + " ".join(cmd))
-                return True
-            else:
-                subprocess.run(cmd, check=True)
-                return True
-        except subprocess.CalledProcessError as exc:
-            print(f"    ERROR: Job submission failed (exit status {exc.returncode})")
-            return False
-        finally:
-            if os.path.exists(sbatch_path):
-                os.unlink(sbatch_path)
+    return _dispatch_slurm(
+        pipejob=pipejob,
+        display_name=display_name,
+        outfile=outfile,
+        errfile=errfile,
+        mem_str=mem_str,
+        batch_opts=batch_opts,
+        user=user,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -906,7 +1114,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     if submitted > 0 and not batch_opts.dry_run:
         current_user = os.environ.get("USER", "")
         if current_user:
-            print_queue(current_user, scheduler=batch_opts.scheduler)
+            print_queue(
+                current_user,
+                scheduler=batch_opts.scheduler,
+                pool=getattr(batch_opts, "pool", None),
+                schedd=getattr(batch_opts, "schedd", None),
+            )
 
 
 if __name__ == "__main__":
