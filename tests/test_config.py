@@ -449,6 +449,36 @@ class TestTypedModels(unittest.TestCase):
         self.assertEqual(res2.cores, 32)
         self.assertEqual(res2.scheduler, "htcondor")
 
+    def test_resolve_batch_options_auto_derives_chdir_from_workdir(self):
+        import argparse
+        from pathlib import Path
+        from calibpipe.config import ProfileConfig
+
+        cfg = load_config(CONFIG)
+        cfg.profiles["prof_workdir"] = ProfileConfig(
+            workdir="/scratch/my_project/working",
+            queue="batch",
+        )
+        cfg.profiles["prof_root"] = ProfileConfig(
+            workdir="/scratch/my_project",
+            queue="batch",
+        )
+
+        # 1. Profile with workdir ending in 'working' strips 'working' to use project_root
+        args1 = argparse.Namespace(profile="prof_workdir")
+        res1 = resolve_batch_options(cfg, args1)
+        self.assertEqual(res1.chdir, str(Path("/scratch/my_project")))
+
+        # 2. Profile with project root directly
+        args2 = argparse.Namespace(profile="prof_root")
+        res2 = resolve_batch_options(cfg, args2)
+        self.assertEqual(res2.chdir, str(Path("/scratch/my_project")))
+
+        # 3. Explicit CLI flag overrides auto-derivation
+        args3 = argparse.Namespace(profile="prof_workdir", chdir="/custom/chdir")
+        res3 = resolve_batch_options(cfg, args3)
+        self.assertEqual(res3.chdir, "/custom/chdir")
+
     def test_format_config_overview(self):
         from calibpipe.config import BatchConfig, format_config_overview
 

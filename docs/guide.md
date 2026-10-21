@@ -412,7 +412,7 @@ Configures baseline defaults for `calibpipe submit` (or `calibpipe batch`) when 
 | `mem` | **Both** | `--mem=<m>G` | `request_memory = <m>G` | Total memory in GB (default: `248`; mutually exclusive with `mem_per_cpu`). |
 | `mem_per_cpu` | **Both** | `--mem-per-cpu=<m>` | `request_memory = cores × mem_per_cpu` | Memory per CPU (e.g. `"5G"`; scaled to total RAM in HTCondor). |
 | `mail_type` | **Both** | `--mail-type=<t>` | `notification = <keyword>` | Notification event policy (default: `ALL`). |
-| `chdir` | **Both** | `--chdir=<dir>` | `initialdir = <dir>` | Initial working directory on execution node. |
+| `chdir` | **Both** | `--chdir=<dir>` | `initialdir = <dir>` | Initial working directory on execution node (defaults to project root derived from `profile.workdir` if omitted). |
 | `nodelist` | **Both** | `--nodelist=<host>` | `TARGET.Machine == "<host>"` | Pin execution to a specific host machine. |
 | `scheduler` | **Both** | *(Driver selector)* | *(Driver selector)* | Batch backend: `"slurm"` (default) or `"htcondor"`. |
 | `dry_run` | **Both** | *(Driver mode)* | *(Driver mode)* | Preview submit scripts without submitting (default: `false`). |
@@ -430,6 +430,10 @@ Configures baseline defaults for `calibpipe submit` (or `calibpipe batch`) when 
 > - **Cluster Resource Allocation (`[batch].cores`)**: Configures the hardware slots allocated by the workload manager (`#SBATCH --ntasks` in Slurm, or `request_cpus` in HTCondor).
 > - **MPI Process Count (`[run].nprocs`)**: Configures the number of MPI worker processes launched inside CASA via `mpicasa -n <nprocs>`.
 > - **Total Allocated CPUs in Slurm**: Slurm computes the total logical CPUs allocated as `cores × cpus_per_task`. For example, setting `cores = 7` and `cpus_per_task = 3` requests $7 \times 3 = 21$ logical CPUs, which is the number reported in `squeue` under `CP` or `CPUS`.
+>
+> **Working Directory Resolution (`chdir`)**:
+> - When `chdir` is omitted but `workdir` is defined in a profile, `calibpipe` automatically derives `chdir` as the project root (the parent directory if `workdir` ends in `working/`, preventing locks on `working/` when directory rotation `backup = true` is enabled).
+> - During job dispatch, `calibpipe` pre-creates the resolved `chdir` directory on the filesystem if it does not yet exist, preventing Slurm startup aborts (`slurmstepd: error: couldn't chdir`).
 
 #### Core 4: Pipeline Run Defaults (`[run]`)
 
@@ -591,7 +595,7 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `node` | | Slurm node count string (default: `"1"`). |
 | | `walltime` | | Slurm walltime limit (e.g. `"14-00:00:00"`). |
 | | `nodelist` | | Pin execution to a specific host machine. |
-| | `chdir` | | Initial working directory on execution node. |
+| | `chdir` | | Initial working directory on execution node (defaults to project root derived from `workdir`). |
 | | `ntasks_per_core` | | Tasks per physical core (`1` prevents SMT sharing). |
 | | `hint` | | Slurm placement hint (e.g. `"nomultithread"`). |
 | | `distribution` | | Slurm task distribution policy across nodes/sockets. |

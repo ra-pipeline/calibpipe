@@ -592,6 +592,36 @@ class TestBatchProfiles(RunbatchCaptureCase):
             self.assertIn("#SBATCH --job-name=test_prof_", script)
             self.assertIn("calibpipe run -p=test_prof", script)
 
+    def test_batch_profile_auto_chdir_emits_directive_and_creates_dir(self):
+        from calibpipe.config import ProfileConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            target_dir = Path(td) / "new_project_run" / "working"
+            self.assertFalse(target_dir.parent.exists())
+
+            cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+            cfg.profiles["auto_chdir_prof"] = ProfileConfig(
+                cores=4,
+                mem=32,
+                queue="test_partition",
+                workdir=str(target_dir),
+            )
+            with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
+                calls = self.run_and_capture(
+                    [
+                        f"--config={CONFIG}",
+                        "-p",
+                        "auto_chdir_prof",
+                    ]
+                )
+                self.assertEqual(len(calls), 1)
+                cmd, script = calls[0]
+                self.assertTrue(cmd.startswith("sbatch "))
+                expected_project_root = str(target_dir.parent)
+                self.assertIn(f"#SBATCH --chdir={expected_project_root}", script)
+                # Ensure the directory was pre-created before submission
+                self.assertTrue(target_dir.parent.is_dir())
+
     def test_batch_dry_run_skips_submission(self):
         buf = io.StringIO()
         tmpdir = tempfile.mkdtemp()

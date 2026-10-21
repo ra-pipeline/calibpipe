@@ -2203,6 +2203,10 @@ def resolve_batch_options(
     walltime = _cli_or_cfg("walltime", active_batch.walltime)
     nodelist = _cli_or_cfg("nodelist", active_batch.nodelist)
     chdir = _cli_or_cfg("chdir", active_batch.chdir)
+    if chdir is None and profile and profile.workdir:
+        raw_workdir = Path(os.path.expanduser(profile.workdir))
+        # Derive project_root so working/ can be cleanly rotated if backup=True
+        chdir = str(raw_workdir.parent if raw_workdir.name == "working" else raw_workdir)
     cpus_per_task = _int_or_none(
         _cli_or_cfg("cpus_per_task", active_batch.cpus_per_task)
     )

@@ -659,6 +659,15 @@ def _dispatch_job(
         outfile = batch_opts.outfile or f"batch.{file_name}.out"
         errfile = batch_opts.errfile or f"batch.{file_name}.err"
 
+    if batch_opts.chdir:
+        expanded_chdir = Path(os.path.expanduser(batch_opts.chdir)).resolve()
+        try:
+            expanded_chdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            print(
+                f"    WARNING: could not pre-create batch chdir {expanded_chdir}: {exc}"
+            )
+
     if batch_opts.scheduler == "htcondor":
         script_record_sh = str(Path(outfile).with_suffix(".sh"))
         script_record_htc = str(Path(outfile).with_suffix(".htc"))
