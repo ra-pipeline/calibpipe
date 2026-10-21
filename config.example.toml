@@ -168,6 +168,7 @@ pixi_dir = "/data/pipeline/branches/main"
 #   no_requeue        #SBATCH --no-requeue              (N/A)
 #   hint              #SBATCH --hint=<hint>             (N/A)
 #   distribution      #SBATCH --distribution=<policy>   (N/A)
+#   request_gpus      #SBATCH --gpus=<num>              request_gpus = <num>
 #   requirements      (N/A)                             requirements = ( ... )
 #   -----------------------------------------------------------------------------
 #   Note: MPI process count inside CASA is configured in [run].nprocs (mpicasa -n <nprocs>).
@@ -199,6 +200,7 @@ pixi_dir = "/data/pipeline/branches/main"
 
 # # --- HTCondor-Specific Directives [HTCondor only] ---
 # requirements = "none"                   # HTCondor ClassAd requirements override ("none", "default", or custom expression)
+# request_gpus = 0                        # Number of GPUs requested (HTCondor: request_gpus; Slurm: --gpus; alias: gpus = 0)
 #
 # Named resource profiles override baseline [batch] settings and are selectable via
 # 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):

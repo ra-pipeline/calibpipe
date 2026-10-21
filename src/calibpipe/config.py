@@ -457,6 +457,7 @@ class BatchConfig:
 
     # --- HTCondor-specific Directives [HTCondor only] ---
     requirements: str | None = None  # HTCondor: requirements expression override
+    request_gpus: int = 0  # HTCondor: request_gpus
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
 
@@ -485,6 +486,8 @@ class BatchConfig:
         threads: int | None = None,
         omp_num_threads: int | None = None,
         openblas_num_threads: int | None = None,
+        request_gpus: int = 0,
+        gpus: int | None = None,
     ) -> None:
         self.partition = queue if queue is not None else partition
         if ntasks is not None:
@@ -509,6 +512,12 @@ class BatchConfig:
         self.logdir = logdir
         self.omp_num_threads = omp_num_threads
         self.openblas_num_threads = openblas_num_threads
+        self.request_gpus = gpus if gpus is not None else request_gpus
+
+    @property
+    def gpus(self) -> int:
+        """Alias for request_gpus."""
+        return self.request_gpus
 
     @property
     def queue(self) -> str:
@@ -561,6 +570,9 @@ class BatchConfig:
             logdir=data.get("logdir", default_inst.logdir),
             omp_num_threads=_int_or_none(data.get("omp_num_threads")),
             openblas_num_threads=_int_or_none(data.get("openblas_num_threads")),
+            request_gpus=int(
+                data.get("request_gpus", data.get("gpus", default_inst.request_gpus))
+            ),
         )
 
 
@@ -807,6 +819,7 @@ class ProfileConfig:
 
     # Batch options - HTCondor only
     requirements: str | None = None  # HTCondor: requirements expression override
+    request_gpus: int | None = None  # HTCondor: request_gpus
 
     # Environment overrides
     casa_root: str | None = None
@@ -874,6 +887,8 @@ class ProfileConfig:
             kwargs["heuristics_dir"] = kwargs.pop("pipe_dir")
         if "heuristics_root" in kwargs and "heuristics_dir" not in kwargs:
             kwargs["heuristics_dir"] = kwargs.pop("heuristics_root")
+        if "gpus" in kwargs and "request_gpus" not in kwargs:
+            kwargs["request_gpus"] = kwargs.pop("gpus")
         if "ancillary" in kwargs:
             kwargs["ancillary"] = _ancillary_list(kwargs["ancillary"])
         if "scipipe_rootdir" in kwargs:
@@ -918,6 +933,11 @@ class ProfileConfig:
                 setattr(self, f.name, f.default_factory())
             else:
                 setattr(self, f.name, f.default)
+
+    @property
+    def gpus(self) -> int | None:
+        """Alias for request_gpus."""
+        return self.request_gpus
 
     @property
     def queue(self) -> str | None:
@@ -1088,6 +1108,7 @@ class ProfileConfig:
             no_requeue=bool(flat["no_requeue"]) if "no_requeue" in flat else None,
             scheduler=_str_or_none(flat.get("scheduler")),
             requirements=_str_or_none(flat.get("requirements")),
+            request_gpus=_int_or_none(flat.get("request_gpus", flat.get("gpus"))),
             mous=_str_or_none(flat.get("mous")),
             vis=vis_list,
             procedure=_str_or_none(flat.get("procedure")),
@@ -2111,6 +2132,7 @@ class ResolvedBatchOptions:
     no_requeue: bool = True  # [Slurm only] Prevent auto-requeue (--no-requeue)
     scheduler: str = "slurm"  # [Slurm & HTCondor] "slurm" or "htcondor"
     requirements: str | None = None  # [HTCondor only] ClassAd expression override
+    request_gpus: int = 0  # [HTCondor: request_gpus; Slurm: --gpus]
     profile: str | None = None
     dry_run: bool = False
     logdir: str | None = None
@@ -2288,6 +2310,16 @@ def resolve_batch_options(
         raw_logdir = resolve_first_existing_path(raw_logdir)
     logdir = _cli_or_cfg("logdir", raw_logdir)
 
+    cli_gpus = getattr(cli_args, "request_gpus", None)
+    if cli_gpus is None:
+        cli_gpus = getattr(cli_args, "gpus", None)
+    if cli_gpus is not None:
+        request_gpus = int(cli_gpus)
+    elif profile and profile.request_gpus is not None:
+        request_gpus = int(profile.request_gpus)
+    else:
+        request_gpus = int(getattr(active_batch, "request_gpus", 0))
+
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
@@ -2310,6 +2342,7 @@ def resolve_batch_options(
         no_requeue=bool(no_requeue),
         scheduler=str(scheduler),
         requirements=requirements,
+        request_gpus=request_gpus,
         profile=profile_name,
         dry_run=dry_run,
         logdir=logdir,

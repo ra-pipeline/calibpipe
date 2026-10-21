@@ -832,6 +832,54 @@ casa_root = "/fake/casa/main"
         self.assertIn("export OMP_NUM_THREADS=2", htc_wrapper)
         self.assertIn("export OPENBLAS_NUM_THREADS=2", htc_wrapper)
 
+    def test_build_htcondor_and_slurm_with_request_gpus(self):
+        from calibpipe.batch import build_htcondor_script, build_sbatch_script
+
+        # HTCondor with request_gpus = 2
+        htc_body, _ = build_htcondor_script(
+            "calibpipe run -p=gpu_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            request_gpus=2,
+            job_name="test_gpu_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertIn("request_gpus = 2", htc_body)
+
+        # HTCondor default request_gpus = 0
+        htc_body_default, _ = build_htcondor_script(
+            "calibpipe run -p=default_prof",
+            partition="batch",
+            cores=8,
+            mem="32G",
+            job_name="test_default_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+        )
+        self.assertIn("request_gpus = 0", htc_body_default)
+
+        # Slurm with request_gpus = 1
+        slurm_gpu = build_sbatch_script(
+            "calibpipe run -p=gpu_prof",
+            partition="gpu",
+            node="1",
+            cores=8,
+            mem="32G",
+            request_gpus=1,
+            job_name="test_slurm_gpu",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+        )
+        self.assertIn("#SBATCH --gpus=1", slurm_gpu)
+
     def test_job_name_profile_with_slashes(self):
         """Verify profile names with slashes retain slashes in display_name and are sanitized in file_name."""
         display, file_safe = runbatch.job_name("calibpipe run -p=vlass/cube/7x3", profile_name="vlass/cube/7x3")

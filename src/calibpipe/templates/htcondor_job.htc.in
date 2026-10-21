@@ -1,5 +1,5 @@
 requirements = ( $requirements )
-request_gpus = 0
+request_gpus = $request_gpus
 request_memory = $request_memory
 request_cpus = $request_cpus
 batch_name = $batch_name
