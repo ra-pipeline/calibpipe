@@ -50,9 +50,11 @@ def get_folded_env_summary(
         "KOKKOS_DISABLE_WARNINGS",
         "CASA_NPROCS",
     ),
+    env: dict[str, str] | None = None,
 ) -> str:
     """Format folded runtime control environment variables as a single-line string."""
-    pairs = [f"{k}={os.environ[k]}" for k in keys if k in os.environ]
+    source = env if env is not None else os.environ
+    pairs = [f"{k}={source[k]}" for k in keys if k in source]
     return " ".join(pairs)
 
 
@@ -136,9 +138,10 @@ class RunLogger:
                 print(f"{now}: {line}")
             self.fd.flush()
 
-    def run(self, command: str) -> int:
+    def run(self, command: str, env: dict[str, str] | None = None) -> int:
         """Run a shell command and stream combined output into the log."""
-        env_summary = get_folded_env_summary()
+        sub_env = env if env is not None else os.environ.copy()
+        env_summary = get_folded_env_summary(env=sub_env)
         if env_summary:
             self.log(f"subprocess environment: {env_summary}")
         self.log(f"running '{command}':\n\n")
@@ -148,6 +151,7 @@ class RunLogger:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             universal_newlines=True,
+            env=sub_env,
         )
         if p.stdout:
             while True:
@@ -160,15 +164,16 @@ class RunLogger:
             self.log(f"nonzero exit code = {p.returncode}")
         return p.returncode
 
-    def runquiet(self, command: str) -> int:
+    def runquiet(self, command: str, env: dict[str, str] | None = None) -> int:
         """Run a shell command without streaming stdout line by line."""
-        env_summary = get_folded_env_summary()
+        sub_env = env if env is not None else os.environ.copy()
+        env_summary = get_folded_env_summary(env=sub_env)
         if env_summary:
             self.log(f"subprocess environment: {env_summary}")
         self.log(
             f"running '{command}' quietly (use -v/--verbose to stream output to terminal)."
         )
-        retcode = subprocess.call(command, shell=True)
+        retcode = subprocess.call(command, shell=True, env=sub_env)
         if retcode > 0:
             self.log(f"nonzero exit code = {retcode}")
         else:
@@ -857,9 +862,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--vla",
-        action="store_true",
-        default=False,
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Use VLA pipeline interface (executevlappr) instead of ALMA (executeppr)",
+    )
+    p.add_argument(
+        "--rawdata",
+        default=None,
+        help="Path to raw data directory or dataset to symlink into workdir",
     )
     p.add_argument(
         "--workdir",
@@ -1718,24 +1728,34 @@ def _run_standalone_ppr(
         )
         return 1
 
-    working_path = (
-        Path(run_opts.workdir).expanduser().resolve()
-        if run_opts.workdir
-        else (
-            Path(opts.workdir).expanduser().resolve()
-            if opts.workdir
-            else ppr_path.parent
-        )
-    )
-    if run_opts.backup and working_path.exists() and any(working_path.iterdir()):
-        if (run_opts.workdir or opts.workdir) and working_path != ppr_path.parent:
-            rotate_directory(working_path)
-        elif (working_path / "working").exists() and any(
-            (working_path / "working").iterdir()
-        ):
-            rotate_directory(working_path / "working")
+    raw_workdir = run_opts.workdir or getattr(opts, "workdir", "")
+    if raw_workdir:
+        target_path = Path(raw_workdir).expanduser().resolve()
+        if target_path.name == "working":
+            project_root = target_path.parent
+            working_path = target_path
+        else:
+            project_root = target_path
+            working_path = project_root / "working"
+    else:
+        if ppr_path.parent.name == "working":
+            working_path = ppr_path.parent
+            project_root = working_path.parent
+        else:
+            project_root = ppr_path.parent
+            working_path = project_root / "working"
 
-    working_path.mkdir(parents=True, exist_ok=True)
+    products_path = project_root / "products"
+    rawdata_path = project_root / "rawdata"
+
+    if run_opts.backup and not run_opts.dry_run:
+        for sub_p in (working_path, products_path, rawdata_path):
+            if sub_p.exists() and (sub_p.is_symlink() or any(sub_p.iterdir())):
+                rotate_directory(sub_p)
+
+    if not run_opts.dry_run:
+        working_path.mkdir(parents=True, exist_ok=True)
+        products_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_name = f"{working_path}/calibpipe.ppr.{now_ts}.log"
@@ -1745,6 +1765,52 @@ def _run_standalone_ppr(
     mylog.log(f"working directory: {working_path}")
     mylog.log(f"log file: {mylog.fd.name}")
     log_subprocess_environment(mylog.log, env=env, run_opts=run_opts)
+
+    rawdata_src_str = run_opts.rawdata or getattr(opts, "rawdata", None)
+    if rawdata_src_str and not run_opts.dry_run:
+        rawdata_src = Path(rawdata_src_str).expanduser().resolve()
+        if not rawdata_src.exists():
+            mylog.log(f"Warning: Rawdata source path {rawdata_src} does not exist, skipping symlink.")
+        else:
+            if rawdata_path.is_symlink():
+                try:
+                    if rawdata_path.resolve() != rawdata_src.resolve():
+                        rawdata_path.unlink()
+                        rawdata_path.symlink_to(rawdata_src)
+                        mylog.log(f"Updated rawdata symlink: {rawdata_path} -> {rawdata_src}")
+                except OSError as err:
+                    mylog.log(f"Warning: Failed to update rawdata symlink: {err}")
+            elif rawdata_path.is_dir() and not any(rawdata_path.iterdir()):
+                try:
+                    rawdata_path.rmdir()
+                    rawdata_path.symlink_to(rawdata_src)
+                    mylog.log(f"Symlinked rawdata into workdir: {rawdata_path} -> {rawdata_src}")
+                except OSError as err:
+                    mylog.log(f"Warning: Failed to symlink rawdata: {err}")
+            elif not rawdata_path.exists():
+                try:
+                    rawdata_path.symlink_to(rawdata_src)
+                    mylog.log(f"Symlinked rawdata into workdir: {rawdata_path} -> {rawdata_src}")
+                except OSError as err:
+                    mylog.log(f"Warning: Failed to symlink rawdata: {err}")
+            else:
+                if rawdata_src.is_dir():
+                    for item in rawdata_src.iterdir():
+                        item_dst = rawdata_path / item.name
+                        if not item_dst.exists() and not item_dst.is_symlink():
+                            try:
+                                item_dst.symlink_to(item.resolve())
+                            except OSError:
+                                pass
+
+    staged_ppr = working_path / ppr_path.name
+    if not run_opts.dry_run and ppr_path.resolve() != staged_ppr.resolve():
+        try:
+            shutil.copyfile(ppr_path, staged_ppr, follow_symlinks=True)
+            mylog.log(f"Staged PPR XML file into working directory: {ppr_path} -> {staged_ppr}")
+        except OSError as err:
+            mylog.log(f"Warning: Could not copy PPR to working directory ({err})")
+            staged_ppr = ppr_path
 
     stage_ancillary_files(
         working_path,
@@ -1795,17 +1861,20 @@ def _run_standalone_ppr(
     resolved_workdir = str(working_path.resolve())
     import_module = (
         "pipeline.infrastructure.executevlappr"
-        if (run_opts.vla or opts.vla)
+        if (run_opts.vla or getattr(opts, "vla", False))
         else "pipeline.infrastructure.executeppr"
     )
     preamble = build_piperun_preamble(run_opts)
+    effective_ppr_file = staged_ppr if staged_ppr.exists() else ppr_path
     code = (
         "import os\n"
+        "# Clean up SCIPIPE_ROOTDIR so executeppr uses local working/ and rawdata/ directories\n"
+        "os.environ.pop('SCIPIPE_ROOTDIR', None)\n"
         f"os.chdir(r'{resolved_workdir}')\n"
         f"{preamble}"
         "import pipeline\n"
         f"import {import_module} as eppr\n"
-        f"eppr.executeppr({str(ppr_path)!r}, importonly={run_opts.useresume!r}, loglevel={run_opts.loglevel!r})\n"
+        f"eppr.executeppr({str(effective_ppr_file)!r}, importonly={run_opts.useresume!r}, loglevel={run_opts.loglevel!r})\n"
     )
     piperun_file.write_text(code, encoding="utf-8")
     cmd = wrap_cmd(
@@ -1816,10 +1885,21 @@ def _run_standalone_ppr(
         logger_fn=mylog.log,
     )
 
+    # Clean up SCIPIPE_ROOTDIR from environment so pipeline executeppr uses local working/ and rawdata/
+    saved_scipipe_rootdir = os.environ.pop("SCIPIPE_ROOTDIR", None)
+    if env is not None:
+        env.pop("SCIPIPE_ROOTDIR", None)
+
     if run_opts.dry_run:
+        if saved_scipipe_rootdir is not None:
+            os.environ["SCIPIPE_ROOTDIR"] = saved_scipipe_rootdir
         print("[DRY RUN] Execution mode: standalone_ppr")
         print(f"[DRY RUN] Working directory: {working_path}")
         print(f"[DRY RUN] PPR file: {ppr_path}")
+        if rawdata_src_str:
+            print(f"[DRY RUN] Rawdata source: {rawdata_src_str}")
+            print(f"[DRY RUN] Rawdata destination: {rawdata_path}")
+        print(f"[DRY RUN] Pipeline module: {import_module}")
         print(f"[DRY RUN] Generated script: {piperun_file}")
         print(f"[DRY RUN] Command to execute:\n    {cmd}")
         mylog.close()
@@ -1829,14 +1909,16 @@ def _run_standalone_ppr(
     try:
         os.chdir(working_path)
         if run_opts.verbose:
-            retcode = mylog.run(cmd)
+            retcode = mylog.run(cmd, env=env)
         else:
-            retcode = mylog.runquiet(cmd)
+            retcode = mylog.runquiet(cmd, env=env)
     finally:
+        if saved_scipipe_rootdir is not None:
+            os.environ["SCIPIPE_ROOTDIR"] = saved_scipipe_rootdir
         finalize_batch_job_logs(working_path, mylog.log)
         if run_opts.symlink_shortcuts:
             link_weblog(
-                working_path.parent if working_path.name == "working" else working_path,
+                project_root,
                 working_path,
                 mylog.log,
             )

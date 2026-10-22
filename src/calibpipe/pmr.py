@@ -317,14 +317,39 @@ def rename_project_root(
 ) -> Path:
     """Rename or move generated project root directory to target name or path."""
     log = logger if logger is not None else print
-    target_path = Path(target)
+    target_path = Path(target).expanduser()
     if not target_path.is_absolute():
         target_path = (orig_root.parent / target_path).resolve()
     else:
         target_path = target_path.resolve()
 
-    if target_path == orig_root.resolve():
+    orig_resolved = orig_root.resolve()
+    if target_path == orig_resolved:
         return orig_root
+
+    # If target_path is the parent or ancestor of orig_root, move contents into target_path
+    if orig_resolved.is_relative_to(target_path):
+        log(f"Notice: Destination {target_path} contains {orig_root.name}; consolidating directory contents")
+        for child in list(orig_root.iterdir()):
+            dest = target_path / child.name
+            if dest.exists():
+                backup_suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
+                backup_child = dest.with_name(f"{dest.name}.backup_{backup_suffix}")
+                log(f"Notice: Destination item {dest.name} exists; rotating to {backup_child.name}")
+                shutil.move(dest, backup_child)
+            shutil.move(child, dest)
+        try:
+            orig_root.rmdir()
+        except OSError:
+            pass
+        return target_path
+
+    # If an empty target directory already exists, clear it for the move
+    if target_path.exists() and target_path.is_dir() and not any(target_path.iterdir()):
+        try:
+            target_path.rmdir()
+        except OSError:
+            pass
 
     if target_path.exists():
         backup_suffix = datetime.now().strftime("%Y%m%d-%H%M%S")

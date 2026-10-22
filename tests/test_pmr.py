@@ -527,6 +527,71 @@ class TestPMRRenaming(unittest.TestCase):
             self.assertEqual(len(backups), 1)
             self.assertEqual((backups[0] / "marker.txt").read_text(), "orig")
 
+    def test_rename_project_root_empty_target_directory_avoids_backup(self):
+        from calibpipe.pmr import rename_project_root
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            orig_dir = base / "gen_project"
+            orig_dir.mkdir()
+            (orig_dir / "file.txt").write_text("content")
+
+            empty_target = base / "target_dir"
+            empty_target.mkdir()
+
+            renamed = rename_project_root(orig_dir, empty_target)
+            self.assertEqual(renamed, empty_target)
+            self.assertTrue((empty_target / "file.txt").is_file())
+            self.assertFalse(orig_dir.exists())
+
+            # Ensure no backup directory was created for the empty target
+            backups = list(base.glob("target_dir.backup_*"))
+            self.assertEqual(len(backups), 0)
+
+    def test_rename_project_root_consolidate_into_ancestor(self):
+        from calibpipe.pmr import rename_project_root
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            orig_dir = base / "2099.1.00001.S_timestamp"
+            orig_dir.mkdir()
+            (orig_dir / "subfile.txt").write_text("new_sub")
+            (orig_dir / "colliding.txt").write_text("new_content")
+
+            # Pre-existing file in ancestor destination
+            (base / "colliding.txt").write_text("old_content")
+
+            logs: list[str] = []
+            renamed = rename_project_root(orig_dir, base, logger=logs.append)
+            self.assertEqual(renamed, base)
+            self.assertFalse(orig_dir.exists())
+            self.assertEqual((base / "subfile.txt").read_text(), "new_sub")
+            self.assertEqual((base / "colliding.txt").read_text(), "new_content")
+
+            # Verify collided file was rotated to backup
+            colliding_backups = list(base.glob("colliding.txt.backup_*"))
+            self.assertEqual(len(colliding_backups), 1)
+            self.assertEqual(colliding_backups[0].read_text(), "old_content")
+
+    def test_rename_project_root_expanduser(self):
+        from calibpipe.pmr import rename_project_root
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            orig_dir = base / "orig"
+            orig_dir.mkdir()
+            (orig_dir / "data.txt").write_text("val")
+
+            fake_home = base / "fake_home"
+            fake_home.mkdir()
+
+            with unittest.mock.patch.dict(os.environ, {"HOME": str(fake_home)}):
+                target_tilde = "~/custom_run"
+                renamed = rename_project_root(orig_dir, target_tilde)
+                expected = (fake_home / "custom_run").resolve()
+                self.assertEqual(renamed, expected)
+                self.assertTrue((expected / "data.txt").is_file())
+
     def test_run_pmr_with_strip_timestamp(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

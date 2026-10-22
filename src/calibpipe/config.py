@@ -675,6 +675,10 @@ class RunConfig:
     logfile: str | None = None
     use_custom_rcdir: bool = True
     casa_enable_telemetry: bool = False
+    rawdata: str | None = None
+    ppr: str | None = None
+    vla: bool = False
+    workdir: str | None = None
 
     def __init__(
         self,
@@ -709,6 +713,14 @@ class RunConfig:
         logfile: str | None = None,
         use_custom_rcdir: bool = True,
         casa_enable_telemetry: bool = False,
+        rawdata: str | None = None,
+        ppr: str | None = None,
+        vla: bool = False,
+        workdir: str | None = None,
+        work_path: str | None = None,
+        pp_rawdata: str | None = None,
+        pp_request: str | None = None,
+        pp_vlarequest: str | None = None,
     ) -> None:
         self.recipe = recipe
         self.nprocs = ncores if ncores is not None else nprocs
@@ -740,6 +752,10 @@ class RunConfig:
         self.logfile = logfile
         self.use_custom_rcdir = use_custom_rcdir
         self.casa_enable_telemetry = casa_enable_telemetry
+        self.rawdata = rawdata or pp_rawdata
+        self.ppr = ppr or pp_request or pp_vlarequest
+        self.vla = bool(vla or (pp_vlarequest is not None))
+        self.workdir = workdir or work_path
 
     @property
     def ncores(self) -> int:
@@ -788,6 +804,16 @@ class RunConfig:
             casa_enable_telemetry=bool(
                 data.get("casa_enable_telemetry", default_inst.casa_enable_telemetry)
             ),
+            rawdata=_str_or_none(data.get("rawdata", data.get("pp_rawdata"))),
+            ppr=_str_or_none(
+                data.get("ppr", data.get("pp_request", data.get("pp_vlarequest")))
+            ),
+            vla=bool(
+                data.get("vla", default_inst.vla)
+                if "vla" in data
+                else ("pp_vlarequest" in data)
+            ),
+            workdir=_str_or_none(data.get("workdir", data.get("work_path"))),
         )
 
 
@@ -917,6 +943,7 @@ class ProfileConfig:
     cmd: str | None = None
     ppr: str | None = None
     vla: bool | None = None
+    rawdata: str | None = None
     interactive: bool | None = None
     datapath: list[str] | None = None
     rundata: list[str] | None = None
@@ -945,6 +972,14 @@ class ProfileConfig:
             kwargs["nprocs"] = kwargs.pop("ncores")
         if "work_path" in kwargs and "workdir" not in kwargs:
             kwargs["workdir"] = kwargs.pop("work_path")
+        if "pp_rawdata" in kwargs and "rawdata" not in kwargs:
+            kwargs["rawdata"] = kwargs.pop("pp_rawdata")
+        if "pp_vlarequest" in kwargs and "ppr" not in kwargs:
+            kwargs["ppr"] = kwargs.pop("pp_vlarequest")
+            if "vla" not in kwargs:
+                kwargs["vla"] = True
+        if "pp_request" in kwargs and "ppr" not in kwargs:
+            kwargs["ppr"] = kwargs.pop("pp_request")
         if "casa_ver" in kwargs and "casa_root" not in kwargs:
             kwargs["casa_root"] = kwargs.pop("casa_ver")
         if "casa_dir" in kwargs and "casa_root" not in kwargs:
@@ -1235,8 +1270,15 @@ class ProfileConfig:
             procedure=_str_or_none(flat.get("procedure")),
             script=_str_or_none(flat.get("script")),
             cmd=_str_or_none(flat.get("cmd")),
-            ppr=_str_or_none(flat.get("ppr")),
-            vla=bool(flat["vla"]) if "vla" in flat else None,
+            ppr=_str_or_none(
+                flat.get("ppr", flat.get("pp_request", flat.get("pp_vlarequest")))
+            ),
+            vla=(
+                bool(flat["vla"])
+                if "vla" in flat
+                else (True if "pp_vlarequest" in flat else None)
+            ),
+            rawdata=_str_or_none(flat.get("rawdata", flat.get("pp_rawdata"))),
             interactive=bool(flat["interactive"]) if "interactive" in flat else None,
             datapath=_list_or_empty(flat["datapath"]) if "datapath" in flat else None,
             rundata=_list_or_empty(flat["rundata"]) if "rundata" in flat else None,
@@ -1492,6 +1534,7 @@ class ResolvedRunOptions:
     log2term: bool = False
     flag_dir: str | None = None
     ppr: str | None = None
+    rawdata: str | None = None
     subdir: str | None = None
     onlysemipass: str = ""
     verbose: bool = False
@@ -1559,6 +1602,7 @@ class ResolvedRunOptions:
         log2term: bool = False,
         flag_dir: str | None = None,
         ppr: str | None = None,
+        rawdata: str | None = None,
         subdir: str | None = None,
         onlysemipass: str = "",
         verbose: bool = False,
@@ -1622,6 +1666,7 @@ class ResolvedRunOptions:
         self.log2term = log2term
         self.flag_dir = flag_dir
         self.ppr = ppr
+        self.rawdata = rawdata
         self.subdir = subdir
         self.onlysemipass = onlysemipass
         self.verbose = verbose
@@ -1804,7 +1849,14 @@ def resolve_run_options(
     workdir = (
         getattr(cli_opts, "workdir", "")
         or (profile.workdir if profile and profile.workdir else "")
+        or getattr(cfg.run, "workdir", "")
         or ""
+    )
+    rawdata = (
+        getattr(cli_opts, "rawdata", None)
+        or (profile.rawdata if profile and profile.rawdata else None)
+        or getattr(cfg.run, "rawdata", None)
+        or None
     )
 
     omp_num_threads = _val("omp_num_threads", cfg.run.omp_num_threads)
@@ -1872,7 +1924,7 @@ def resolve_run_options(
         vis = list(profile.vis or [])
         script = profile.script or ""
         cmd = profile.cmd or ""
-        ppr = profile.ppr
+        ppr = profile.ppr or (getattr(cfg.run, "ppr", None) if not prof_targets else None)
         interactive = (
             bool(profile.interactive) if profile.interactive is not None else False
         )
@@ -1881,7 +1933,7 @@ def resolve_run_options(
         vis = []
         script = ""
         cmd = ""
-        ppr = None
+        ppr = getattr(cfg.run, "ppr", None)
         interactive = False
 
     procedure = (
@@ -1890,10 +1942,12 @@ def resolve_run_options(
         or ""
     )
     cli_vla = getattr(cli_opts, "vla", None)
-    if cli_vla:
-        vla = True
+    if cli_vla is not None:
+        vla = bool(cli_vla)
     elif profile is not None and profile.vla is not None:
         vla = bool(profile.vla)
+    elif getattr(cfg.run, "vla", None) is not None:
+        vla = bool(cfg.run.vla)
     else:
         vla = False
 
@@ -2086,6 +2140,8 @@ def resolve_run_options(
             script = str(_resolve_one(script))
         if ppr:
             ppr = str(_resolve_one(ppr))
+        if rawdata:
+            rawdata = str(_resolve_one(rawdata))
         if cont_dat:
             cont_dat = str(_resolve_one(cont_dat))
         if jyperk_csv:
@@ -2127,6 +2183,9 @@ def resolve_run_options(
             else str(Path(p).expanduser())
             for p in resolved_rundata
         ]
+    if rawdata:
+        rawdata_p = Path(rawdata).expanduser()
+        rawdata = str(rawdata_p.resolve()) if _safe_exists(rawdata_p) else str(rawdata_p)
 
     if workdir:
         user_name = os.environ.get("USER", "")
@@ -2171,6 +2230,7 @@ def resolve_run_options(
         log2term=bool(log2term),
         flag_dir=getattr(cli_opts, "flag", None),
         ppr=ppr,
+        rawdata=rawdata,
         subdir=getattr(cli_opts, "subdir", None),
         onlysemipass=getattr(cli_opts, "onlysemipass", "") or "",
         verbose=bool(verbose),
