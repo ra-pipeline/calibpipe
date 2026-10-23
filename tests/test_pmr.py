@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -218,6 +219,114 @@ class TestPMRExecution(unittest.TestCase):
             self.assertEqual(res.exit_code, 0)
             self.assertIn("[DRY RUN]", res.output)
             self.assertIsNone(res.project_root)
+
+    def test_project_shortcuts_after_rename(self):
+        for enabled, exit_code in ((True, 0), (False, 0), (None, 0), (True, 1)):
+            with self.subTest(enabled=enabled, exit_code=exit_code):
+                with tempfile.TemporaryDirectory() as td:
+                    root = Path(td) / "project_generated"
+                    working = root / "SOUS_example/GOUS_example/MOUS_example/working"
+                    html = working / "pipeline-20990101T000000/html"
+                    html.mkdir(parents=True)
+                    for name in ("rawdata", "products"):
+                        (working.parent / name).mkdir()
+                    req = PMRRequest(mous="uid://A001/X1/X1", rename="project")
+                    with patch("calibpipe.pmr.validate_files"), patch(
+                        "calibpipe.pmr.subprocess.Popen"
+                    ) as popen:
+                        proc = popen.return_value
+                        proc.stdout.readline.side_effect = [
+                            f"Project root directory is {root}\n", ""
+                        ]
+                        proc.returncode = exit_code
+                        result = run_pmr(
+                            req, runtime=self.runtime,
+                            **({"symlink_shortcuts": enabled} if enabled is not None else {}),
+                            cfg=pmr.envconfig.CalibpipeConfig.from_dict(
+                                {"run": {"symlink_shortcuts": True}}
+                            ),
+                            logger=lambda message: None,
+                        )
+                    expected_root = Path(td) / "project" if exit_code == 0 else root
+                    self.assertEqual(result.project_root, expected_root)
+                    for name in ("working", "rawdata", "products", "weblog"):
+                        link = expected_root / name
+                        self.assertEqual(link.is_symlink(), bool(enabled) and exit_code == 0)
+                        if link.is_symlink():
+                            self.assertTrue(link.exists())
+                            self.assertFalse(link.readlink().is_absolute())
+
+    def test_symlink_shortcuts_parser(self):
+        parser = pmr.build_parser()
+        for flag, expected in (([], False), (["--symlink-shortcuts"], True)):
+            args = parser.parse_args(["uid://A001/X1/X1", *flag])
+            self.assertIs(args.symlink_shortcuts, expected)
+
+    def test_parallel_conversion_after_rename(self):
+        real_popen = subprocess.Popen
+        for fail, dry_run in ((False, False), (True, False), (False, True)):
+            with self.subTest(fail=fail, dry_run=dry_run), tempfile.TemporaryDirectory() as td:
+                base = Path(td)
+                recipes = base / "checkout/pipeline/recipes"
+                recipes.mkdir(parents=True)
+                scripts = base / "checkout/scripts"
+                scripts.mkdir()
+                script = scripts / "procedure_add_parallel.py"
+                script.write_text(
+                    "import sys\nfrom pathlib import Path\n"
+                    "p = Path(sys.argv[2])\n"
+                    "p.write_text(Path(sys.argv[1]).read_text().replace('PLACEHOLDER', 'parallel=True'))\n"
+                    + ("sys.exit(1)\n" if fail else "")
+                )
+                root = base / "generated"
+                working = root / "SOUS_example/GOUS_example/MOUS_example/working"
+                working.mkdir(parents=True)
+                ppr = working / "PPR.xml"
+                ppr.write_text("<PPR>PLACEHOLDER</PPR>")
+                runtime = PMRRuntime(
+                    acsroot=base / "acs", acsdata=base / "data", scriptdir=recipes,
+                )
+                req = PMRRequest(
+                    mous="uid://A001/X1/X1", procedure="procedure.xml", rename="renamed",
+                )
+                with patch("calibpipe.pmr.validate_files"), patch(
+                    "calibpipe.pmr.subprocess.Popen"
+                ) as popen:
+                    proc = popen.return_value
+                    proc.stdout.readline.side_effect = [
+                        f"Project root directory is {root}\n", ""
+                    ]
+                    proc.returncode = 0
+                    popen.side_effect = lambda command, **kwargs: (
+                        real_popen(command, **kwargs) if isinstance(command, list) else proc
+                    )
+                    result = run_pmr(
+                        req, runtime=runtime, parallel=True, dry_run=dry_run,
+                        logger=lambda message: None,
+                    )
+                    if dry_run:
+                        popen.assert_not_called()
+                self.assertEqual(result.exit_code, int(fail))
+                actual = ppr if dry_run else base / "renamed" / ppr.relative_to(root)
+                expected = "PLACEHOLDER" if fail or dry_run else "parallel=True"
+                self.assertEqual(actual.read_text(), f"<PPR>{expected}</PPR>")
+                self.assertEqual(list(actual.parent.glob(".parallel-*")), [])
+
+    def test_parallel_preflight(self):
+        for procedure in ("", "procedure.xml"):
+            with self.subTest(procedure=procedure), patch(
+                "calibpipe.pmr.validate_files"
+            ), patch("calibpipe.pmr.subprocess.Popen") as popen:
+                result = run_pmr(
+                    PMRRequest(mous="uid://A001/X1/X1", procedure=procedure),
+                    runtime=self.runtime, parallel=True, logger=lambda message: None,
+                )
+                self.assertEqual(result.exit_code, 1)
+                popen.assert_not_called()
+        args = pmr.build_parser().parse_args([
+            "uid://A001/X1/X1", "--procedure", "procedure.xml", "--procedure-enable-parallel"
+        ])
+        self.assertTrue(args.procedure_enable_parallel)
 
     def test_mocked_execution_success(self):
         req = PMRRequest(mous="uid://A001/X1/X1")

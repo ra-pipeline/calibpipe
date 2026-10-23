@@ -56,9 +56,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from typing import Callable, Sequence
 
 from calibpipe import config as envconfig
+from calibpipe.workspace import create_project_symlinks
 
 
 @dataclass(frozen=True)
@@ -339,6 +341,31 @@ def rename_project_root(
     return target_path
 
 
+def enable_ppr_parallel(root: Path, script: Path, logger: Callable[[str], None]) -> None:
+    """Apply the pipeline checkout's parallel converter to generated PPR files."""
+    pprs = sorted(root.glob("SOUS_*/GOUS_*/MOUS_*/working/PPR*.xml"))
+    if not pprs:
+        raise RuntimeError(f"No generated PPR XML files found under {root}; cannot enable parallel")
+    for ppr in pprs:
+        with tempfile.TemporaryDirectory(prefix=".parallel-", dir=ppr.parent) as td:
+            output = Path(td) / ppr.name
+            result = subprocess.run(
+                [sys.executable, str(script), str(ppr), str(output)],
+                capture_output=True, text=True, check=False,
+            )
+            if result.stdout.strip():
+                logger(result.stdout.strip())
+            if result.stderr.strip():
+                logger(result.stderr.strip())
+            if result.returncode != 0:
+                raise RuntimeError(f"Parallel conversion failed for {ppr} (exit {result.returncode})")
+            if not output.is_file():
+                raise RuntimeError(f"Parallel converter did not produce output for {ppr}")
+            output.chmod(ppr.stat().st_mode)
+            output.replace(ppr)
+            logger(f"Enabled parallel keywords in {ppr}")
+
+
 def run_pmr(
     req: PMRRequest,
     runtime: PMRRuntime | None = None,
@@ -346,6 +373,8 @@ def run_pmr(
     cfg: envconfig.CalibpipeConfig | None = None,
     dry_run: bool = False,
     logger: Callable[[str], None] | None = None,
+    symlink_shortcuts: bool = False,
+    parallel: bool = False,
 ) -> PMRResult:
     """Execute Java MakeProcessingRequests with real-time log streaming.
 
@@ -356,6 +385,8 @@ def run_pmr(
         cfg: Optional CalibpipeConfig (used if `runtime` is None).
         dry_run: If True, previews Java command without executing.
         logger: Optional logging callback. Defaults to `print`.
+        symlink_shortcuts: Create project shortcuts (default: False).
+        parallel: Add parallel=True to supported PPR tasks; requires a procedure.
 
     Returns:
         PMRResult with exit code, command, combined output, and parsed project root.
@@ -368,6 +399,20 @@ def run_pmr(
     validate_files(req.intents, req.procedure, runtime.scriptdir)
     cmd_list, cmd_str = build_java_command(req, runtime)
 
+    parallel_script = runtime.scriptdir.resolve().parent.parent / "scripts/procedure_add_parallel.py"
+    if parallel:
+        error = None
+        if not req.procedure.strip():
+            error = "--procedure-enable-parallel requires --procedure"
+        elif not parallel_script.is_file():
+            error = (
+                f"Parallel converter not found: {parallel_script}. "
+                "Set SCIPIPE_SCRIPTDIR to the pipeline checkout's pipeline/recipes directory."
+            )
+        if error:
+            log(f"ERROR: {error}")
+            return PMRResult(1, cmd_list, cmd_str, error, None)
+
     if dry_run:
         log("[DRY RUN] PMR invocation:")
         log(f"[DRY RUN] MOUS UID: {req.mous}")
@@ -376,6 +421,8 @@ def run_pmr(
             log(f"[DRY RUN] Planned directory rename: {req.rename}")
         elif req.strip_timestamp:
             log("[DRY RUN] Planned directory rename: strip trailing timestamp")
+        if parallel:
+            log(f"[DRY RUN] Will update generated working/PPR*.xml using {parallel_script}")
         return PMRResult(
             exit_code=0,
             command=cmd_list,
@@ -415,6 +462,19 @@ def run_pmr(
                 if stripped != root.name:
                     root = rename_project_root(root, stripped, logger=log)
 
+            if parallel:
+                enable_ppr_parallel(root, parallel_script, log)
+
+            if symlink_shortcuts:
+                working_dirs = sorted(root.glob("SOUS_*/GOUS_*/MOUS_*/working"))
+                if len(working_dirs) == 1:
+                    create_project_symlinks(root, working_dirs[0], log)
+                elif len(working_dirs) > 1:
+                    log("warning: skipped project shortcuts: multiple MOUS working directories found")
+
+        if parallel and exit_code == 0 and (root is None or not root.is_dir()):
+            raise RuntimeError("PMR did not produce an accessible project root; cannot enable parallel")
+
         return PMRResult(
             exit_code=exit_code,
             command=cmd_list,
@@ -423,8 +483,8 @@ def run_pmr(
             project_root=root,
         )
 
-    except OSError as err:
-        log(f"ERROR: Failed to launch Java process: {err}")
+    except (OSError, RuntimeError) as err:
+        log(f"ERROR: PMR failed: {err}")
         return PMRResult(
             exit_code=1,
             command=cmd_list,
@@ -559,6 +619,17 @@ Examples:
         help="Ignore QA0 status of specified ASDM list",
     )
     parser.add_argument(
+        "--procedure-enable-parallel",
+        action="store_true",
+        help="Add parallel=True to supported tasks in generated PPRs (requires --procedure)",
+    )
+    parser.add_argument(
+        "--symlink-shortcuts",
+        action="store_true",
+        default=False,
+        help="Create project shortcuts (disabled by default)",
+    )
+    parser.add_argument(
         "--strip-timestamp",
         action="store_true",
         default=False,
@@ -590,6 +661,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point for 'calibpipe pmr'."""
     parser = build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.procedure_enable_parallel and not args.procedure:
+        parser.error("--procedure-enable-parallel requires --procedure")
+
 
     asdm_list: list[str] = []
     if args.asdms:
@@ -623,7 +698,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"ERROR: {err}", file=sys.stderr)
         return 1
 
-    result = run_pmr(req, runtime=runtime, dry_run=args.dry_run)
+    result = run_pmr(
+        req, runtime=runtime, cfg=cfg, dry_run=args.dry_run,
+        symlink_shortcuts=args.symlink_shortcuts,
+        parallel=args.procedure_enable_parallel,
+    )
     return result.exit_code
 
 
