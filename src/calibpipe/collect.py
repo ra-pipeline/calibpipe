@@ -49,12 +49,25 @@ def build_test_cmd(
             opts_list.extend(extra_opts.split())
         else:
             opts_list.extend(list(extra_opts))
-    opts_list.append(node_id)
     opts_repr = repr(opts_list)
 
+    file_part, sep, func_part = node_id.partition("::")
+    if os.path.isabs(file_part):
+        target_code = repr(node_id)
+    else:
+        func_suffix = f"::{func_part}" if sep else ""
+        target_code = (
+            f"(os.path.join(h, {file_part!r}) + {func_suffix!r} if h else {node_id!r})"
+        )
+
     return (
-        f"import os, pytest; os.environ.pop('SCIPIPE_ROOTDIR', None); "
-        f"pytest.main({opts_repr})"
+        f"import os, sys, pytest; "
+        f"os.environ.pop('SCIPIPE_ROOTDIR', None); "
+        f"h = os.environ.get('SCIPIPE_HEURISTICS', ''); "
+        f"td = os.path.join(h, 'tests'); "
+        f"td in sys.path or sys.path.insert(0, td); "
+        f"node = {target_code}; "
+        f"pytest.main({opts_repr} + [node])"
     )
 
 

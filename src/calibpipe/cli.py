@@ -273,17 +273,19 @@ def main(argv: Sequence[str] | None = None) -> None:
             test_opts = args.test_opts or (prof.test_opts if prof else None)
 
             env_name = (prof.env if prof and prof.env else None) or cfg.default_env
-            env_spec = envconfig.resolve_env(cfg, env_name) if env_name else None
-            casa_root = (
-                args.casa_root
-                or (prof.casa_root if prof else None)
-                or (env_spec.casa_root if env_spec else None)
+            env_spec = (
+                envconfig.resolve_env(
+                    cfg,
+                    env_name,
+                    casa_root=args.casa_root or (prof.casa_root if prof else None),
+                    heuristics_dir=args.heuristics_dir or (prof.heuristics_dir if prof else None),
+                    workspaces=prof.workspaces if prof else None,
+                )
+                if env_name
+                else None
             )
-            heuristics_dir = (
-                args.heuristics_dir
-                or (prof.heuristics_dir if prof else None)
-                or (env_spec.heuristics_dir if env_spec else None)
-            )
+            casa_root = env_spec.casa_root if env_spec else (args.casa_root or (prof.casa_root if prof else None))
+            heuristics_dir = env_spec.heuristics_dir if env_spec else (args.heuristics_dir or (prof.heuristics_dir if prof else None))
 
             nodes = collect.collect_tests(
                 target=target,

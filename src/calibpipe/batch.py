@@ -745,8 +745,13 @@ def job_name(
     timestr = time.strftime("%Y%m%d-%H%M%S")
     if test_name:
         safe_test = re.sub(r"[^\w\-.]", "_", test_name)
-        full_display = f"{safe_test}_{timestr}"
-        full_safe = full_display
+        if profile_name:
+            full_display = f"{profile_name}/{safe_test}_{timestr}"
+            safe_prof = profile_name.replace("/", "_").replace("@", "_").replace(":", "_")
+            full_safe = f"{safe_prof}_{safe_test}_{timestr}"
+        else:
+            full_display = f"{safe_test}_{timestr}"
+            full_safe = full_display
         return full_display, full_safe
 
     prefix = ""
@@ -809,7 +814,8 @@ def print_queue(
     squeue_exe = shutil.which("squeue")
     if not squeue_exe:
         return
-    squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z"
+    # squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z"
+    squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %80j"
     cmd = [squeue_exe, f"--format={squeue_format}", "-u", user]
     try:
         time.sleep(0.5)
@@ -1240,13 +1246,19 @@ def main(argv: Sequence[str] | None = None) -> None:
                 or batch_opts.env_name
                 or cfg.default_env
             )
-            env_spec = envconfig.resolve_env(cfg, env_name) if env_name else None
-            casa_root = (profile.casa_root if profile else None) or (
-                env_spec.casa_root if env_spec else None
+            env_spec = (
+                envconfig.resolve_env(
+                    cfg,
+                    env_name,
+                    casa_root=profile.casa_root if profile else None,
+                    heuristics_dir=profile.heuristics_dir if profile else None,
+                    workspaces=profile.workspaces if profile else None,
+                )
+                if env_name
+                else None
             )
-            heuristics_dir = (profile.heuristics_dir if profile else None) or (
-                env_spec.heuristics_dir if env_spec else None
-            )
+            casa_root = env_spec.casa_root if env_spec else (profile.casa_root if profile else None)
+            heuristics_dir = env_spec.heuristics_dir if env_spec else (profile.heuristics_dir if profile else None)
 
             print(f"Collecting tests for profile '{batch_opts.profile}' from {target}...")
             collected_nodes = collect.collect_tests(

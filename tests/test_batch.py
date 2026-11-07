@@ -420,7 +420,7 @@ class TestSlurmDirectives(RunbatchCaptureCase):
             cmd_args = mock_run.call_args[0][0]
             self.assertEqual(cmd_args[0], "/usr/bin/squeue")
             self.assertIn(
-                "--format=%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z",
+                "--format=%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %80j",
                 cmd_args[1],
             )
             self.assertIn("testuser", cmd_args)
@@ -1134,14 +1134,29 @@ casa_root = "/fake/casa/main"
                 _, script1 = calls[0]
                 self.assertIn("uid___A002_X100", script1)
                 self.assertIn("--workdir=/tmp/fake_workdir/uid___A002_X100", script1)
-                self.assertIn("#SBATCH --job-name=uid___A002_X100_20260101-000000", script1)
+                self.assertIn("#SBATCH --job-name=regression_fast/uid___A002_X100_20260101-000000", script1)
 
                 _, script2 = calls[1]
                 self.assertIn("uid___A002_X200", script2)
                 self.assertIn("--workdir=/tmp/fake_workdir/uid___A002_X200", script2)
-                self.assertIn("#SBATCH --job-name=uid___A002_X200_20260101-000000", script2)
+                self.assertIn("#SBATCH --job-name=regression_fast/uid___A002_X200_20260101-000000", script2)
         finally:
             os.unlink(cfg_path)
+
+    def test_job_name_with_test_name_collect_profile_format(self):
+        """Verify job_name formats {profilename}/{test_name}_{timestamp}."""
+        display, file_safe = runbatch.job_name(
+            "calibpipe run", profile_name="regression/casa674", test_name="uid___A002_X1"
+        )
+        self.assertTrue(display.startswith("regression/casa674/uid___A002_X1_"))
+        self.assertTrue(file_safe.startswith("regression_casa674_uid___A002_X1_"))
+        self.assertNotIn("/", file_safe)
+
+        # Without profile
+        display_no_prof, file_safe_no_prof = runbatch.job_name("calibpipe run", test_name="uid___A002_X1")
+        self.assertTrue(display_no_prof.startswith("uid___A002_X1_"))
+        self.assertTrue(file_safe_no_prof.startswith("uid___A002_X1_"))
+        self.assertNotIn("/", file_safe_no_prof)
 
 
 if __name__ == "__main__":
