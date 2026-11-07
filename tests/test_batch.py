@@ -1079,6 +1079,70 @@ casa_root = "/fake/casa/main"
         self.assertTrue(display.startswith("e2e_mous_calimage_"))
         self.assertTrue(file_safe.startswith("e2e_mous_calimage_"))
 
+    def test_batch_submit_test_runfile(self):
+        """Verify submitting a test runfile dispatches discrete jobs with pytest commands."""
+        with tempfile.NamedTemporaryFile("w", suffix=".runfile", delete=False) as f:
+            f.write(
+                "uid___A002_X1\ttests/regression/fast/test_alma.py::test_uid___A002_X1__regression\n"
+                "uid___A002_X2\ttests/regression/fast/test_alma.py::test_uid___A002_X2__regression\n"
+            )
+            runfile_path = f.name
+
+        try:
+            calls = self.run_and_capture(["--config", str(CONFIG), runfile_path])
+            self.assertEqual(len(calls), 2)
+            _, script1 = calls[0]
+            self.assertIn("pytest.main", script1)
+            self.assertIn("uid___A002_X1", script1)
+            self.assertIn("--workdir=", script1)
+            self.assertIn("#SBATCH --job-name=uid___A002_X1_20260101-000000", script1)
+
+            _, script2 = calls[1]
+            self.assertIn("pytest.main", script2)
+            self.assertIn("uid___A002_X2", script2)
+            self.assertIn("#SBATCH --job-name=uid___A002_X2_20260101-000000", script2)
+        finally:
+            os.unlink(runfile_path)
+
+    def test_batch_submit_collect_flag(self):
+        """Verify --collect queries test nodes and dispatches an array of batch jobs."""
+        test_cfg = (
+            'default_env = "main"\n'
+            "[envs.main]\n"
+            'casa_root = "/fake/casa/main"\n'
+            'heuristics_dir = "/fake/pipeline"\n'
+            "[profiles.regression_fast]\n"
+            'env = "main"\n'
+            'test_target = "tests/regression/fast"\n'
+            'workdir = "/tmp/fake_workdir"\n'
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
+            cf.write(test_cfg)
+            cfg_path = cf.name
+
+        fake_nodes = [
+            "tests/regression/fast/alma.py::test_uid___A002_X100__regression",
+            "tests/regression/fast/alma.py::test_uid___A002_X200__regression",
+        ]
+        try:
+            with patch("calibpipe.collect.collect_tests", return_value=fake_nodes) as mock_collect:
+                calls = self.run_and_capture(
+                    ["--config", cfg_path, "-p", "regression_fast", "--collect"]
+                )
+                mock_collect.assert_called_once()
+                self.assertEqual(len(calls), 2)
+                _, script1 = calls[0]
+                self.assertIn("uid___A002_X100", script1)
+                self.assertIn("--workdir=/tmp/fake_workdir/uid___A002_X100", script1)
+                self.assertIn("#SBATCH --job-name=uid___A002_X100_20260101-000000", script1)
+
+                _, script2 = calls[1]
+                self.assertIn("uid___A002_X200", script2)
+                self.assertIn("--workdir=/tmp/fake_workdir/uid___A002_X200", script2)
+                self.assertIn("#SBATCH --job-name=uid___A002_X200_20260101-000000", script2)
+        finally:
+            os.unlink(cfg_path)
+
 
 if __name__ == "__main__":
     unittest.main()

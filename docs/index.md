@@ -15,8 +15,9 @@ The package keeps site-specific execution details in TOML configuration rather t
 ## What You Can Do with calibpipe
 
 - **Run single pipeline executions:** standard ALMA MOUS reductions (`--mous`), direct recipe reductions on local datasets (`--vis` + `--procedure`), standalone PPRs (`--PPR`), custom scripts (`--script`), inline commands (`--cmd`), or interactive CASA sessions (`-i`).
-- **Submit runs to Slurm or HTCondor:** batch queues from pipefiles (`calibpipe submit pipefile.txt`) or single-job submissions directly from named profiles (`calibpipe submit -p <profile>`).
-- **Target named execution and batch profiles:** encapsulate execution targets, CASA/pipeline checkouts, hardware tuning, and scheduler resources under `[profiles.<name>]`.
+- **Submit runs to Slurm or HTCondor:** batch queues from pipefiles (`calibpipe submit pipefile.txt`), regression test arrays (`calibpipe submit quick.run -p <profile>` or `calibpipe submit -p <profile> --collect`), or single-job submissions directly from named profiles (`calibpipe submit -p <profile>`).
+- **Discover and collect regression tests:** discover pytest test nodes using CASA Python with marker and keyword filtering (`calibpipe collect [target] -p <profile> -o runfile.txt`).
+- **Target named execution and batch profiles:** encapsulate execution targets, CASA/pipeline checkouts, hardware tuning, regression test specifications, and scheduler resources under `[profiles.<name>]`.
 - **Resolve interactive shell environments:** `source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`.
 - **Preserve existing workflows:** drop in seamlessly for legacy scripts (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
 

@@ -22,6 +22,11 @@ All notable changes to `calibpipe` are documented in this file, following [Keep 
 
 Pending changes on `feat/direct-execution-modes` and `feat/cascading-config`:
 
+- **Regression Test Discovery & Batch Array Execution:** Added first-class support for discovering pipeline regression tests and dispatching them as parallel batch arrays:
+  - `calibpipe collect`: Subcommand to query and inspect pytest test nodes in pipeline source checkouts using CASA Python, with marker (`-m`) and keyword (`-k`) filtering and optional runfile export (`-o <file>`).
+  - Test runfile batch submission: `calibpipe submit quick.run -p <profile>` detects pytest node IDs (containing `::`), creates independent sub-workdirs (`<base_workdir>/<test_name>`), sets batch `chdir` to `<base_workdir>` to preserve backup rotation safeguards, unsets `SCIPIPE_ROOTDIR` for clean in-CASA test isolation, and dispatches individual Slurm/HTCondor jobs.
+  - One-shot collection & batch dispatch: `calibpipe submit -p <profile> --collect` discovers matching tests from `test_target` on the fly and immediately submits them as an array of discrete jobs without an intermediate runfile.
+  - Profile configuration fields: added `collect`, `test_target` (alias `test_dir`), `test_marker` (alias `marker`), `test_filter` (alias `filter`), and `test_opts` (alias `pytest_opts`) to `[profiles.<name>]`.
 - **Configuration Hierarchy Simplification & Flattening:**
   - Consolidated tool installation roots (`pmr_home`, `datapacker_home`, `acsdata`, `java_home`, `pixi_bin`) directly under `[paths]` alongside workspace and storage directories, with bidirectional inheritance maintaining full backward compatibility with `[site]`.
   - Reserved `[site]` specifically for cluster operational policies and runtime constraints (`submit_host`, `strict_paths`, fallback tool paths, fallback execution behavior, and flux service endpoints).

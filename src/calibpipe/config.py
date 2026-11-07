@@ -954,12 +954,29 @@ class ProfileConfig:
     use_custom_rcdir: bool | None = None
     casa_enable_telemetry: bool | None = None
 
+    # Test collection & execution options
+    collect: bool | None = None
+    test_target: str | None = None
+    test_marker: str | None = None
+    test_filter: str | None = None
+    test_opts: str | None = None
+
     @property
     def threads(self) -> int | None:
         """Canonical thread count alias for cpus_per_task."""
         return self.cpus_per_task
 
     def __init__(self, **kwargs: Any) -> None:
+        if "test_dir" in kwargs and "test_target" not in kwargs:
+            kwargs["test_target"] = kwargs.pop("test_dir")
+        if "marker" in kwargs and "test_marker" not in kwargs:
+            kwargs["test_marker"] = kwargs.pop("marker")
+        if "filter" in kwargs and "test_filter" not in kwargs:
+            kwargs["test_filter"] = kwargs.pop("filter")
+        if "pytest_opts" in kwargs and "test_opts" not in kwargs:
+            kwargs["test_opts"] = kwargs.pop("pytest_opts")
+        if "test_options" in kwargs and "test_opts" not in kwargs:
+            kwargs["test_opts"] = kwargs.pop("test_options")
         if "noglogger" in kwargs and "nologger" not in kwargs:
             kwargs["nologger"] = kwargs.pop("noglogger")
         if "queue" in kwargs and "partition" not in kwargs:
@@ -1122,6 +1139,26 @@ class ProfileConfig:
     def heuristics_root(self) -> str | None:
         """Backward-compatible alias for heuristics_dir."""
         return self.heuristics_dir
+
+    @property
+    def test_dir(self) -> str | None:
+        """Alias for test_target."""
+        return self.test_target
+
+    @property
+    def marker(self) -> str | None:
+        """Alias for test_marker."""
+        return self.test_marker
+
+    @property
+    def filter(self) -> str | None:
+        """Alias for test_filter."""
+        return self.test_filter
+
+    @property
+    def pytest_opts(self) -> str | None:
+        """Alias for test_opts."""
+        return self.test_opts
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProfileConfig:
@@ -2330,6 +2367,11 @@ class ResolvedBatchOptions:
     logdir: str | None = None
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
+    collect: bool = False
+    test_target: str | None = None
+    test_marker: str | None = None
+    test_filter: str | None = None
+    test_opts: str | None = None
 
     @property
     def central_manager(self) -> str | None:
@@ -2590,6 +2632,51 @@ def resolve_batch_options(
     else:
         when_to_transfer_output = getattr(active_batch, "when_to_transfer_output", None)
 
+    cli_collect = getattr(cli_args, "collect", None)
+    collect = bool(
+        cli_collect
+        if cli_collect is not None
+        else (profile.collect if profile and profile.collect is not None else False)
+    )
+
+    cli_test_target = getattr(cli_args, "test_target", None) or getattr(
+        cli_args, "target", None
+    )
+    test_target = (
+        cli_test_target
+        if cli_test_target is not None
+        else (profile.test_target if profile else None)
+    )
+
+    cli_test_marker = getattr(cli_args, "test_marker", None) or getattr(
+        cli_args, "marker", None
+    )
+    test_marker = (
+        cli_test_marker
+        if cli_test_marker is not None
+        else (profile.test_marker if profile else None)
+    )
+
+    cli_test_filter = (
+        getattr(cli_args, "test_filter", None)
+        or getattr(cli_args, "filter", None)
+        or getattr(cli_args, "k", None)
+    )
+    test_filter = (
+        cli_test_filter
+        if cli_test_filter is not None
+        else (profile.test_filter if profile else None)
+    )
+
+    cli_test_opts = getattr(cli_args, "test_opts", None) or getattr(
+        cli_args, "pytest_opts", None
+    )
+    test_opts = (
+        cli_test_opts
+        if cli_test_opts is not None
+        else (profile.test_opts if profile else None)
+    )
+
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
@@ -2623,6 +2710,11 @@ def resolve_batch_options(
         logdir=logdir,
         omp_num_threads=omp_num_threads,
         openblas_num_threads=openblas_num_threads,
+        collect=collect,
+        test_target=test_target,
+        test_marker=test_marker,
+        test_filter=test_filter,
+        test_opts=test_opts,
     )
 
 
