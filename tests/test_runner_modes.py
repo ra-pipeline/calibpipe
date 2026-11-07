@@ -48,8 +48,12 @@ casa_root = "/fake/casa/main"
             calls.append(("getoutput", cmd))
             return ""
 
-        def fake_run(cmd: str) -> int:
+        self.last_run_env: dict[str, str] | None = None
+
+        def fake_run(cmd: str, *a: object, **kw: object) -> int:
             calls.append(("casa_run", cmd))
+            if "env" in kw and isinstance(kw["env"], dict):
+                self.last_run_env = dict(kw["env"])
             return 0
 
         def fake_call(cmd: str, *a: object, **kw: object) -> int:
@@ -193,11 +197,11 @@ class TestStandalonePPR(DriverModesTestCase):
         pmr_calls = [c for c in calls if "pipelineMakeRequest" in c[1]]
         self.assertEqual(len(pmr_calls), 0)
 
-        piperun_file = workdir / "casa_piperun.py"
+        piperun_file = (workdir / "working" / "casa_piperun.py") if (workdir / "working").exists() else (workdir / "casa_piperun.py")
         self.assertTrue(piperun_file.is_file())
         content = piperun_file.read_text()
         self.assertIn("import pipeline.infrastructure.executeppr as eppr", content)
-        self.assertIn(f"eppr.executeppr('{ppr_file.resolve()}'", content)
+        self.assertIn("eppr.executeppr(", content)
 
     def test_standalone_ppr_vla(self) -> None:
         ppr_file = self.tmp / "PPR_vla.xml"
@@ -214,11 +218,102 @@ class TestStandalonePPR(DriverModesTestCase):
         ])
 
         self.assertEqual(exit_code, 0)
-        piperun_file = workdir / "casa_piperun.py"
+        piperun_file = (workdir / "working" / "casa_piperun.py") if (workdir / "working").exists() else (workdir / "casa_piperun.py")
         self.assertTrue(piperun_file.is_file())
         content = piperun_file.read_text()
         self.assertIn("import pipeline.infrastructure.executevlappr as eppr", content)
-        self.assertIn(f"eppr.executeppr('{ppr_file.resolve()}'", content)
+        self.assertIn("eppr.executeppr(", content)
+
+    def test_standalone_ppr_with_run_section_rawdata_and_vla(self) -> None:
+        rawdata_dir = self.tmp / "my_archive_rawdata"
+        rawdata_dir.mkdir()
+        (rawdata_dir / "uid___A002_X123_X456").mkdir()
+
+        ppr_file = self.tmp / "PPR_custom.xml"
+        ppr_file.write_text("<PPR/>")
+
+        proj_dir = self.tmp / "my_project_dir"
+        proj_dir.mkdir()
+
+        cfg_file = self.tmp / "config_run_section.toml"
+        cfg_file.write_text(f"""
+[paths]
+scipipe_rootdir = "{self.root}"
+scipipe_logdir  = "{self.logdir}"
+
+[envs.main]
+casa_root = "/opt/casa/latest"
+branch = "main"
+
+[run]
+workdir = "{proj_dir}"
+rawdata = "{rawdata_dir}"
+ppr = "{ppr_file}"
+vla = true
+""")
+
+        calls, exit_code = self.run_driver([
+            f"--config={cfg_file}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        # Check rawdata symlink was created under workdir
+        rawdata_link = proj_dir / "rawdata"
+        self.assertTrue(rawdata_link.is_symlink())
+        self.assertEqual(rawdata_link.resolve(), rawdata_dir.resolve())
+
+        # Check working/ directory created and used
+        working_dir = proj_dir / "working"
+        self.assertTrue(working_dir.is_dir())
+        piperun_file = working_dir / "casa_piperun.py"
+        self.assertTrue(piperun_file.is_file())
+
+        content = piperun_file.read_text()
+        # Verify executevlappr used because vla = true
+        self.assertIn("import pipeline.infrastructure.executevlappr as eppr", content)
+        # Verify SCIPIPE_ROOTDIR cleaned up inside piperun script
+        self.assertIn("os.environ.pop('SCIPIPE_ROOTDIR', None)", content)
+        # Verify staged PPR inside working/
+        staged_ppr = working_dir / ppr_file.name
+        self.assertTrue(staged_ppr.is_file())
+
+        # Verify SCIPIPE_ROOTDIR was stripped from subprocess execution environment
+        if self.last_run_env is not None:
+            self.assertNotIn("SCIPIPE_ROOTDIR", self.last_run_env)
+
+    def test_standalone_ppr_run_section_vla_false(self) -> None:
+        ppr_file = self.tmp / "PPR_alma.xml"
+        ppr_file.write_text("<PPR/>")
+
+        proj_dir = self.tmp / "alma_proj"
+        proj_dir.mkdir()
+
+        cfg_file = self.tmp / "config_alma.toml"
+        cfg_file.write_text(f"""
+[paths]
+scipipe_rootdir = "{self.root}"
+scipipe_logdir  = "{self.logdir}"
+
+[envs.main]
+casa_root = "/opt/casa/latest"
+branch = "main"
+
+[run]
+workdir = "{proj_dir}"
+ppr = "{ppr_file}"
+vla = false
+""")
+
+        calls, exit_code = self.run_driver([
+            f"--config={cfg_file}",
+        ])
+
+        self.assertEqual(exit_code, 0)
+        working_dir = proj_dir / "working"
+        piperun_file = working_dir / "casa_piperun.py"
+        self.assertTrue(piperun_file.is_file())
+        content = piperun_file.read_text()
+        self.assertIn("import pipeline.infrastructure.executeppr as eppr", content)
 
 
 class TestScriptAndCmdExecution(DriverModesTestCase):

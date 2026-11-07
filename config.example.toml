@@ -265,6 +265,10 @@ pixi_dir = "/data/pipeline/branches/main"
 # logfile = "casa-session.log"            # Custom CASA logfile name or path (--logfile) (default: auto timestamped)
 # use_custom_rcdir = true                 # Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: true)
 # casa_enable_telemetry = false           # Set to true to enable CASA telemetry (default: false)
+# workdir = "~/Workspace/projs/proj1"     # Working directory for execution (subdirs working/, rawdata/ will be used)
+# rawdata = "~/Workspace/archive/rawdata" # Location of raw data archive/ASDM directory to symlink into workdir/rawdata
+# ppr = "~/Workspace/projs/PPR.xml"       # Standalone Pipeline Processing Request (PPR) XML file to execute
+# vla = false                             # Use VLA pipeline interface (executevlappr) instead of ALMA (executeppr)
 
 # ------------------------------------------------------------------------------
 # 6. Execution Profiles ([profiles.<name>]) (Optional)
