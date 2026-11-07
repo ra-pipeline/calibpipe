@@ -708,6 +708,33 @@ class TestBatchProfiles(RunbatchCaptureCase):
                 # Ensure the directory was pre-created before submission
                 self.assertTrue(target_dir.parent.is_dir())
 
+    def test_batch_profile_backup_derives_parent_chdir_for_non_working_dir(self):
+        from calibpipe.config import ProfileConfig
+
+        with tempfile.TemporaryDirectory() as td:
+            target_dir = Path(td) / "regression" / "casa_cov_test"
+            cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+            cfg.profiles["reg_backup_prof"] = ProfileConfig(
+                cores=4,
+                mem=32,
+                queue="test_partition",
+                workdir=str(target_dir),
+                backup=True,
+            )
+            with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
+                calls = self.run_and_capture(
+                    [
+                        f"--config={CONFIG}",
+                        "-p",
+                        "reg_backup_prof",
+                    ]
+                )
+                self.assertEqual(len(calls), 1)
+                cmd, script = calls[0]
+                self.assertTrue(cmd.startswith("sbatch "))
+                expected_parent = str(target_dir.parent)
+                self.assertIn(f"#SBATCH --chdir={expected_parent}", script)
+
     def test_batch_dry_run_skips_submission(self):
         buf = io.StringIO()
         tmpdir = tempfile.mkdtemp()

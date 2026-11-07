@@ -281,6 +281,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="[HTCondor only] Do not spool job files over the network",
     )
     p.add_argument(
+        "--backup",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="backup",
+        help="Rotate existing output/working directory to timestamped backup before execution",
+    )
+    p.add_argument(
         "--should-transfer-files",
         type=str,
         default=None,
@@ -1082,6 +1089,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                 pipejob_parts.append("--log2term")
             elif getattr(args, "log2term", None) is False:
                 pipejob_parts.append("--no-log2term")
+            if getattr(args, "backup", None) is True:
+                pipejob_parts.append("--backup")
+            elif getattr(args, "backup", None) is False:
+                pipejob_parts.append("--no-backup")
             pipejob_parts.extend(batch_opts.extra_args)
             pipejob = " ".join(pipejob_parts)
 
@@ -1104,6 +1115,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             pipejob_parts.append("--log2term")
         elif getattr(args, "log2term", None) is False:
             pipejob_parts.append("--no-log2term")
+        if getattr(args, "backup", None) is True:
+            pipejob_parts.append("--backup")
+        elif getattr(args, "backup", None) is False:
+            pipejob_parts.append("--no-backup")
         pipejob_parts.extend(batch_opts.extra_args)
         pipejob = " ".join(pipejob_parts)
 
