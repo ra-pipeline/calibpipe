@@ -2397,8 +2397,18 @@ def resolve_batch_options(
     chdir = _cli_or_cfg("chdir", active_batch.chdir)
     if chdir is None and profile and profile.workdir:
         raw_workdir = Path(os.path.expanduser(profile.workdir))
-        # Derive project_root so working/ can be cleanly rotated if backup=True
-        raw_chdir = raw_workdir.parent if raw_workdir.name == "working" else raw_workdir
+        # Derive project_root so working/ or custom workdir can be cleanly rotated if backup=True
+        cli_backup = getattr(cli_args, "backup", None)
+        is_backup = bool(
+            cli_backup
+            if cli_backup is not None
+            else (profile.backup if profile else False) or getattr(cfg.run, "backup", False)
+        )
+        raw_chdir = (
+            raw_workdir.parent
+            if (raw_workdir.name == "working" or is_backup)
+            else raw_workdir
+        )
         if not raw_chdir.is_absolute() and not str(raw_chdir).startswith("~") and root_dir is not None:
             chdir = str(root_dir / raw_chdir)
         else:

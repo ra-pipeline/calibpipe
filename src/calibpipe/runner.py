@@ -1613,6 +1613,12 @@ def _run_standalone_ppr(
         ):
             rotate_directory(working_path / "working")
 
+        proj_root = working_path.parent if working_path.name == "working" else working_path
+        products_path = proj_root / "products"
+        if products_path.exists() and (products_path.is_symlink() or any(products_path.iterdir())):
+            rotate_directory(products_path)
+            products_path.mkdir(parents=True, exist_ok=True)
+
     working_path.mkdir(parents=True, exist_ok=True)
 
     now_ts = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -1754,7 +1760,12 @@ def _run_script(
         and working_path.exists()
         and any(working_path.iterdir())
     ):
-        rotate_directory(working_path)
+        rotated = rotate_directory(working_path)
+        if rotated is None and working_path == Path.cwd().resolve():
+            print(
+                f"WARNING: Cannot backup/rotate {working_path} because it is the current working directory.",
+                file=sys.stderr,
+            )
 
     working_path.mkdir(parents=True, exist_ok=True)
 
@@ -1864,7 +1875,12 @@ def _run_cmd(
         and working_path.exists()
         and any(working_path.iterdir())
     ):
-        rotate_directory(working_path)
+        rotated = rotate_directory(working_path)
+        if rotated is None and working_path == Path.cwd().resolve():
+            print(
+                f"WARNING: Cannot backup/rotate {working_path} because it is the current working directory.",
+                file=sys.stderr,
+            )
 
     working_path.mkdir(parents=True, exist_ok=True)
 
