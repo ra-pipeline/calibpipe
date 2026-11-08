@@ -7,7 +7,7 @@ import sys
 from typing import Sequence
 
 import calibpipe
-from calibpipe import batch, config as envconfig, pmr, runner
+from calibpipe import batch, collect, config as envconfig, coverage, pmr, report, runner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,6 +118,75 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not load site-level configuration",
     )
 
+    # 'collect' subcommand
+    collect_parser = subparsers.add_parser(
+        "collect",
+        help="Discover and collect pytest test node IDs for regression test arrays",
+    )
+    collect_parser.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Test directory or file path to collect from (e.g. tests/regression/fast)",
+    )
+    collect_parser.add_argument(
+        "-p",
+        "--profile",
+        help="Named profile from config to supply defaults (target, marker, filter, casa, heuristics)",
+    )
+    collect_parser.add_argument(
+        "-m",
+        "--marker",
+        help="Pytest marker filter expression (e.g. 'regression')",
+    )
+    collect_parser.add_argument(
+        "-k",
+        "--filter",
+        help="Pytest keyword filter expression (e.g. 'uid___A002')",
+    )
+    collect_parser.add_argument(
+        "-o",
+        "--output",
+        help="Write collected test node IDs to a runfile for batch execution",
+    )
+    collect_parser.add_argument(
+        "--config", help="Path to TOML config file"
+    )
+    collect_parser.add_argument(
+        "--no-site-config",
+        action="store_true",
+        default=False,
+        help="Do not load site-level configuration",
+    )
+    collect_parser.add_argument(
+        "--casa-root",
+        help="CASA root path override",
+    )
+    collect_parser.add_argument(
+        "--heuristics-dir",
+        help="Pipeline heuristics directory override",
+    )
+    collect_parser.add_argument(
+        "--test-opts",
+        help="Extra pytest options passed to test collection",
+    )
+
+    # 'report' subcommand
+    subparsers.add_parser(
+        "report",
+        help="Synthesize regression test results and combine coverage datasets",
+        parents=[report.build_parser()],
+        conflict_handler="resolve",
+    )
+
+    # 'coverage' subcommand
+    subparsers.add_parser(
+        "coverage",
+        help="Find, combine, and report on multiple coverage.py data files",
+        parents=[coverage.build_parser()],
+        conflict_handler="resolve",
+    )
+
     return parser
 
 
@@ -145,6 +214,9 @@ def main(argv: Sequence[str] | None = None) -> None:
         "env",
         "config",
         "profile",
+        "collect",
+        "report",
+        "coverage",
         "-h",
         "--help",
         "-V",
@@ -201,6 +273,59 @@ def main(argv: Sequence[str] | None = None) -> None:
         except envconfig.ConfigError as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
+    elif args.subcommand == "collect":
+        try:
+            cfg = envconfig.load_merged_config(
+                cli_arg=args.config,
+                include_site=not getattr(args, "no_site_config", False),
+            )
+            prof = cfg.profiles.get(args.profile) if args.profile else None
+
+            target = (
+                args.target
+                or (prof.test_target if prof else None)
+                or "tests/regression/fast"
+            )
+            marker = args.marker or (prof.test_marker if prof else None)
+            filter_k = args.filter or (prof.test_filter if prof else None)
+            test_opts = args.test_opts or (prof.test_opts if prof else None)
+
+            env_name = (prof.env if prof and prof.env else None) or cfg.default_env
+            env_spec = (
+                envconfig.resolve_env(
+                    cfg,
+                    env_name,
+                    casa_root=args.casa_root or (prof.casa_root if prof else None),
+                    heuristics_dir=args.heuristics_dir or (prof.heuristics_dir if prof else None),
+                    workspaces=prof.workspaces if prof else None,
+                )
+                if env_name
+                else None
+            )
+            casa_root = env_spec.casa_root if env_spec else (args.casa_root or (prof.casa_root if prof else None))
+            heuristics_dir = env_spec.heuristics_dir if env_spec else (args.heuristics_dir or (prof.heuristics_dir if prof else None))
+
+            nodes = collect.collect_tests(
+                target=target,
+                casa_root=casa_root,
+                heuristics_dir=heuristics_dir,
+                marker=marker,
+                filter_k=filter_k,
+                extra_opts=test_opts,
+            )
+            if args.output:
+                out_path = collect.write_test_runfile(args.output, nodes)
+                print(f"Collected {len(nodes)} test(s) -> {out_path}")
+            else:
+                for node in nodes:
+                    print(node)
+        except Exception as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif args.subcommand == "report":
+        report.main(args_list[1:])
+    elif args.subcommand == "coverage":
+        coverage.main(args_list[1:])
 
 
 if __name__ == "__main__":

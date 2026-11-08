@@ -318,6 +318,19 @@ pixi_dir = "/data/pipeline/branches/main"
 # cmd = "import pytest; pytest.main(['-vv', 'tests/regression/test_fast.py'])"
 # nprocs = 4
 #
+# [profiles.regression_array]
+# env = "main"
+# test_target = "tests/regression/fast"     # Pytest test directory or file to collect
+# test_marker = "regression"                # Marker filter (alias: marker)
+# test_opts = "--cov=pipeline --cov-branch --cov-report=" # Additional pytest options (alias: pytest_opts)
+# workdir = "~/Workspace/tests/fast_reg"    # Base workdir (tests run in sub-folders)
+# partition = "plwg"
+# cores = 8
+# mem = 64
+# backup = true                             # Safe directory rotation per test
+# max_concurrent = 8                       # Chained Slurm slot throttling (alias: throttle)
+# with_report = true                        # Auto-schedule dependent Slurm wrap-up report job
+#
 # [profiles.interactive_dev]
 # desc = "Interactive CASA debugging session with autoreload"
 # env = "main"

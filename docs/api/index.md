@@ -10,6 +10,9 @@
 | [`calibpipe.config`](config.md) | TOML configuration loader, environment resolution, and path reachability validation. |
 | [`calibpipe.runner`](runner.md) | Single-run pipeline orchestrator, log management, and CASA subprocess execution. |
 | [`calibpipe.batch`](batch.md) | Slurm batch submission generator, pipefile parser, and submit-host guards. |
+| [`calibpipe.collect`](collect.md) | Test discovery, node collection, and runfile generation for regression test arrays. |
+| [`calibpipe.coverage`](coverage.md) | Programmatic coverage search, path remapping, and consolidated HTML reporting. |
+| [`calibpipe.report`](report.md) | Test result synthesis, JUnit XML consolidation, and distributed coverage combining. |
 | [`calibpipe.pmr`](pmr.md) | Pipeline Make Request wrapper and ALMA archive data fetcher. |
 
 ---
@@ -21,8 +24,14 @@ flowchart LR
     CLI["calibpipe.cli"] --> Config["calibpipe.config"]
     CLI --> Runner["calibpipe.runner"]
     CLI --> Batch["calibpipe.batch"]
+    CLI --> Collect["calibpipe.collect"]
+    CLI --> Coverage["calibpipe.coverage"]
+    CLI --> Report["calibpipe.report"]
     CLI --> PMR["calibpipe.pmr"]
+    Batch --> Collect
     Batch --> Runner
+    Batch --> Report
+    Report --> Coverage
     Runner --> PMR
     Runner --> CASA["CASA Runtime (xvfb-run)"]
 ```

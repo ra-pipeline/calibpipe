@@ -7,7 +7,9 @@ defaults to calimage).
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ import time
 from collections.abc import Sequence
 from pathlib import Path
 
+from calibpipe import collect
 from calibpipe import config as envconfig
 from calibpipe.templates import render_template
 
@@ -308,6 +311,65 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         help="Print submit scripts and commands without submitting jobs to the scheduler (Slurm & HTCondor)",
     )
+    # Test array collection & batch execution
+    p.add_argument(
+        "--collect",
+        action="store_true",
+        default=None,
+        dest="collect",
+        help="Collect and submit an array of individual test jobs from profile test_target",
+    )
+    p.add_argument(
+        "--target",
+        "--test-target",
+        dest="test_target",
+        default=None,
+        help="Pytest test target path or directory to collect from (e.g. tests/regression/fast)",
+    )
+    p.add_argument(
+        "--marker",
+        "--test-marker",
+        dest="test_marker",
+        default=None,
+        help="Pytest marker expression to filter collected tests (e.g. 'regression')",
+    )
+    p.add_argument(
+        "-k",
+        "--filter",
+        "--test-filter",
+        dest="test_filter",
+        default=None,
+        help="Pytest keyword expression filter for collected tests (e.g. 'uid___A002')",
+    )
+    p.add_argument(
+        "--test-opts",
+        "--pytest-opts",
+        dest="test_opts",
+        default=None,
+        help="Additional pytest CLI options passed when executing collected tests",
+    )
+    p.add_argument(
+        "--save-runfile",
+        dest="save_runfile",
+        default=None,
+        help="Save collected test nodes to a test runfile before submitting",
+    )
+    p.add_argument(
+        "--with-report",
+        "--report",
+        dest="with_report",
+        action="store_true",
+        default=None,
+        help="Submit a dependent Slurm wrap-up job that combines coverage and summarizes test results after all test jobs complete",
+    )
+    p.add_argument(
+        "--max-concurrent",
+        "--throttle",
+        dest="max_concurrent",
+        type=int,
+        default=None,
+        help="Limit maximum concurrently active batch jobs using Slurm dependency slots",
+    )
     return p
 
 
@@ -431,6 +493,7 @@ def build_sbatch_script(
     ntasks_per_core: int | None = None,
     distribution: str | None = None,
     no_requeue: bool = True,
+    dependency: str | None = None,
     script_record_path: str | None = None,
     batch_env_exports: str | None = None,
     omp_num_threads: int | None = None,
@@ -486,6 +549,7 @@ def build_sbatch_script(
         _sbatch_directive("ntasks-per-core", ntasks_per_core),
         _sbatch_directive("hint", hint),
         _sbatch_directive("distribution", distribution),
+        _sbatch_directive("dependency", dependency),
         _sbatch_directive("gpus", request_gpus) if request_gpus else None,
         # mem and mem-per-cpu are mutually exclusive; mem-per-cpu wins
         _sbatch_directive("mem-per-cpu", mem_per_cpu)
@@ -680,19 +744,34 @@ def build_htcondor_script(
 
 
 def job_name(
-    pipejob: str, profile_name: str | None = None
+    pipejob: str,
+    profile_name: str | None = None,
+    test_name: str | None = None,
 ) -> tuple[str, str]:
     """Derive the standard batch job name and safe filename prefix from a command line.
 
     Args:
         pipejob: Fully assembled `calibpipe` execution command.
         profile_name: Optional named profile for single-job submission.
+        test_name: Optional test name for test collection batch jobs.
 
     Returns:
         Tuple of (display_name, file_safe_name).
         display_name retains profile name (e.g. including '/') for scheduler display (squeue/condor_q),
         while file_safe_name normalizes path separators for stdout/stderr/sbatch file paths.
     """
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    if test_name:
+        safe_test = re.sub(r"[^\w\-.]", "_", test_name)
+        if profile_name:
+            full_display = f"{profile_name}/{safe_test}_{timestr}"
+            safe_prof = profile_name.replace("/", "_").replace("@", "_").replace(":", "_")
+            full_safe = f"{safe_prof}_{safe_test}_{timestr}"
+        else:
+            full_display = f"{safe_test}_{timestr}"
+            full_safe = full_display
+        return full_display, full_safe
+
     prefix = ""
     for tok in pipejob.split():
         if tok.startswith("--mous="):
@@ -753,7 +832,8 @@ def print_queue(
     squeue_exe = shutil.which("squeue")
     if not squeue_exe:
         return
-    squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z"
+    # squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %50j %50Z"
+    squeue_format = "%7i %13P %9u %7T %11M %11l %5D %2C %2c/%7m %16R %80j"
     cmd = [squeue_exe, f"--format={squeue_format}", "-u", user]
     try:
         time.sleep(0.5)
@@ -764,6 +844,9 @@ def print_queue(
         pass
 
 
+_dry_run_counter: int = 0
+
+
 def _submit_tempfile_job(
     submit_cmd: str | Sequence[str],
     content: str,
@@ -771,12 +854,13 @@ def _submit_tempfile_job(
     prefix: str,
     suffix: str,
     dry_run: bool = False,
-) -> bool:
+) -> str | None:
     """Write job content to a temporary file, run submit command, and clean up.
 
     Returns:
-        True if the job was submitted (or dry-run simulated), False on error.
+        Job ID string if submitted, synthetic ID if dry run, or None on error.
     """
+    global _dry_run_counter
     with tempfile.NamedTemporaryFile(
         mode="w", prefix=prefix, suffix=suffix, delete=False
     ) as fd:
@@ -788,13 +872,24 @@ def _submit_tempfile_job(
         cmd = base_cmd + [temp_path]
         print("    " + " ".join(cmd))
         if dry_run:
+            _dry_run_counter += 1
             print("    [DRY RUN] Would execute: " + " ".join(cmd))
-            return True
-        subprocess.run(cmd, check=True)
-        return True
+            return f"DRY_RUN_{_dry_run_counter}"
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        stdout_txt = (proc.stdout or "").strip()
+        if stdout_txt:
+            print(f"    {stdout_txt}")
+            match = re.search(r"Submitted batch job (\d+)", stdout_txt)
+            if match:
+                return match.group(1)
+            match_condor = re.search(r"submitted to cluster (\d+)", stdout_txt, re.IGNORECASE)
+            if match_condor:
+                return match_condor.group(1)
+        return "SUBMITTED"
     except subprocess.CalledProcessError as exc:
-        print(f"    ERROR: Job submission failed (exit status {exc.returncode})")
-        return False
+        err = (exc.stderr or "").strip()
+        print(f"    ERROR: Job submission failed (exit status {exc.returncode}) {err}")
+        return None
     finally:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
@@ -878,7 +973,8 @@ def _dispatch_slurm(
     mem_str: str | None,
     batch_opts: envconfig.ResolvedBatchOptions,
     user: str,
-) -> bool:
+    dependency: str | None = None,
+) -> str | None:
     """Build and dispatch a Slurm batch job."""
     script_record_path = str(Path(outfile).with_suffix(".sbatch"))
     script_body = build_sbatch_script(
@@ -901,6 +997,7 @@ def _dispatch_slurm(
         ntasks_per_core=batch_opts.ntasks_per_core,
         distribution=batch_opts.distribution,
         no_requeue=batch_opts.no_requeue,
+        dependency=dependency,
         script_record_path=script_record_path,
         omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
         openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
@@ -932,11 +1029,12 @@ def _dispatch_job(
     name: str | tuple[str, str],
     batch_opts: envconfig.ResolvedBatchOptions,
     user: str,
-) -> bool:
+    dependency: str | None = None,
+) -> str | None:
     """Submit a single prepared job to the batch scheduler.
 
     Returns:
-        True if the job was submitted (or dry-run simulated), False on error.
+        Job ID string if submitted (or dry-run simulated), None on error.
     """
     if isinstance(name, tuple):
         display_name, file_name = name
@@ -1000,6 +1098,60 @@ def _dispatch_job(
         mem_str=mem_str,
         batch_opts=batch_opts,
         user=user,
+        dependency=dependency,
+    )
+
+
+def _submit_report_job(
+    *,
+    base_workdir: Path,
+    job_ids: list[str],
+    batch_opts: envconfig.ResolvedBatchOptions,
+    profile: envconfig.ProfileConfig | None,
+    cfg: envconfig.CalibpipeConfig,
+    args: argparse.Namespace,
+    user: str,
+) -> str | None:
+    """Submit a dependent wrap-up Slurm job to synthesize test results and coverage."""
+    valid_ids = [jid for jid in job_ids if jid]
+    if not valid_ids:
+        print("    No job IDs available for report job dependency.")
+        return None
+
+    dep_type = "afterany"
+    dep_str = f"{dep_type}:{':'.join(valid_ids)}"
+
+    calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
+    report_cmd_parts = [calibpipe_exe, "report", str(base_workdir)]
+    resolved_casa_root = profile.casa_root if profile else None
+    if not resolved_casa_root and profile and profile.env and profile.env in cfg.envs:
+        resolved_casa_root = cfg.envs[profile.env].casa_root
+    if resolved_casa_root:
+        report_cmd_parts.append(f"--casa-root={resolved_casa_root}")
+    report_pipejob = " ".join(report_cmd_parts)
+
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    display_name = f"{batch_opts.profile}/report_{ts}" if batch_opts.profile else f"report_{ts}"
+    file_name = f"report_{ts}"
+
+    report_batch_opts = dataclasses.replace(
+        batch_opts,
+        cores=1,
+        mem=8,
+        mem_per_cpu=None,
+        walltime="01:00:00",
+        chdir=str(base_workdir),
+        outfile=f"batch.{file_name}.out",
+        errfile=f"batch.{file_name}.err",
+    )
+
+    print(f"\nSubmitting dependent finalize report job (dependency: {dep_str})...")
+    return _dispatch_job(
+        report_pipejob,
+        (display_name, file_name),
+        report_batch_opts,
+        user,
+        dependency=dep_str,
     )
 
 
@@ -1027,6 +1179,22 @@ def main(argv: Sequence[str] | None = None) -> None:
     user = os.environ.get("USER", "")
     submitted = 0
 
+    cli_rootdir = getattr(args, "scipipe_rootdir", None)
+    profile = cfg.profiles.get(batch_opts.profile) if batch_opts.profile else None
+    prof_rootdir = profile.scipipe_rootdir if profile else None
+    effective_rootdir = cli_rootdir or prof_rootdir or cfg.paths.scipipe_rootdir
+    if isinstance(effective_rootdir, (list, tuple)):
+        prof_workspaces = profile.workspaces if profile and profile.workspaces else None
+        resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
+        effective_rootdir = envconfig.resolve_first_existing_path(
+            effective_rootdir, workspaces=resolved_workspaces, user=user
+        )
+    root_dir = (
+        Path(effective_rootdir.replace("{user}", user)).expanduser()
+        if effective_rootdir
+        else None
+    )
+
     pipefile = batch_opts.pipefile
     if pipefile is not None:
         if not pipefile.is_file():
@@ -1042,49 +1210,271 @@ def main(argv: Sequence[str] | None = None) -> None:
             if line.strip() and not line.strip().startswith("#")
         ]
 
-        for idx, line in enumerate(valid_lines, 1):
-            parts = line.split()
-            mousname = parts[0]
-            recipe = parts[1] if len(parts) > 1 else "calimage"
+        is_test_runfile = any("::" in line for line in valid_lines)
+        if is_test_runfile:
+            # Test array batch submission from runfile
+            test_items = collect.read_test_runfile(pipefile)
+            raw_workdir = (profile.workdir if profile and profile.workdir else None) or Path.cwd()
+            base_workdir = Path(os.path.expanduser(str(raw_workdir)))
+            if not base_workdir.is_absolute() and not str(base_workdir).startswith("~") and root_dir is not None:
+                base_workdir = root_dir / base_workdir
 
-            pipejob_parts = [
-                str(CALIBPIPEIF),
-                "--staticobscal",
-                f"--mous={mousname}",
-                f"--recipe={recipe}",
-            ]
+            submitted_job_ids: list[str] = []
+            for idx, (test_name, node_id) in enumerate(test_items, 1):
+                test_cmd = collect.build_test_cmd(
+                    node_id, test_name=test_name, extra_opts=batch_opts.test_opts
+                )
+                test_workdir = base_workdir / test_name
+
+                calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
+                pipejob_parts = [calibpipe_exe, "run"]
+                if batch_opts.profile:
+                    pipejob_parts.append(f"-p={batch_opts.profile}")
+                elif batch_opts.env_name:
+                    pipejob_parts.append(f"--env={batch_opts.env_name}")
+                pipejob_parts.append(f"--workdir={test_workdir}")
+                pipejob_parts.append(f"--cmd={shlex.quote(test_cmd)}")
+
+                if args.config:
+                    pipejob_parts.append(f"--config={args.config}")
+                if getattr(args, "no_site_config", False):
+                    pipejob_parts.append("--no-site-config")
+                if getattr(args, "log2term", None) is True:
+                    pipejob_parts.append("--log2term")
+                elif getattr(args, "log2term", None) is False:
+                    pipejob_parts.append("--no-log2term")
+                if getattr(args, "backup", None) is True:
+                    pipejob_parts.append("--backup")
+                elif getattr(args, "backup", None) is False:
+                    pipejob_parts.append("--no-backup")
+                pipejob_parts.extend(batch_opts.extra_args)
+                pipejob = " ".join(pipejob_parts)
+
+                chdir_to_use = getattr(args, "chdir", None) or str(base_workdir)
+                test_batch_opts = dataclasses.replace(batch_opts, chdir=chdir_to_use)
+                name = job_name(pipejob, profile_name=batch_opts.profile, test_name=test_name)
+
+                job_dep: str | None = None
+                if (
+                    batch_opts.max_concurrent
+                    and batch_opts.max_concurrent > 0
+                    and len(submitted_job_ids) >= batch_opts.max_concurrent
+                ):
+                    pred_id = submitted_job_ids[len(submitted_job_ids) - batch_opts.max_concurrent]
+                    if pred_id:
+                        job_dep = f"afterany:{pred_id}"
+
+                job_id = _dispatch_job(pipejob, name, test_batch_opts, user, dependency=job_dep)
+                if job_id:
+                    submitted += 1
+                    submitted_job_ids.append(job_id)
+
+                if idx < len(test_items) and not batch_opts.dry_run:
+                    time.sleep(1)
+
+            if batch_opts.with_report and (submitted_job_ids or batch_opts.dry_run):
+                rep_id = _submit_report_job(
+                    base_workdir=base_workdir,
+                    job_ids=submitted_job_ids,
+                    batch_opts=batch_opts,
+                    profile=profile,
+                    cfg=cfg,
+                    args=args,
+                    user=user,
+                )
+                if rep_id:
+                    submitted += 1
+        else:
+            for idx, line in enumerate(valid_lines, 1):
+                parts = line.split()
+                mousname = parts[0]
+                recipe = parts[1] if len(parts) > 1 else "calimage"
+
+                pipejob_parts = [
+                    str(CALIBPIPEIF),
+                    "--staticobscal",
+                    f"--mous={mousname}",
+                    f"--recipe={recipe}",
+                ]
+                if args.config:
+                    pipejob_parts.append(f"--config={args.config}")
+                if getattr(args, "no_site_config", False):
+                    pipejob_parts.append("--no-site-config")
+                if (
+                    getattr(args, "profile", None)
+                    and args.profile in cfg.profiles
+                    and args.profile not in cfg.batches
+                ):
+                    p = cfg.profiles[args.profile]
+                    has_run_or_env = any(
+                        [
+                            p.casa_root,
+                            p.heuristics_dir,
+                            p.pixi_dir,
+                            p.pixi_env,
+                            p.branch,
+                            p.recipe,
+                            p.loglevel,
+                            p.useresume,
+                            p.omp_num_threads,
+                            p.psrecord,
+                            p.memstats,
+                            p.backup,
+                            p.workspaces,
+                            p.casadata,
+                        ]
+                    )
+                    if has_run_or_env:
+                        pipejob_parts.append(f"--profile={args.profile}")
+                if batch_opts.env_name:
+                    pipejob_parts.append(f"--env={batch_opts.env_name}")
+                if getattr(args, "log2term", None) is True:
+                    pipejob_parts.append("--log2term")
+                elif getattr(args, "log2term", None) is False:
+                    pipejob_parts.append("--no-log2term")
+                if getattr(args, "backup", None) is True:
+                    pipejob_parts.append("--backup")
+                elif getattr(args, "backup", None) is False:
+                    pipejob_parts.append("--no-backup")
+                pipejob_parts.extend(batch_opts.extra_args)
+                pipejob = " ".join(pipejob_parts)
+
+                name = job_name(pipejob, profile_name=batch_opts.profile)
+                if _dispatch_job(pipejob, name, batch_opts, user):
+                    submitted += 1
+
+                if idx < len(valid_lines) and not batch_opts.dry_run:
+                    time.sleep(1)
+
+    elif batch_opts.profile:
+        if batch_opts.collect:
+            # Array test collection mode
+            target = (
+                batch_opts.test_target
+                or (profile.test_target if profile else None)
+                or "tests/regression/fast"
+            )
+            marker = batch_opts.test_marker or (profile.test_marker if profile else None)
+            filter_k = batch_opts.test_filter or (profile.test_filter if profile else None)
+            test_opts = batch_opts.test_opts or (profile.test_opts if profile else None)
+
+            env_name = (
+                (profile.env if profile and profile.env else None)
+                or batch_opts.env_name
+                or cfg.default_env
+            )
+            env_spec = (
+                envconfig.resolve_env(
+                    cfg,
+                    env_name,
+                    casa_root=profile.casa_root if profile else None,
+                    heuristics_dir=profile.heuristics_dir if profile else None,
+                    workspaces=profile.workspaces if profile else None,
+                )
+                if env_name
+                else None
+            )
+            casa_root = env_spec.casa_root if env_spec else (profile.casa_root if profile else None)
+            heuristics_dir = env_spec.heuristics_dir if env_spec else (profile.heuristics_dir if profile else None)
+
+            print(f"Collecting tests for profile '{batch_opts.profile}' from {target}...")
+            collected_nodes = collect.collect_tests(
+                target=target,
+                casa_root=casa_root,
+                heuristics_dir=heuristics_dir,
+                marker=marker,
+                filter_k=filter_k,
+                extra_opts=test_opts,
+                logger=print,
+            )
+            if not collected_nodes:
+                print(f"No tests collected from {target} (marker={marker}, filter={filter_k}).")
+                sys.exit(0)
+
+            if getattr(args, "save_runfile", None):
+                saved_file = collect.write_test_runfile(args.save_runfile, collected_nodes)
+                print(f"Saved {len(collected_nodes)} test(s) to runfile: {saved_file}")
+
+            print(f"Submitting {len(collected_nodes)} test batch job(s)...")
+
+            raw_workdir = (profile.workdir if profile and profile.workdir else None) or Path.cwd()
+            base_workdir = Path(os.path.expanduser(str(raw_workdir)))
+            if not base_workdir.is_absolute() and not str(base_workdir).startswith("~") and root_dir is not None:
+                base_workdir = root_dir / base_workdir
+
+            submitted_job_ids: list[str] = []
+            for idx, node_id in enumerate(collected_nodes, 1):
+                test_name = collect.parse_test_name(node_id)
+                test_cmd = collect.build_test_cmd(
+                    node_id, test_name=test_name, extra_opts=test_opts
+                )
+                test_workdir = base_workdir / test_name
+
+                calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
+                pipejob_parts = [
+                    calibpipe_exe,
+                    "run",
+                    f"-p={batch_opts.profile}",
+                    f"--workdir={test_workdir}",
+                    f"--cmd={shlex.quote(test_cmd)}",
+                ]
+                if args.config:
+                    pipejob_parts.append(f"--config={args.config}")
+                if getattr(args, "no_site_config", False):
+                    pipejob_parts.append("--no-site-config")
+                if getattr(args, "log2term", None) is True:
+                    pipejob_parts.append("--log2term")
+                elif getattr(args, "log2term", None) is False:
+                    pipejob_parts.append("--no-log2term")
+                if getattr(args, "backup", None) is True:
+                    pipejob_parts.append("--backup")
+                elif getattr(args, "backup", None) is False:
+                    pipejob_parts.append("--no-backup")
+                pipejob_parts.extend(batch_opts.extra_args)
+                pipejob = " ".join(pipejob_parts)
+
+                chdir_to_use = getattr(args, "chdir", None) or str(base_workdir)
+                test_batch_opts = dataclasses.replace(batch_opts, chdir=chdir_to_use)
+                name = job_name(pipejob, profile_name=batch_opts.profile, test_name=test_name)
+
+                job_dep: str | None = None
+                if (
+                    batch_opts.max_concurrent
+                    and batch_opts.max_concurrent > 0
+                    and len(submitted_job_ids) >= batch_opts.max_concurrent
+                ):
+                    pred_id = submitted_job_ids[len(submitted_job_ids) - batch_opts.max_concurrent]
+                    if pred_id:
+                        job_dep = f"afterany:{pred_id}"
+
+                job_id = _dispatch_job(pipejob, name, test_batch_opts, user, dependency=job_dep)
+                if job_id:
+                    submitted += 1
+                    submitted_job_ids.append(job_id)
+
+                if idx < len(collected_nodes) and not batch_opts.dry_run:
+                    time.sleep(1)
+
+            if batch_opts.with_report and (submitted_job_ids or batch_opts.dry_run):
+                rep_id = _submit_report_job(
+                    base_workdir=base_workdir,
+                    job_ids=submitted_job_ids,
+                    batch_opts=batch_opts,
+                    profile=profile,
+                    cfg=cfg,
+                    args=args,
+                    user=user,
+                )
+                if rep_id:
+                    submitted += 1
+        else:
+            # Single-job submission mode from named profile
+            calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
+            pipejob_parts = [calibpipe_exe, "run", f"-p={batch_opts.profile}"]
             if args.config:
                 pipejob_parts.append(f"--config={args.config}")
             if getattr(args, "no_site_config", False):
                 pipejob_parts.append("--no-site-config")
-            if (
-                getattr(args, "profile", None)
-                and args.profile in cfg.profiles
-                and args.profile not in cfg.batches
-            ):
-                p = cfg.profiles[args.profile]
-                has_run_or_env = any(
-                    [
-                        p.casa_root,
-                        p.heuristics_dir,
-                        p.pixi_dir,
-                        p.pixi_env,
-                        p.branch,
-                        p.recipe,
-                        p.loglevel,
-                        p.useresume,
-                        p.omp_num_threads,
-                        p.psrecord,
-                        p.memstats,
-                        p.backup,
-                        p.workspaces,
-                        p.casadata,
-                    ]
-                )
-                if has_run_or_env:
-                    pipejob_parts.append(f"--profile={args.profile}")
-            if batch_opts.env_name:
-                pipejob_parts.append(f"--env={batch_opts.env_name}")
             if getattr(args, "log2term", None) is True:
                 pipejob_parts.append("--log2term")
             elif getattr(args, "log2term", None) is False:
@@ -1099,32 +1489,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             name = job_name(pipejob, profile_name=batch_opts.profile)
             if _dispatch_job(pipejob, name, batch_opts, user):
                 submitted += 1
-
-            if idx < len(valid_lines) and not batch_opts.dry_run:
-                time.sleep(1)
-
-    elif batch_opts.profile:
-        # Single-job submission mode from named profile
-        calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
-        pipejob_parts = [calibpipe_exe, "run", f"-p={batch_opts.profile}"]
-        if args.config:
-            pipejob_parts.append(f"--config={args.config}")
-        if getattr(args, "no_site_config", False):
-            pipejob_parts.append("--no-site-config")
-        if getattr(args, "log2term", None) is True:
-            pipejob_parts.append("--log2term")
-        elif getattr(args, "log2term", None) is False:
-            pipejob_parts.append("--no-log2term")
-        if getattr(args, "backup", None) is True:
-            pipejob_parts.append("--backup")
-        elif getattr(args, "backup", None) is False:
-            pipejob_parts.append("--no-backup")
-        pipejob_parts.extend(batch_opts.extra_args)
-        pipejob = " ".join(pipejob_parts)
-
-        name = job_name(pipejob, profile_name=batch_opts.profile)
-        if _dispatch_job(pipejob, name, batch_opts, user):
-            submitted += 1
 
     if submitted > 0 and not batch_opts.dry_run:
         current_user = os.environ.get("USER", "")

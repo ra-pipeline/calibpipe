@@ -1,0 +1,3 @@
+# calibpipe.collect
+
+::: calibpipe.collect
