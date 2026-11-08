@@ -1158,6 +1158,133 @@ casa_root = "/fake/casa/main"
         self.assertTrue(file_safe_no_prof.startswith("uid___A002_X1_"))
         self.assertNotIn("/", file_safe_no_prof)
 
+    def test_build_sbatch_script_with_dependency(self):
+        """Verify build_sbatch_script emits --dependency directive."""
+        from calibpipe.batch import build_sbatch_script
+        script = build_sbatch_script(
+            "calibpipe report /tmp/workdir",
+            node="1",
+            cores=1,
+            mem="8G",
+            job_name="report_job",
+            mail_user="test@nrao.edu",
+            mail_type="NONE",
+            outfile="/tmp/out.log",
+            errfile="/tmp/err.log",
+            dependency="afterany:9001:9002",
+        )
+        self.assertIn("#SBATCH --dependency=afterany:9001:9002", script)
+
+    def test_batch_submit_with_report_flag(self):
+        """Verify --with-report submits a dependent wrap-up job following test jobs."""
+        test_cfg = (
+            'default_env = "main"\n'
+            "[envs.main]\n"
+            'casa_root = "/fake/casa/main"\n'
+            'heuristics_dir = "/fake/pipeline"\n'
+            "[profiles.regression_fast]\n"
+            'env = "main"\n'
+            'test_target = "tests/regression/fast"\n'
+            'workdir = "/tmp/fake_workdir"\n'
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
+            cf.write(test_cfg)
+            cfg_path = cf.name
+
+        fake_nodes = [
+            "tests/regression/fast/alma.py::test_uid___A002_X100__regression",
+            "tests/regression/fast/alma.py::test_uid___A002_X200__regression",
+        ]
+        try:
+            with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
+                calls = self.run_and_capture(
+                    ["--config", cfg_path, "-p", "regression_fast", "--collect", "--with-report"]
+                )
+                # 2 test jobs + 1 dependent report job
+                self.assertEqual(len(calls), 3)
+
+                # Report job is the 3rd call
+                _, report_script = calls[2]
+                self.assertIn("calibpipe report /tmp/fake_workdir", report_script)
+                self.assertIn("--casa-root=/fake/casa/main", report_script)
+                self.assertIn("#SBATCH --dependency=afterany:", report_script)
+                self.assertIn("regression_fast/report_", report_script)
+        finally:
+            os.unlink(cfg_path)
+
+    def test_batch_submit_with_throttle_slots(self):
+        """Verify --max-concurrent chains slot dependencies across submitted batch jobs."""
+        test_cfg = (
+            'default_env = "main"\n'
+            "[envs.main]\n"
+            'casa_root = "/fake/casa/main"\n'
+            'heuristics_dir = "/fake/pipeline"\n'
+            "[profiles.regression_throttle]\n"
+            'env = "main"\n'
+            'test_target = "tests/regression/fast"\n'
+            'workdir = "/tmp/fake_workdir"\n'
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
+            cf.write(test_cfg)
+            cfg_path = cf.name
+
+        fake_nodes = [
+            "tests/regression/fast/alma.py::test_uid___A002_X1__regression",
+            "tests/regression/fast/alma.py::test_uid___A002_X2__regression",
+            "tests/regression/fast/alma.py::test_uid___A002_X3__regression",
+            "tests/regression/fast/alma.py::test_uid___A002_X4__regression",
+        ]
+        try:
+            with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
+                calls = self.run_and_capture(
+                    ["--config", cfg_path, "-p", "regression_throttle", "--collect", "--max-concurrent=2"]
+                )
+                self.assertEqual(len(calls), 4)
+
+                _, script1 = calls[0]
+                _, script2 = calls[1]
+                _, script3 = calls[2]
+                _, script4 = calls[3]
+
+                # Jobs 1 and 2 start immediately (slots 1 and 2)
+                self.assertNotIn("#SBATCH --dependency=", script1)
+                self.assertNotIn("#SBATCH --dependency=", script2)
+
+                # Job 3 fills slot 1 when Job 1 completes
+                self.assertIn("#SBATCH --dependency=afterany:", script3)
+                # Job 4 fills slot 2 when Job 2 completes
+                self.assertIn("#SBATCH --dependency=afterany:", script4)
+
+            # Test max_concurrent from [batch] table
+            batch_cfg = (
+                "[batch]\n"
+                "max_concurrent = 2\n"
+                "[envs.main]\n"
+                'casa_root = "/fake/casa/main"\n'
+                'heuristics_dir = "/fake/pipeline"\n'
+                "[profiles.regression_batch_throttle]\n"
+                'env = "main"\n'
+                'test_target = "tests/regression/fast"\n'
+                'workdir = "/tmp/fake_workdir"\n'
+            )
+            with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf2:
+                cf2.write(batch_cfg)
+                cfg_path2 = cf2.name
+            try:
+                with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
+                    calls2 = self.run_and_capture(
+                        ["--config", cfg_path2, "-p", "regression_batch_throttle", "--collect"]
+                    )
+                    self.assertEqual(len(calls2), 4)
+                    self.assertNotIn("#SBATCH --dependency=", calls2[0][1])
+                    self.assertNotIn("#SBATCH --dependency=", calls2[1][1])
+                    self.assertIn("#SBATCH --dependency=afterany:", calls2[2][1])
+                    self.assertIn("#SBATCH --dependency=afterany:", calls2[3][1])
+            finally:
+                os.unlink(cfg_path2)
+        finally:
+            os.unlink(cfg_path)
+
 
 if __name__ == "__main__":
     unittest.main()

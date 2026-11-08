@@ -465,6 +465,7 @@ class BatchConfig:
     when_to_transfer_output: str | None = None  # HTCondor: when_to_transfer_output ("ON_EXIT", "ON_EXIT_OR_EVICT")
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
+    max_concurrent: int | None = None  # Slurm dependency slot throttle (alias: throttle)
 
     def __init__(
         self,
@@ -503,6 +504,8 @@ class BatchConfig:
         should_transfer_files: str | bool | None = None,
         when_to_transfer_output: str | None = None,
         transfer_files: str | bool | None = None,
+        max_concurrent: int | None = None,
+        throttle: int | None = None,
     ) -> None:
         self.partition = queue if queue is not None else partition
         if ntasks is not None:
@@ -537,6 +540,7 @@ class BatchConfig:
         else:
             self.should_transfer_files = stf
         self.when_to_transfer_output = when_to_transfer_output
+        self.max_concurrent = throttle if throttle is not None else max_concurrent
 
     @property
     def central_manager(self) -> str | None:
@@ -637,6 +641,9 @@ class BatchConfig:
             ),
             when_to_transfer_output=_str_or_none(
                 data.get("when_to_transfer_output", default_inst.when_to_transfer_output)
+            ),
+            max_concurrent=_int_or_none(
+                data.get("max_concurrent", data.get("throttle"))
             ),
         )
 
@@ -960,6 +967,8 @@ class ProfileConfig:
     test_marker: str | None = None
     test_filter: str | None = None
     test_opts: str | None = None
+    with_report: bool | None = None
+    max_concurrent: int | None = None
 
     @property
     def threads(self) -> int | None:
@@ -967,6 +976,10 @@ class ProfileConfig:
         return self.cpus_per_task
 
     def __init__(self, **kwargs: Any) -> None:
+        if "report" in kwargs and "with_report" not in kwargs:
+            kwargs["with_report"] = kwargs.pop("report")
+        if "throttle" in kwargs and "max_concurrent" not in kwargs:
+            kwargs["max_concurrent"] = kwargs.pop("throttle")
         if "test_dir" in kwargs and "test_target" not in kwargs:
             kwargs["test_target"] = kwargs.pop("test_dir")
         if "marker" in kwargs and "test_marker" not in kwargs:
@@ -1335,6 +1348,17 @@ class ProfileConfig:
                 if "casa_enable_telemetry" in flat
                 else None
             ),
+            collect=bool(flat["collect"]) if "collect" in flat else None,
+            test_target=_str_or_none(flat.get("test_target", flat.get("test_dir"))),
+            test_marker=_str_or_none(flat.get("test_marker", flat.get("marker"))),
+            test_filter=_str_or_none(flat.get("test_filter", flat.get("filter"))),
+            test_opts=_str_or_none(flat.get("test_opts", flat.get("pytest_opts"))),
+            with_report=(
+                bool(flat["with_report"])
+                if "with_report" in flat
+                else (bool(flat["report"]) if "report" in flat else None)
+            ),
+            max_concurrent=_int_or_none(flat.get("max_concurrent", flat.get("throttle"))),
         )
 
 
@@ -2372,6 +2396,8 @@ class ResolvedBatchOptions:
     test_marker: str | None = None
     test_filter: str | None = None
     test_opts: str | None = None
+    with_report: bool = False
+    max_concurrent: int | None = None
 
     @property
     def central_manager(self) -> str | None:
@@ -2677,6 +2703,32 @@ def resolve_batch_options(
         else (profile.test_opts if profile else None)
     )
 
+    cli_with_report = getattr(cli_args, "with_report", None)
+    if cli_with_report is None:
+        cli_with_report = getattr(cli_args, "report", None)
+    with_report = bool(
+        cli_with_report
+        if cli_with_report is not None
+        else (
+            profile.with_report
+            if profile and profile.with_report is not None
+            else False
+        )
+    )
+
+    cli_throttle = getattr(cli_args, "max_concurrent", None)
+    if cli_throttle is None:
+        cli_throttle = getattr(cli_args, "throttle", None)
+    max_concurrent = _int_or_none(
+        cli_throttle
+        if cli_throttle is not None
+        else (
+            profile.max_concurrent
+            if profile and profile.max_concurrent is not None
+            else getattr(active_batch, "max_concurrent", None)
+        )
+    )
+
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
@@ -2715,6 +2767,8 @@ def resolve_batch_options(
         test_marker=test_marker,
         test_filter=test_filter,
         test_opts=test_opts,
+        with_report=with_report,
+        max_concurrent=max_concurrent,
     )
 
 

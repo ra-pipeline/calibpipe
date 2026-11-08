@@ -7,7 +7,7 @@ import sys
 from typing import Sequence
 
 import calibpipe
-from calibpipe import batch, collect, config as envconfig, pmr, runner
+from calibpipe import batch, collect, config as envconfig, coverage, pmr, report, runner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -171,6 +171,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Extra pytest options passed to test collection",
     )
 
+    # 'report' subcommand
+    subparsers.add_parser(
+        "report",
+        help="Synthesize regression test results and combine coverage datasets",
+        parents=[report.build_parser()],
+        conflict_handler="resolve",
+    )
+
+    # 'coverage' subcommand
+    subparsers.add_parser(
+        "coverage",
+        help="Find, combine, and report on multiple coverage.py data files",
+        parents=[coverage.build_parser()],
+        conflict_handler="resolve",
+    )
+
     return parser
 
 
@@ -199,6 +215,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         "config",
         "profile",
         "collect",
+        "report",
+        "coverage",
         "-h",
         "--help",
         "-V",
@@ -304,6 +322,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         except Exception as e:
             print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
+    elif args.subcommand == "report":
+        report.main(args_list[1:])
+    elif args.subcommand == "coverage":
+        coverage.main(args_list[1:])
 
 
 if __name__ == "__main__":

@@ -354,6 +354,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Save collected test nodes to a test runfile before submitting",
     )
+    p.add_argument(
+        "--with-report",
+        "--report",
+        dest="with_report",
+        action="store_true",
+        default=None,
+        help="Submit a dependent Slurm wrap-up job that combines coverage and summarizes test results after all test jobs complete",
+    )
+    p.add_argument(
+        "--max-concurrent",
+        "--throttle",
+        dest="max_concurrent",
+        type=int,
+        default=None,
+        help="Limit maximum concurrently active batch jobs using Slurm dependency slots",
+    )
     return p
 
 
@@ -477,6 +493,7 @@ def build_sbatch_script(
     ntasks_per_core: int | None = None,
     distribution: str | None = None,
     no_requeue: bool = True,
+    dependency: str | None = None,
     script_record_path: str | None = None,
     batch_env_exports: str | None = None,
     omp_num_threads: int | None = None,
@@ -532,6 +549,7 @@ def build_sbatch_script(
         _sbatch_directive("ntasks-per-core", ntasks_per_core),
         _sbatch_directive("hint", hint),
         _sbatch_directive("distribution", distribution),
+        _sbatch_directive("dependency", dependency),
         _sbatch_directive("gpus", request_gpus) if request_gpus else None,
         # mem and mem-per-cpu are mutually exclusive; mem-per-cpu wins
         _sbatch_directive("mem-per-cpu", mem_per_cpu)
@@ -826,6 +844,9 @@ def print_queue(
         pass
 
 
+_dry_run_counter: int = 0
+
+
 def _submit_tempfile_job(
     submit_cmd: str | Sequence[str],
     content: str,
@@ -833,12 +854,13 @@ def _submit_tempfile_job(
     prefix: str,
     suffix: str,
     dry_run: bool = False,
-) -> bool:
+) -> str | None:
     """Write job content to a temporary file, run submit command, and clean up.
 
     Returns:
-        True if the job was submitted (or dry-run simulated), False on error.
+        Job ID string if submitted, synthetic ID if dry run, or None on error.
     """
+    global _dry_run_counter
     with tempfile.NamedTemporaryFile(
         mode="w", prefix=prefix, suffix=suffix, delete=False
     ) as fd:
@@ -850,13 +872,24 @@ def _submit_tempfile_job(
         cmd = base_cmd + [temp_path]
         print("    " + " ".join(cmd))
         if dry_run:
+            _dry_run_counter += 1
             print("    [DRY RUN] Would execute: " + " ".join(cmd))
-            return True
-        subprocess.run(cmd, check=True)
-        return True
+            return f"DRY_RUN_{_dry_run_counter}"
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        stdout_txt = (proc.stdout or "").strip()
+        if stdout_txt:
+            print(f"    {stdout_txt}")
+            match = re.search(r"Submitted batch job (\d+)", stdout_txt)
+            if match:
+                return match.group(1)
+            match_condor = re.search(r"submitted to cluster (\d+)", stdout_txt, re.IGNORECASE)
+            if match_condor:
+                return match_condor.group(1)
+        return "SUBMITTED"
     except subprocess.CalledProcessError as exc:
-        print(f"    ERROR: Job submission failed (exit status {exc.returncode})")
-        return False
+        err = (exc.stderr or "").strip()
+        print(f"    ERROR: Job submission failed (exit status {exc.returncode}) {err}")
+        return None
     finally:
         if os.path.exists(temp_path):
             os.unlink(temp_path)
@@ -940,7 +973,8 @@ def _dispatch_slurm(
     mem_str: str | None,
     batch_opts: envconfig.ResolvedBatchOptions,
     user: str,
-) -> bool:
+    dependency: str | None = None,
+) -> str | None:
     """Build and dispatch a Slurm batch job."""
     script_record_path = str(Path(outfile).with_suffix(".sbatch"))
     script_body = build_sbatch_script(
@@ -963,6 +997,7 @@ def _dispatch_slurm(
         ntasks_per_core=batch_opts.ntasks_per_core,
         distribution=batch_opts.distribution,
         no_requeue=batch_opts.no_requeue,
+        dependency=dependency,
         script_record_path=script_record_path,
         omp_num_threads=getattr(batch_opts, "omp_num_threads", None),
         openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
@@ -994,11 +1029,12 @@ def _dispatch_job(
     name: str | tuple[str, str],
     batch_opts: envconfig.ResolvedBatchOptions,
     user: str,
-) -> bool:
+    dependency: str | None = None,
+) -> str | None:
     """Submit a single prepared job to the batch scheduler.
 
     Returns:
-        True if the job was submitted (or dry-run simulated), False on error.
+        Job ID string if submitted (or dry-run simulated), None on error.
     """
     if isinstance(name, tuple):
         display_name, file_name = name
@@ -1062,6 +1098,60 @@ def _dispatch_job(
         mem_str=mem_str,
         batch_opts=batch_opts,
         user=user,
+        dependency=dependency,
+    )
+
+
+def _submit_report_job(
+    *,
+    base_workdir: Path,
+    job_ids: list[str],
+    batch_opts: envconfig.ResolvedBatchOptions,
+    profile: envconfig.ProfileConfig | None,
+    cfg: envconfig.CalibpipeConfig,
+    args: argparse.Namespace,
+    user: str,
+) -> str | None:
+    """Submit a dependent wrap-up Slurm job to synthesize test results and coverage."""
+    valid_ids = [jid for jid in job_ids if jid]
+    if not valid_ids:
+        print("    No job IDs available for report job dependency.")
+        return None
+
+    dep_type = "afterany"
+    dep_str = f"{dep_type}:{':'.join(valid_ids)}"
+
+    calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
+    report_cmd_parts = [calibpipe_exe, "report", str(base_workdir)]
+    resolved_casa_root = profile.casa_root if profile else None
+    if not resolved_casa_root and profile and profile.env and profile.env in cfg.envs:
+        resolved_casa_root = cfg.envs[profile.env].casa_root
+    if resolved_casa_root:
+        report_cmd_parts.append(f"--casa-root={resolved_casa_root}")
+    report_pipejob = " ".join(report_cmd_parts)
+
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    display_name = f"{batch_opts.profile}/report_{ts}" if batch_opts.profile else f"report_{ts}"
+    file_name = f"report_{ts}"
+
+    report_batch_opts = dataclasses.replace(
+        batch_opts,
+        cores=1,
+        mem=8,
+        mem_per_cpu=None,
+        walltime="01:00:00",
+        chdir=str(base_workdir),
+        outfile=f"batch.{file_name}.out",
+        errfile=f"batch.{file_name}.err",
+    )
+
+    print(f"\nSubmitting dependent finalize report job (dependency: {dep_str})...")
+    return _dispatch_job(
+        report_pipejob,
+        (display_name, file_name),
+        report_batch_opts,
+        user,
+        dependency=dep_str,
     )
 
 
@@ -1129,6 +1219,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             if not base_workdir.is_absolute() and not str(base_workdir).startswith("~") and root_dir is not None:
                 base_workdir = root_dir / base_workdir
 
+            submitted_job_ids: list[str] = []
             for idx, (test_name, node_id) in enumerate(test_items, 1):
                 test_cmd = collect.build_test_cmd(
                     node_id, test_name=test_name, extra_opts=batch_opts.test_opts
@@ -1162,11 +1253,37 @@ def main(argv: Sequence[str] | None = None) -> None:
                 chdir_to_use = getattr(args, "chdir", None) or str(base_workdir)
                 test_batch_opts = dataclasses.replace(batch_opts, chdir=chdir_to_use)
                 name = job_name(pipejob, profile_name=batch_opts.profile, test_name=test_name)
-                if _dispatch_job(pipejob, name, test_batch_opts, user):
+
+                job_dep: str | None = None
+                if (
+                    batch_opts.max_concurrent
+                    and batch_opts.max_concurrent > 0
+                    and len(submitted_job_ids) >= batch_opts.max_concurrent
+                ):
+                    pred_id = submitted_job_ids[len(submitted_job_ids) - batch_opts.max_concurrent]
+                    if pred_id:
+                        job_dep = f"afterany:{pred_id}"
+
+                job_id = _dispatch_job(pipejob, name, test_batch_opts, user, dependency=job_dep)
+                if job_id:
                     submitted += 1
+                    submitted_job_ids.append(job_id)
 
                 if idx < len(test_items) and not batch_opts.dry_run:
                     time.sleep(1)
+
+            if batch_opts.with_report and (submitted_job_ids or batch_opts.dry_run):
+                rep_id = _submit_report_job(
+                    base_workdir=base_workdir,
+                    job_ids=submitted_job_ids,
+                    batch_opts=batch_opts,
+                    profile=profile,
+                    cfg=cfg,
+                    args=args,
+                    user=user,
+                )
+                if rep_id:
+                    submitted += 1
         else:
             for idx, line in enumerate(valid_lines, 1):
                 parts = line.split()
@@ -1285,6 +1402,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             if not base_workdir.is_absolute() and not str(base_workdir).startswith("~") and root_dir is not None:
                 base_workdir = root_dir / base_workdir
 
+            submitted_job_ids: list[str] = []
             for idx, node_id in enumerate(collected_nodes, 1):
                 test_name = collect.parse_test_name(node_id)
                 test_cmd = collect.build_test_cmd(
@@ -1318,11 +1436,37 @@ def main(argv: Sequence[str] | None = None) -> None:
                 chdir_to_use = getattr(args, "chdir", None) or str(base_workdir)
                 test_batch_opts = dataclasses.replace(batch_opts, chdir=chdir_to_use)
                 name = job_name(pipejob, profile_name=batch_opts.profile, test_name=test_name)
-                if _dispatch_job(pipejob, name, test_batch_opts, user):
+
+                job_dep: str | None = None
+                if (
+                    batch_opts.max_concurrent
+                    and batch_opts.max_concurrent > 0
+                    and len(submitted_job_ids) >= batch_opts.max_concurrent
+                ):
+                    pred_id = submitted_job_ids[len(submitted_job_ids) - batch_opts.max_concurrent]
+                    if pred_id:
+                        job_dep = f"afterany:{pred_id}"
+
+                job_id = _dispatch_job(pipejob, name, test_batch_opts, user, dependency=job_dep)
+                if job_id:
                     submitted += 1
+                    submitted_job_ids.append(job_id)
 
                 if idx < len(collected_nodes) and not batch_opts.dry_run:
                     time.sleep(1)
+
+            if batch_opts.with_report and (submitted_job_ids or batch_opts.dry_run):
+                rep_id = _submit_report_job(
+                    base_workdir=base_workdir,
+                    job_ids=submitted_job_ids,
+                    batch_opts=batch_opts,
+                    profile=profile,
+                    cfg=cfg,
+                    args=args,
+                    user=user,
+                )
+                if rep_id:
+                    submitted += 1
         else:
             # Single-job submission mode from named profile
             calibpipe_exe = shutil.which("calibpipe") or "calibpipe"

@@ -593,8 +593,10 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `test_target` | `test_dir` | Pytest test directory or file to collect from (e.g. `tests/regression/fast`). |
 | | `test_marker` | `marker` | Pytest marker expression filter for test collection (e.g. `"regression"`). |
 | | `test_filter` | `filter` | Pytest keyword expression filter for test collection (e.g. `"uid___A002"`). |
-| | `test_opts` | `test_options`, `pytest_opts` | Extra pytest CLI options appended to test execution. |
-| **Batch Directives** | `cores` | `ntasks` | Allocated CPU / task count (Slurm `--ntasks` / HTCondor `request_cpus`). |
+| | `test_opts` | `test_options`, `pytest_opts` | Extra pytest CLI options appended to test execution (e.g. `"--cov=pipeline --cov-branch --cov-report="`). |
+| | `with_report` | `report` | Automatically submit a dependent Slurm wrap-up job to combine coverage and synthesize test results (`true`/`false`). |
+| **Batch Directives** | `max_concurrent` | `throttle` | Maximum concurrent batch jobs running simultaneously via chained Slurm dependency slots (`#SBATCH --dependency=afterany:<job_{i-K}>`). |
+| | `cores` | `ntasks` | Allocated CPU / task count (Slurm `--ntasks` / HTCondor `request_cpus`). |
 | | `cpus_per_task` | `threads` | Logical CPUs / threads per task for OpenMP multithreading. |
 | | `partition` | `queue` | Slurm partition / HTCondor queue name. |
 | | `mem` | | Total memory in GB (mutually exclusive with `mem_per_cpu`). |
@@ -998,6 +1000,53 @@ calibpipe submit -p regression_fast --collect -k "uid___A002" --marker="regressi
 calibpipe submit -p regression_fast --collect --save-runfile=quick.run
 ```
 
+###### Option C: Automated Post-Run Synthesis (`--with-report`)
+
+To automatically schedule a lightweight wrap-up Slurm job that waits for all individual test jobs to finish and synthesizes test results and code coverage:
+
+```bash
+# Submit test array and automatically schedule a dependent finalize job
+calibpipe submit quick.run -p regression_fast --with-report
+
+# Also works with on-the-fly collection
+calibpipe submit -p regression_fast --collect --with-report
+```
+
+The wrap-up job runs with `#SBATCH --dependency=afterany:<job1>:<job2>:...`, ensuring it executes immediately after all tests finish (regardless of pass/fail status). When triggered, it invokes `calibpipe report <base_workdir>`, aggregating all JUnit XML files, combining distributed `.coverage.*` datasets, and generating the consolidated HTML report.
+
+###### Option D: Batch Concurrency Throttling (`--max-concurrent` / `--throttle`)
+
+When dispatching large regression suites (e.g., 50–100 individual tests), submitting all jobs concurrently can saturate cluster queues, exhaust available node memory, or trigger Lustre filesystem IOPS bottlenecks.
+
+`calibpipe` provides an optional native concurrency throttle using **chained Slurm dependency slots**:
+
+```bash
+# Throttle batch submission to at most 8 concurrently running jobs:
+calibpipe submit quick.run -p regression_fast --max-concurrent 8
+
+# Combine throttling with on-the-fly collection and automated reporting:
+calibpipe submit -p regression_fast --collect --max-concurrent 8 --with-report
+```
+
+You can also set the throttle limit persistently in `config.toml`:
+
+```toml
+[profiles."regression/casa674_array_fast"]
+test_target = "tests/regression/fast"
+max_concurrent = 8     # Or alias: throttle = 8
+with_report = true
+```
+
+**How Native Slot Throttling Works:**
+
+- For the first $K$ jobs ($i < K$), jobs are submitted without prerequisites and begin running as cluster resources allow.
+- For each subsequent job ($i \ge K$), `calibpipe` injects a Slurm dependency linking job $i$ to job $i - K$:
+  ```text
+  #SBATCH --dependency=afterany:<Job_{i-K}_ID>
+  ```
+- **Zero Daemon Overhead**: Unlike queue managers that require a running python daemon or SSH process on the login node to poll and submit jobs, this throttling mechanism is delegated entirely to the native Slurm scheduler. Even if your terminal closes or the login node reboots, Slurm cleanly releases slot $i$ the instant slot $i-K$ terminates (whether it succeeds, fails, or is cancelled).
+- **Superior to Standard Job Arrays**: Unlike Slurm `#SBATCH --array=1-N%K` (which collapses all tasks into a single opaque job ID where individual task names are obscured in `squeue`), `calibpipe` gives every single test a descriptive job name (`{profile}/{test_name}_{timestamp}`) and separate `.sbatch` logs while enforcing the exact same concurrency ceiling.
+
 **What `calibpipe submit` does for test arrays:**
 1. **Target Identification:** Detects pytest node IDs (containing `::`) in runfiles or collects them on the fly via `calibpipe.collect`.
 2. **Sub-Workdir Segregation:** Assigns each test an independent working directory: `<base_workdir>/<test_name>`.
@@ -1007,7 +1056,9 @@ calibpipe submit -p regression_fast --collect --save-runfile=quick.run
    calibpipe run -p=<profile> --workdir=<base_workdir>/<test_name> \
      --cmd="import os, pytest; os.environ.pop('SCIPIPE_ROOTDIR', None); pytest.main(['-vvs', '--junitxml=regression-results-<test_name>.xml', '<node_id>'])"
    ```
-5. **Scheduler Tagging:** Names each batch job after the specific test identifier (e.g. `<test_name>_<timestamp>`), making jobs easily trackable in `squeue` or `condor_q`.
+5. **Scheduler Tagging:** Names each batch job after `{profilename}/{test_name}_{timestamp}`, making individual tests easily trackable in `squeue`.
+6. **Concurrency Throttling (Optional):** When `--max-concurrent=K` (or `max_concurrent = K` / `throttle = K`) is configured, injects `#SBATCH --dependency=afterany:<Job_{i-K}>` into Job $i$, guaranteeing at most $K$ test jobs run concurrently without requiring a daemon process on the login node.
+7. **Automated Finalize Wrap-up (Optional):** When `--with-report` is set (or configured via `with_report = true` in the profile), submits a dependent wrap-up Slurm job (`#SBATCH --dependency=afterany:...`) that triggers `calibpipe report` across the run directory.
 
 ---
 
@@ -1296,6 +1347,124 @@ uid___A002_Xc46ab2_X15ae_repSPW_spw16_17_small__PPR	tests/regression/fast/alma_i
 ```
 
 This runfile can be submitted directly with `calibpipe submit quick.run -p regression_fast`.
+
+---
+
+### 8. Regression Reporting & Coverage Synthesis (`calibpipe report`)
+
+`calibpipe report` programmatically inspects, synthesizes, and consolidates test results and code coverage data across distributed batch test executions. It replaces legacy post-processing scripts with a unified, cross-platform reporting tool.
+
+#### Core Capabilities
+
+1. **Distributed Coverage Synthesis:**
+   - Recursively discovers `.coverage.*` files from individual test subdirectories.
+   - Combines them into a single consolidated `<workdir>/.coverage` dataset using `coverage.py`.
+   - Generates a terminal summary table (`coverage report`) and a fully hyperlinked HTML coverage report (`coverage html`) saved in `<workdir>/htmlcov/index.html`.
+   - Automatically detects whether the `coverage` Python package is available locally or falls back to the configured CASA Python environment (`<casa_root>/bin/python3 -m coverage`).
+
+2. **JUnit XML Aggregation:**
+   - Discovers all `regression-results-*.xml` generated by individual test jobs.
+   - Parses total counts of passed, failed, error, and skipped tests along with elapsed runtime.
+   - Collects and formats detailed failure and error messages.
+
+3. **Persistent Summary Reports:**
+   - Displays a formatted summary in the terminal and saves persistent summary documents to disk:
+     - `<workdir>/test-summary.txt` (clean ASCII table)
+     - `<workdir>/test-summary.md` (GitHub-flavored Markdown table)
+
+#### Usage
+
+```bash
+# Run report and combine coverage in current working directory
+calibpipe report
+
+# Run report in a specific regression run directory
+calibpipe report /path/to/tests/projs/regression/casa674_array_fast
+
+# Remap source paths from remote cluster paths to local checkout
+calibpipe report /path/to/workdir --remap-source=/lustre/cluster/pipeline/path=/local/dev/pipeline
+
+# Explicitly specify CASA root for coverage execution fallback
+calibpipe report /path/to/workdir --casa-root=/path/to/casa-6.7.4
+
+# Skip coverage combine and generate only XML test summary
+calibpipe report /path/to/workdir --no-coverage
+
+# Skip XML test summary and only combine coverage
+calibpipe report /path/to/workdir --no-xml
+```
+
+#### Automated Finalize Workflow with Slurm
+
+Rather than polling running batch jobs manually or running report commands by hand, `calibpipe submit` can automate this reporting step:
+
+```bash
+# Automatically submit a dependent wrap-up job:
+calibpipe submit -p regression/casa674_array_fast --collect --with-report
+```
+
+When all test jobs finish, Slurm launches the finalize job (`#SBATCH --dependency=afterany:<ids>`), executing `calibpipe report <workdir>` automatically.
+
+---
+
+### 9. Standalone Code Coverage Combination & Source Remapping (`calibpipe coverage`)
+
+`calibpipe coverage` is a dedicated, lightweight utility for discovering, combining, and visualizing distributed `coverage.py` databases without parsing JUnit test XMLs. It replaces legacy post-processing scripts with native programmatic coverage combining and cross-environment source path translation.
+
+#### Core Capabilities
+
+1. **Recursive Data Discovery (`find_coverage_files`):**
+   - Recursively traverses subdirectories to locate all `.coverage.*` files produced by parallel pytest runners (`pytest-xdist`, Slurm job arrays, or discrete batch runs).
+   - Automatically excludes destination combined `.coverage` files to prevent self-referential merging corruption.
+
+2. **Cross-Environment Source Path Remapping (`--remap-source`):**
+   - When regression tests execute on compute nodes, containers, or remote cluster filesystems (e.g., `/lustre/naasc/sciops/comm/rxue/tickets/...`), the source file paths recorded in `.coverage.*` files match the remote paths.
+   - Using `--remap-source=<remote_prefix>=<local_prefix>`, `calibpipe coverage` configures Coverage.py's source path remapping so that HTML reports and terminal summaries accurately link to local source checkouts.
+
+3. **CASA Python Fallback Resolution:**
+   - If `coverage` is not installed in the active system Python virtual environment, `calibpipe` automatically searches for `<casa_root>/bin/python3` and invokes its built-in `coverage` module via subprocess, ensuring reports can be generated seamlessly on bare cluster nodes.
+
+#### Usage
+
+```bash
+# Combine all .coverage.* files in current directory and generate HTML report
+calibpipe coverage
+
+# Combine coverage in a specific batch workdir
+calibpipe coverage /path/to/tests/projs/regression/casa674_array_fast
+
+# Remap cluster execution paths to a local development checkout
+calibpipe coverage /path/to/workdir \
+  --remap-source=/lustre/cluster/pipeline=/home/developer/pipeline
+
+# Skip HTML report generation and only generate terminal output
+calibpipe coverage /path/to/workdir --no-html
+
+# Specify CASA root directory for coverage fallback
+calibpipe coverage /path/to/workdir --casa-root=/opt/casa/casa-6.7.4
+```
+
+#### Programmatic Python API
+
+The coverage synthesis machinery can also be called directly from Python:
+
+```python
+from pathlib import Path
+from calibpipe.coverage import combine_with_report, find_coverage_files
+
+# Discover all coverage files
+cov_files = find_coverage_files(["/path/to/workdir"])
+
+# Combine and generate reports
+results = combine_with_report(
+    search_paths=["/path/to/workdir"],
+    output_dir="/path/to/workdir",
+    source_paths=["/lustre/remote/path=/local/path"],
+    casa_root="/opt/casa/casa-6.7.4",
+)
+print(f"Total coverage: {results['total_coverage']}%")
+print(f"HTML Report: {results['index_file']}")
+```
 
 ---
 

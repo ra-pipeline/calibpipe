@@ -132,9 +132,9 @@ def collect_tests(
         python_exe,
         "-m",
         "pytest",
-        "-qq",
+        "--collect-only",
         "--disable-warnings",
-        "--collect-tests",
+        "--color=no",
         target_str,
     ]
     if marker:
@@ -157,13 +157,6 @@ def collect_tests(
         ppath.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = ":".join(ppath)
 
-    collected_file = heuristics_path / "collected_tests.txt"
-    if collected_file.exists():
-        try:
-            collected_file.unlink()
-        except OSError:
-            pass
-
     proc = subprocess.run(
         cmd,
         cwd=str(heuristics_path),
@@ -174,22 +167,19 @@ def collect_tests(
         timeout=timeout,
     )
 
-    node_ids: list[str] = []
-    if collected_file.exists():
-        try:
-            raw_text = collected_file.read_text(encoding="utf-8")
-            node_ids = [line.strip() for line in raw_text.splitlines() if line.strip()]
-            collected_file.unlink()
-        except OSError as err:
-            if logger:
-                logger(f"Warning: Failed reading {collected_file}: {err}")
+    if proc.returncode not in (0, 5) and logger:
+        err_msg = (proc.stderr or proc.stdout or "").strip()
+        logger(f"Warning: pytest --collect-only returned exit code {proc.returncode}: {err_msg}")
 
-    if not node_ids and proc.stdout:
+    node_ids: list[str] = []
+    if proc.stdout:
         for line in proc.stdout.splitlines():
             line_str = line.strip()
+            # Standard pytest --collect-only outputs node IDs containing '::'
             if "::" in line_str and not line_str.startswith("#"):
                 clean = re.sub(r"^\[.*?\]\s*", "", line_str)
-                node_ids.append(clean)
+                if "::" in clean:
+                    node_ids.append(clean)
 
     # Normalize paths relative to heuristics_path
     normalized: list[str] = []

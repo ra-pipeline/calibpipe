@@ -187,6 +187,16 @@ env = "main"
                 batch.main(["-p", "interactive", f"--config={cfg_path}", "--no-site-config"])
             self.assertEqual(cm.exception.code, 1)
 
+    def test_report_subcommand_dispatch(self) -> None:
+        with patch("calibpipe.report.main") as mock_report:
+            cli.main(["report", "/tmp/fake_dir"])
+            mock_report.assert_called_once_with(["/tmp/fake_dir"])
+
+    def test_coverage_subcommand_dispatch(self) -> None:
+        with patch("calibpipe.coverage.main") as mock_cov:
+            cli.main(["coverage", "/tmp/fake_dir"])
+            mock_cov.assert_called_once_with(["/tmp/fake_dir"])
+
 
 if __name__ == "__main__":
     unittest.main()
