@@ -26,6 +26,46 @@ nav = [
     { "Execution Internals" = "internals.md" },
 ]
 
+[project.theme]
+variant = "modern"
+features = [
+    "navigation.top",
+    "navigation.footer",
+    "content.code.copy",
+    "content.code.select",
+    "content.code.annotate",
+    "content.tabs.link",
+    "search.highlight",
+    "header.autohide",
+]
+
+[project.theme.icon]
+logo = "lucide/telescope"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+scheme = "default"
+primary = "indigo"
+accent = "teal"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "indigo"
+accent = "teal"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "indigo"
+accent = "teal"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
 [project.plugins.search]
 
 [project.plugins.gh-admonitions]

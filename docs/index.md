@@ -14,14 +14,45 @@ The package keeps site-specific execution details in TOML configuration rather t
 
 ## What You Can Do with calibpipe
 
-- **Run single pipeline executions:** standard ALMA MOUS reductions (`--mous`), direct recipe reductions on local datasets (`--vis` + `--procedure`), standalone PPRs (`--PPR`), custom scripts (`--script`), inline commands (`--cmd`), or interactive CASA sessions (`-i`).
-- **Submit runs to Slurm or HTCondor:** batch queues from pipefiles (`calibpipe submit pipefile.txt`), regression test arrays (`calibpipe submit quick.run -p <profile>` or `calibpipe submit -p <profile> --collect`), native concurrency slot throttling (`--max-concurrent` / `--throttle`), or single-job submissions directly from named profiles (`calibpipe submit -p <profile>`).
-- **Discover and collect regression tests:** discover pytest test nodes using CASA Python with marker and keyword filtering (`calibpipe collect [target] -p <profile> -o runfile.txt`).
-- **Synthesize test results and code coverage:** consolidate distributed test outputs, combine `.coverage.*` files with source path remapping, and generate HTML coverage reports (`calibpipe report`, `calibpipe coverage`, or `--with-report`).
-- **Update regression reference files:** merge `*.NEW.results.txt` outputs into `pipeline-testdata` references while preserving custom tolerances and staging `.candidate` files for review (`calibpipe update-ref`).
-- **Target named execution and batch profiles:** encapsulate execution targets, CASA/pipeline checkouts, hardware tuning, regression test specifications, and scheduler resources under `[profiles.<name>]`.
-- **Resolve interactive shell environments:** `source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`.
-- **Preserve existing workflows:** drop-in compatibility for legacy scripts (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
+<div class="grid cards" markdown>
+
+-   :lucide-play:{ .lg .middle } **Single Pipeline Runs**
+
+    ---
+
+    Launch standard ALMA MOUS reductions (`--mous`), direct recipe runs on local datasets (`--vis` + `--procedure`), standalone PPRs (`--PPR`), custom scripts (`--script`), inline commands (`--cmd`), or interactive CASA sessions (`-i`).
+
+-   :lucide-layers:{ .lg .middle } **Slurm & HTCondor Batch Queues**
+
+    ---
+
+    Submit pipefiles (`calibpipe submit pipefile.txt`), regression test arrays (`calibpipe submit quick.run -p <profile>` or `calibpipe submit -p <profile> --collect`), throttled arrays (`--max-concurrent` / `--throttle`), or single jobs from named profiles (`calibpipe submit -p <profile>`).
+
+-   :lucide-search:{ .lg .middle } **Regression Test Discovery**
+
+    ---
+
+    Collect pytest test nodes inside CASA Python with marker and keyword filtering via `calibpipe collect [target] -p <profile> -o runfile.txt`.
+
+-   :lucide-bar-chart-2:{ .lg .middle } **Result & Coverage Synthesis**
+
+    ---
+
+    Consolidate distributed JUnit XML test summaries, merge `.coverage.*` files with source path remapping, and build HTML reports (`calibpipe report`, `calibpipe coverage`, or `--with-report`).
+
+-   :lucide-file-check:{ .lg .middle } **Reference File Updates**
+
+    ---
+
+    Merge `*.NEW.results.txt` outputs into `pipeline-testdata` references while preserving custom tolerances and staging `.candidate` files for review (`calibpipe update-ref`).
+
+-   :lucide-sliders:{ .lg .middle } **Profiles, Shells & Legacy Shims**
+
+    ---
+
+    Target reusable `[profiles.<name>]` definitions, resolve shell environments (`source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`), and keep drop-in compatibility for legacy scripts.
+
+</div>
 
 ---
 
@@ -29,21 +60,21 @@ The package keeps site-specific execution details in TOML configuration rather t
 
 ### 1. Installation & Environment Setup
 
-Using `uv` (recommended):
+=== "uv (recommended)"
 
-```bash
-# Sync local virtual environment with dev and docs tools:
-uv sync --extra dev --extra docs
+    ```bash
+    # Sync local virtual environment with dev and docs tools:
+    uv sync --extra dev --extra docs
 
-# Or install globally as an isolated CLI tool on your cluster account:
-uv tool install --editable .
-```
+    # Or install globally as an isolated CLI tool on your cluster account:
+    uv tool install --editable .
+    ```
 
-Alternative pip / pipx methods:
+=== "pip / pipx"
 
-```bash
-pip install -e .     # or: pipx install .
-```
+    ```bash
+    pip install -e .     # or: pipx install .
+    ```
 
 ### 2. Configuration
 
@@ -64,7 +95,7 @@ default_env = "main"
 casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 ```
 
-For the complete multi-layer cascading architecture (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`, `[run]`), variable interpolation, and precedence rules, see the [Configuration Guide](guide.md#configuration).
+For the complete multi-layer cascading architecture (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`, `[run]`, `[profiles.<name>]`), variable interpolation, and precedence rules, see the [Configuration Guide](guide.md#configuration).
 
 ### 3. Run a Reduction
 
@@ -80,8 +111,32 @@ For Slurm batch execution, interactive shell sourcing, and legacy wrapper mappin
 
 ## Documentation Map
 
-- **[User Guide](guide.md):** Complete manual covering architecture, the 5-tier configuration schema, Slurm batching, shell environment setup, testing, and local doc previewing.
-- **[Execution Internals](internals.md):** In-depth technical details on project ID resolution, `pipelineMakeRequest` (PMR) staging, OUS directory layout, and FAQ.
-- **[Changelog & History](changelog.md):** Evolution from prototype scripts to modern library, version-by-version release notes, and pending features.
-- **[API Reference](api/index.md):** Auto-generated module reference and docstrings for `cli`, `config`, `runner`, `batch`, `pmr`, and execution steps.
-- **[Configuration Template](https://github.com/nrao/calibpipe/blob/main/config.example.toml):** Fully annotated generic configuration template.
+<div class="grid cards" markdown>
+
+-   :lucide-book-open:{ .lg .middle } **[User Guide](guide.md)**
+
+    ---
+
+    Complete manual covering architecture, 5-tier configuration, batch queues, profiles, shell setup, testing, and reference updates.
+
+-   :lucide-cpu:{ .lg .middle } **[Execution Internals](internals.md)**
+
+    ---
+
+    Technical details on project ID resolution, `pipelineMakeRequest` (PMR) staging, OUS directory layout, and FAQ.
+
+-   :lucide-history:{ .lg .middle } **[Changelog & History](changelog.md)**
+
+    ---
+
+    Evolution from prototype scripts to `calibpipe`, version-by-version release notes, and unreleased changes.
+
+-   :lucide-terminal:{ .lg .middle } **[API Reference](api/index.md)**
+
+    ---
+
+    Auto-generated module reference and docstrings for `cli`, `config`, `runner`, `batch`, `collect`, `coverage`, `report`, `update_ref`, and `pmr`.
+
+</div>
+
+- **[Configuration Template](https://github.com/ra-pipeline/calibpipe/blob/main/config.example.toml):** Annotated generic `config.toml` template.
