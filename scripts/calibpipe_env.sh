@@ -22,25 +22,37 @@ if [ "$__calibpipe_sourced" -eq 0 ]; then
 fi
 
 # Locate Python or calibpipe executable
-if command -v calibpipe >/dev/null 2>&1; then
+if [ -z "${CALIBPIPE_PYTHON:-}" ] && command -v calibpipe >/dev/null 2>&1; then
     __calibpipe_cmd="calibpipe env"
 else
-    # Fallback to python in checkout: locate src directory relative to this script
+    # Fallback to python in checkout: locate repo root and src directory relative to this script
     __calibpipe_script_dir=$(cd "$(dirname "${BASH_SOURCE:-$0}")" >/dev/null 2>&1 && pwd)
     if [ -d "$__calibpipe_script_dir/src" ]; then
+        __calibpipe_root="$__calibpipe_script_dir"
         __calibpipe_src="$__calibpipe_script_dir/src"
     elif [ -d "$__calibpipe_script_dir/../src" ]; then
-        __calibpipe_src="$(cd "$__calibpipe_script_dir/.." >/dev/null 2>&1 && pwd)/src"
+        __calibpipe_root="$(cd "$__calibpipe_script_dir/.." >/dev/null 2>&1 && pwd)"
+        __calibpipe_src="$__calibpipe_root/src"
     else
+        __calibpipe_root=""
         __calibpipe_src=""
     fi
 
-    if [ -n "$__calibpipe_src" ]; then
-        __calibpipe_cmd="PYTHONPATH=\"$__calibpipe_src:\$PYTHONPATH\" python3 -m calibpipe.cli env"
-    else
-        __calibpipe_cmd="python3 -m calibpipe.cli env"
+    __calibpipe_python="${CALIBPIPE_PYTHON:-}"
+    if [ -z "$__calibpipe_python" ]; then
+        if [ -n "$__calibpipe_root" ] && [ -x "$__calibpipe_root/.venv/bin/python" ]; then
+            __calibpipe_python="$__calibpipe_root/.venv/bin/python"
+        else
+            __calibpipe_python="python3"
+        fi
     fi
-    unset __calibpipe_script_dir __calibpipe_src
+
+    if [ -n "$__calibpipe_src" ]; then
+        __calibpipe_cmd="PYTHONPATH=\"$__calibpipe_src\${PYTHONPATH:+:\$PYTHONPATH}\" \"$__calibpipe_python\" -m calibpipe.cli env"
+    else
+        __calibpipe_cmd="\"$__calibpipe_python\" -m calibpipe.cli env"
+    fi
+    unset __calibpipe_script_dir __calibpipe_root __calibpipe_src __calibpipe_python
 fi
 
 __calibpipe_out=$(eval "$__calibpipe_cmd \"\$@\"")
