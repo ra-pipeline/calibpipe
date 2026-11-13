@@ -95,7 +95,7 @@ def collect_tests(
     marker: str | None = None,
     filter_k: str | None = None,
     extra_opts: Sequence[str] | str | None = None,
-    timeout: int = 120,
+    timeout: int = 300,
     logger: Callable[[str], None] | None = None,
 ) -> list[str]:
     """Collect test node IDs from a pipeline repository using CASA Python.
@@ -132,7 +132,10 @@ def collect_tests(
         python_exe,
         "-m",
         "pytest",
+        "-o",
+        "addopts=",
         "--collect-only",
+        "-q",
         "--disable-warnings",
         "--color=no",
         target_str,
@@ -142,10 +145,13 @@ def collect_tests(
     if filter_k:
         cmd.extend(["-k", str(filter_k)])
     if extra_opts:
-        if isinstance(extra_opts, str):
-            cmd.extend(extra_opts.split())
-        else:
-            cmd.extend(list(extra_opts))
+        opts_list = extra_opts.split() if isinstance(extra_opts, str) else list(extra_opts)
+        # Filter out execution/profiling flags that cause heavy import tracing during collect-only
+        safe_opts = [
+            opt for opt in opts_list
+            if not opt.startswith(("--cov", "-n", "--dist", "--junitxml"))
+        ]
+        cmd.extend(safe_opts)
 
     if logger:
         logger(f"Collecting tests in {heuristics_path}: {' '.join(cmd)}")

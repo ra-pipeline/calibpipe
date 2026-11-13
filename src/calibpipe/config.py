@@ -292,7 +292,11 @@ class PathsConfig:
             else (
                 data.get("casadata")
                 if "casadata" in data and data.get("casadata") is not None
-                else data.get("rundata")
+                else (
+                    data.get("data")
+                    if "data" in data and data.get("data") is not None
+                    else data.get("rundata")
+                )
             )
         )
         resolved_casarundata = (
@@ -1056,25 +1060,29 @@ class ProfileConfig:
                 )
             elif raw_log is not None:
                 kwargs["scipipe_logdir"] = str(raw_log)
-        if "casarundata" in kwargs:
-            raw_crd = kwargs["casarundata"]
+        raw_crd = (
+            kwargs.get("casarundata")
+            if kwargs.get("casarundata") is not None
+            else (
+                kwargs.get("casadata")
+                if kwargs.get("casadata") is not None
+                else kwargs.get("data")
+            )
+        )
+        if raw_crd is not None:
             if isinstance(raw_crd, (list, tuple)):
-                kwargs["casarundata"] = (
-                    resolve_first_existing_path(raw_crd, workspaces=kwargs.get("workspaces") or ()) or None
+                resolved_crd = (
+                    resolve_first_existing_path(
+                        raw_crd, workspaces=kwargs.get("workspaces") or ()
+                    )
+                    or None
                 )
-            elif raw_crd is not None:
-                kwargs["casarundata"] = str(raw_crd)
-            if "casadata" not in kwargs:
-                kwargs["casadata"] = kwargs["casarundata"]
-        elif "casadata" in kwargs:
-            raw_crd = kwargs["casadata"]
-            if isinstance(raw_crd, (list, tuple)):
-                kwargs["casadata"] = (
-                    resolve_first_existing_path(raw_crd, workspaces=kwargs.get("workspaces") or ()) or None
-                )
-            elif raw_crd is not None:
-                kwargs["casadata"] = str(raw_crd)
-            kwargs["casarundata"] = kwargs["casadata"]
+            else:
+                resolved_crd = str(raw_crd).strip() or None
+            kwargs["casarundata"] = resolved_crd
+            kwargs["casadata"] = resolved_crd
+            if kwargs.get("rundata") is None:
+                kwargs["rundata"] = _list_or_empty(raw_crd)
         for f in fields(self):
             if f.name in kwargs:
                 setattr(self, f.name, kwargs[f.name])
@@ -1235,18 +1243,44 @@ class ProfileConfig:
             ),
             casarundata=(
                 resolve_first_existing_path(
-                    flat.get("casarundata") if "casarundata" in flat else flat.get("casadata", flat.get("rundata")),
+                    flat.get("casarundata")
+                    if "casarundata" in flat and flat.get("casarundata") is not None
+                    else (
+                        flat.get("casadata")
+                        if "casadata" in flat and flat.get("casadata") is not None
+                        else (
+                            flat.get("data")
+                            if "data" in flat and flat.get("data") is not None
+                            else flat.get("rundata")
+                        )
+                    ),
                     workspaces=flat.get("workspaces") or (),
                 )
-                if ("casarundata" in flat or "casadata" in flat or "rundata" in flat)
+                if any(
+                    k in flat and flat.get(k) is not None
+                    for k in ("casarundata", "casadata", "data", "rundata")
+                )
                 else None
             ),
             casadata=(
                 resolve_first_existing_path(
-                    flat.get("casarundata") if "casarundata" in flat else flat.get("casadata", flat.get("rundata")),
+                    flat.get("casarundata")
+                    if "casarundata" in flat and flat.get("casarundata") is not None
+                    else (
+                        flat.get("casadata")
+                        if "casadata" in flat and flat.get("casadata") is not None
+                        else (
+                            flat.get("data")
+                            if "data" in flat and flat.get("data") is not None
+                            else flat.get("rundata")
+                        )
+                    ),
                     workspaces=flat.get("workspaces") or (),
                 )
-                if ("casarundata" in flat or "casadata" in flat or "rundata" in flat)
+                if any(
+                    k in flat and flat.get(k) is not None
+                    for k in ("casarundata", "casadata", "data", "rundata")
+                )
                 else None
             ),
             pickle_dir=_str_or_none(flat.get("pickle_dir")),
@@ -1331,7 +1365,26 @@ class ProfileConfig:
             rawdata=_str_or_none(flat.get("rawdata", flat.get("pp_rawdata"))),
             interactive=bool(flat["interactive"]) if "interactive" in flat else None,
             datapath=_list_or_empty(flat["datapath"]) if "datapath" in flat else None,
-            rundata=_list_or_empty(flat["rundata"]) if "rundata" in flat else None,
+            rundata=(
+                _list_or_empty(flat["rundata"])
+                if "rundata" in flat and flat.get("rundata") is not None
+                else (
+                    _list_or_empty(
+                        flat.get("casarundata")
+                        if "casarundata" in flat and flat.get("casarundata") is not None
+                        else (
+                            flat.get("casadata")
+                            if "casadata" in flat and flat.get("casadata") is not None
+                            else flat.get("data")
+                        )
+                    )
+                    if any(
+                        k in flat and flat.get(k) is not None
+                        for k in ("casarundata", "casadata", "data")
+                    )
+                    else None
+                )
+            ),
             dry_run=bool(flat["dry_run"]) if "dry_run" in flat else None,
             autoreload=bool(flat["autoreload"]) if "autoreload" in flat else None,
             nologger=(
@@ -2064,12 +2117,23 @@ def resolve_run_options(
         resolved_datapath = []
 
     cli_rundata = getattr(cli_opts, "rundata", None)
+    cli_casarundata = getattr(cli_opts, "casarundata", None)
+    cli_casadata = getattr(cli_opts, "casadata", None)
+    cli_crd = cli_casarundata or cli_casadata
+
     rundata_specified = False
     if cli_rundata is not None:
         resolved_rundata = _list_or_empty(cli_rundata)
         rundata_specified = True
+    elif cli_crd is not None:
+        resolved_rundata = [cli_crd] if isinstance(cli_crd, str) else list(cli_crd)
+        rundata_specified = True
     elif profile is not None and profile.rundata is not None:
         resolved_rundata = list(profile.rundata)
+        rundata_specified = True
+    elif profile is not None and (profile.casarundata or profile.casadata):
+        prof_crd = profile.casarundata or profile.casadata
+        resolved_rundata = [prof_crd]
         rundata_specified = True
     elif cfg.run.rundata:
         resolved_rundata = list(cfg.run.rundata)

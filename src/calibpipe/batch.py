@@ -1384,7 +1384,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 heuristics_dir=heuristics_dir,
                 marker=marker,
                 filter_k=filter_k,
-                extra_opts=test_opts,
+                extra_opts=getattr(args, "collect_opts", None),
                 logger=print,
             )
             if not collected_nodes:

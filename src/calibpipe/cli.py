@@ -7,7 +7,7 @@ import sys
 from typing import Sequence
 
 import calibpipe
-from calibpipe import batch, collect, config as envconfig, coverage, pmr, report, runner
+from calibpipe import batch, collect, config as envconfig, coverage, pmr, report, runner, update_ref
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -187,6 +187,15 @@ def build_parser() -> argparse.ArgumentParser:
         conflict_handler="resolve",
     )
 
+    # 'update-ref' subcommand (with 'updateref' alias)
+    subparsers.add_parser(
+        "update-ref",
+        aliases=["updateref"],
+        help="Update and stage regression test reference results files (*.results.txt)",
+        parents=[update_ref.build_parser(add_help=False)],
+        conflict_handler="resolve",
+    )
+
     return parser
 
 
@@ -217,6 +226,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         "collect",
         "report",
         "coverage",
+        "update-ref",
+        "updateref",
         "-h",
         "--help",
         "-V",
@@ -326,6 +337,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         report.main(args_list[1:])
     elif args.subcommand == "coverage":
         coverage.main(args_list[1:])
+    elif args.subcommand in ("update-ref", "updateref"):
+        sys.exit(update_ref.main(args_list[1:]))
 
 
 if __name__ == "__main__":
