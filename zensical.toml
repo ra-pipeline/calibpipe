@@ -20,6 +20,7 @@ nav = [
         { "Collect (calibpipe.collect)" = "api/collect.md" },
         { "Coverage (calibpipe.coverage)" = "api/coverage.md" },
         { "Report (calibpipe.report)" = "api/report.md" },
+        { "Update Ref (calibpipe.update_ref)" = "api/update_ref.md" },
         { "PMR (calibpipe.pmr)" = "api/pmr.md" },
     ] },
     { "Execution Internals" = "internals.md" },

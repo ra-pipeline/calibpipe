@@ -1,12 +1,12 @@
 # calibpipe
 
-`calibpipe` is a lightweight driver and Slurm batch wrapper for ALMA Science Pipeline runs. It is designed for validation, testing, and development workflows needing a repeatable command-line interface for selecting a configured CASA environment, launching a single MOUS reduction, or submitting a batch of jobs.
+`calibpipe` is a lightweight driver and Slurm batch wrapper for ALMA Science Pipeline development. It is designed for validation, testing, and development workflows needing a repeatable command-line interface for selecting a configured CASA environment, launching a single MOUS reduction, or submitting a batch of jobs.
 
 The package keeps site-specific execution details in TOML configuration rather than hard-coded shell fragments, while preserving compatibility with older script entry points in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
 
 > [!WARNING] Cluster & Pipeline Tooling Dependencies
 >
-> `calibpipe` is not an operational pipeline driver, but a lightweight driver used for validation and testing without larger production machinery entangled. While it decouples executions from heavy production workflow infrastructure, running `calibpipe` still requires access to the underlying pipeline tooling: CASA installations with the ALMA pipeline, ALMA datapacker, `pipelineMakeRequest` (PMR), and Slurm for batch execution.
+> `calibpipe` is a validation and testing tool; running it requires access to CASA + ALMA pipeline builds, Slurm (for batch execution), and ALMA datapacker / `pipelineMakeRequest` (PMR) only when running in MOUS mode.
 >
 > On shared observatory clusters, site administrators can deploy a central site configuration (`/etc/calibpipe/config.toml`, `$CALIBPIPE_SITE_CONFIG`, or `config.site.toml`), allowing users to run immediately or overlay personal settings.
 
@@ -17,10 +17,11 @@ The package keeps site-specific execution details in TOML configuration rather t
 - **Run single pipeline executions:** standard ALMA MOUS reductions (`--mous`), direct recipe reductions on local datasets (`--vis` + `--procedure`), standalone PPRs (`--PPR`), custom scripts (`--script`), inline commands (`--cmd`), or interactive CASA sessions (`-i`).
 - **Submit runs to Slurm or HTCondor:** batch queues from pipefiles (`calibpipe submit pipefile.txt`), regression test arrays (`calibpipe submit quick.run -p <profile>` or `calibpipe submit -p <profile> --collect`), native concurrency slot throttling (`--max-concurrent` / `--throttle`), or single-job submissions directly from named profiles (`calibpipe submit -p <profile>`).
 - **Discover and collect regression tests:** discover pytest test nodes using CASA Python with marker and keyword filtering (`calibpipe collect [target] -p <profile> -o runfile.txt`).
-- **Synthesize test results and code coverage:** consolidate distributed test outputs, combine `.coverage.*` files with cross-environment source path remapping, and generate HTML coverage reports (`calibpipe report`, `calibpipe coverage`, or `--with-report`).
+- **Synthesize test results and code coverage:** consolidate distributed test outputs, combine `.coverage.*` files with source path remapping, and generate HTML coverage reports (`calibpipe report`, `calibpipe coverage`, or `--with-report`).
+- **Update regression reference files:** merge `*.NEW.results.txt` outputs into `pipeline-testdata` references while preserving custom tolerances and staging `.candidate` files for review (`calibpipe update-ref`).
 - **Target named execution and batch profiles:** encapsulate execution targets, CASA/pipeline checkouts, hardware tuning, regression test specifications, and scheduler resources under `[profiles.<name>]`.
 - **Resolve interactive shell environments:** `source scripts/calibpipe_env.sh --env=...` or `eval "$(calibpipe env --env=...)"`.
-- **Preserve existing workflows:** drop in seamlessly for legacy scripts (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
+- **Preserve existing workflows:** drop-in compatibility for legacy scripts (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
 
 ---
 

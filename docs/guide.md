@@ -13,13 +13,11 @@ Use `calibpipe` when you need to:
 - resolve CASA and pipeline environment variables from TOML configuration instead of ad hoc shell scripts
 - preserve compatibility with existing scripts that still call `calibPipeIF.py`, `runbatch.py`, or `calibpipe_env.sh`
 
-`calibpipe` does not replace the main `pipeline` package. The `pipeline` repository still provides the reduction framework, heuristics, task implementations, and weblog generation. Rather than an operational pipeline driver, `calibpipe` is a lightweight driver used for validation and testing without larger production machinery entangled, selecting a configured CASA + pipeline environment and launching a run with the requested inputs.
+`calibpipe` does not replace the main `pipeline` package: `pipeline` still provides the reduction framework, heuristics, tasks, and weblog generation. `calibpipe` simply selects a configured CASA + pipeline environment and launches a run or batch job with the requested inputs.
 
 ---
 
 ## Repository Layout
-
-The project is organized as follows:
 
 ```text
 calibpipe/
@@ -28,31 +26,42 @@ calibpipe/
 ├── docs/
 │   ├── index.md
 │   ├── guide.md
+│   ├── internals.md
+│   ├── changelog.md
 │   └── api/
 ├── scripts/
 │   ├── calibPipeIF.py
 │   ├── calibpipe_env.sh
-│   └── runbatch.py
+│   ├── runbatch.py
+│   └── update_regression_reference.py
 ├── src/
 │   └── calibpipe/
 │       ├── cli.py
 │       ├── config.py
 │       ├── runner.py
 │       ├── batch.py
+│       ├── collect.py
+│       ├── coverage.py
+│       ├── report.py
+│       ├── update_ref.py
 │       ├── pmr.py
 │       └── steps/
 └── tests/
 ```
 
-Key implementation modules:
+Key modules:
 
-- `scripts/` contains backward-compatible runner shims (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`).
-- `src/calibpipe/cli.py` provides the unified command-line interface.
+- `scripts/` holds backward-compatible shims (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`, `update_regression_reference.py`).
+- `src/calibpipe/cli.py` defines the unified CLI and subcommand routing.
 - `src/calibpipe/config.py` loads TOML configuration and builds the runtime environment.
-- `src/calibpipe/runner.py` orchestrates a single pipeline run.
-- `src/calibpipe/batch.py` generates and submits Slurm jobs.
-- `src/calibpipe/pmr.py` wraps ALMA MakeProcessingRequests for directory structure and data fetching.
-- `src/calibpipe/steps/` houses modular execution phases (such as input staging).
+- `src/calibpipe/runner.py` runs a single pipeline execution.
+- `src/calibpipe/batch.py` generates and submits Slurm/HTCondor jobs.
+- `src/calibpipe/collect.py` discovers pytest nodes for regression test arrays.
+- `src/calibpipe/coverage.py` combines distributed `.coverage.*` files and remaps source paths.
+- `src/calibpipe/report.py` summarizes JUnit XML test results and triggers coverage combining.
+- `src/calibpipe/update_ref.py` merges `*.NEW.results.txt` outputs into `pipeline-testdata` references.
+- `src/calibpipe/pmr.py` wraps ALMA MakeProcessingRequests for directory staging and data fetching.
+- `src/calibpipe/steps/` holds modular execution steps (such as input staging).
 
 ---
 
@@ -160,7 +169,7 @@ uv cache clean    # wipes the entire cache (forces fresh downloads on next use)
 
 > [!WARNING] Observatory Infrastructure & Cluster Dependency
 >
-> `calibpipe` is an execution driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC cluster) and specialized pipeline workstations. Running `calibpipe` with arbitrary custom configurations on a standard personal workstation will **not work out-of-the-box** unless you have access to valid ALMA pipeline installations, Slurm, ALMA datapacker, and `pipelineMakeRequest` (PMR).
+> `calibpipe` is an execution driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC cluster) and specialized pipeline workstations. Running `calibpipe` on a personal workstation requires access to valid ALMA pipeline installations, Slurm (for batch execution), and ALMA datapacker / `pipelineMakeRequest` (PMR) when running in MOUS mode.
 >
 > If you are working on an observatory cluster, refer to your site administrator or internal templates (e.g. `notes/config.internal.example.toml`).
 
@@ -1407,22 +1416,15 @@ When all test jobs finish, Slurm launches the finalize job (`#SBATCH --dependenc
 
 ---
 
-### 9. Standalone Code Coverage Combination & Source Remapping (`calibpipe coverage`)
+### 9. Standalone Coverage Combining & Source Remapping (`calibpipe coverage`)
 
-`calibpipe coverage` is a dedicated, lightweight utility for discovering, combining, and visualizing distributed `coverage.py` databases without parsing JUnit test XMLs. It replaces legacy post-processing scripts with native programmatic coverage combining and cross-environment source path translation.
+`calibpipe coverage` discovers, combines, and summarizes distributed `coverage.py` data files without parsing JUnit XMLs.
 
-#### Core Capabilities
+#### Behavior
 
-1. **Recursive Data Discovery (`find_coverage_files`):**
-   - Recursively traverses subdirectories to locate all `.coverage.*` files produced by parallel pytest runners (`pytest-xdist`, Slurm job arrays, or discrete batch runs).
-   - Automatically excludes destination combined `.coverage` files to prevent self-referential merging corruption.
-
-2. **Cross-Environment Source Path Remapping (`--remap-source`):**
-   - When regression tests execute on compute nodes, containers, or remote cluster filesystems (e.g., `/lustre/naasc/sciops/comm/rxue/tickets/...`), the source file paths recorded in `.coverage.*` files match the remote paths.
-   - Using `--remap-source=<remote_prefix>=<local_prefix>`, `calibpipe coverage` configures Coverage.py's source path remapping so that HTML reports and terminal summaries accurately link to local source checkouts.
-
-3. **CASA Python Fallback Resolution:**
-   - If `coverage` is not installed in the active system Python virtual environment, `calibpipe` automatically searches for `<casa_root>/bin/python3` and invokes its built-in `coverage` module via subprocess, ensuring reports can be generated seamlessly on bare cluster nodes.
+1. **Recursive Discovery (`find_coverage_files`):** Walks subdirectories for `.coverage.*` files produced by parallel pytest or Slurm array runs, excluding the destination `.coverage` file.
+2. **Source Path Remapping (`--remap-source`):** When tests run on compute nodes or containers (e.g., `/lustre/cluster/users/{user}/tickets/...`), `.coverage.*` records remote paths. `--remap-source=<remote_prefix>=<local_prefix>` translates those paths back to a local checkout for terminal and HTML reports.
+3. **CASA Python Fallback:** If `coverage` is not installed in the active Python environment, `calibpipe` falls back to `<casa_root>/bin/python3 -m coverage`.
 
 #### Usage
 
@@ -1468,14 +1470,41 @@ print(f"HTML Report: {results['index_file']}")
 
 ---
 
+### 10. Updating Regression Reference Files (`calibpipe update-ref`)
+
+When pipeline changes intentionally alter regression metrics or QA score keys, `calibpipe update-ref` stages updated `*.results.txt` files in `pipeline-testdata` while keeping existing per-key tolerances (`:::<tol>`).
+
+- **Tolerance preservation & sorting:** Merges `*.NEW.results.txt` into the baseline reference, preserving `:::<tol>` suffixes and alphabetical key order (`PipelineTester` requirement).
+- **Candidate staging:** Writes `<target>.results.txt.candidate` by default; pass `--apply` (or `--promote`) only after reviewing the diff.
+- **Version stamping:** Reads CASA and Pipeline versions from live weblogs (`pipeline-*/html/index.html`), `working/pipeline_aquareport.xml`, or `casa-*.log` / `batch.out` (ignoring pre-existing `products/` in restore tests), and keeps suffixes such as `.restore.results.txt`.
+- **Recursive batch scan:** `calibpipe update-ref ./` skips heavy subdirectories (`*.ms`, `pipeline-*`, `rawdata/`, `products/`, `htmlcov/`) and ignores unchanged runs unless `--force` is given.
+
+```bash
+# Preview diffs across all test runs under the current regression directory
+calibpipe update-ref --diff-only ./
+
+# Stage .candidate files in pipeline-testdata for manual inspection
+calibpipe update-ref ./
+
+# Override version tags or keep the baseline filename's existing version
+calibpipe update-ref --casa-ver=6.8.0-4 --pipeline-ver=2026.3.0.43 ./
+calibpipe update-ref --keep-version ./
+
+# Promote staged changes to the canonical reference files (creates .bak backups)
+calibpipe update-ref --apply ./
+```
+
+---
+
 ## Backward Compatibility
 
-`calibpipe` preserves legacy runner shims in `scripts/` so existing user scripts and scheduled workflows do not need to change immediately:
+`calibpipe` preserves runner shims in `scripts/` so existing scripts and scheduled jobs continue to work:
 
-- `scripts/calibPipeIF.py` forwards to `calibpipe run` / `calibpipe.runner`
-- `scripts/runbatch.py` forwards to `calibpipe batch` / `calibpipe.batch`
-- `scripts/calibpipe_env.sh` forwards to `calibpipe env` / `calibpipe.cli env`
-- `scripts/pipelineMakeRequest.py` is integrated directly via `calibpipe pmr`
+- `scripts/calibPipeIF.py` $\to$ `calibpipe run` / `calibpipe.runner`
+- `scripts/runbatch.py` $\to$ `calibpipe submit` / `calibpipe.batch`
+- `scripts/calibpipe_env.sh` $\to$ `calibpipe env`
+- `scripts/update_regression_reference.py` $\to$ `calibpipe update-ref`
+- `scripts/pipelineMakeRequest.py` $\to$ `calibpipe pmr`
 
 This allows gradual migration to the unified `calibpipe` CLI without breaking older job wrappers or polluting the global `$PATH`.
 

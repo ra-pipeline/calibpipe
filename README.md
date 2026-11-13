@@ -7,9 +7,9 @@ Detailed package documentation is available in [docs/guide.md](docs/guide.md).
 > [!WARNING]
 > **Cluster & Pipeline Tooling Dependencies**
 >
-> `calibpipe` is not an operational pipeline driver, but a lightweight driver used for validation and testing without larger production machinery entangled. While it decouples executions from heavy production workflow infrastructure, running `calibpipe` still requires access to the underlying pipeline tooling: CASA installations with the ALMA pipeline, ALMA datapacker, `pipelineMakeRequest` (PMR), and Slurm for batch execution.
+> `calibpipe` is a validation and testing tool; running it requires access to CASA + ALMA pipeline builds, Slurm (for batch execution), and ALMA datapacker / `pipelineMakeRequest` (PMR) when running in MOUS mode.
 >
-> Users on cluster or workstation environments should configure `config.toml` using local or site-specific paths (see `notes/config.internal.example.toml`).
+> Configure `config.toml` using local or site-specific paths (see `config.example.toml`).
 
 ---
 
@@ -17,7 +17,7 @@ Detailed package documentation is available in [docs/guide.md](docs/guide.md).
 
 - **Decoupled Architecture:** Pure Python 3 ($\ge 3.10$) standard library runtime with zero heavy dependencies.
 - **Location & Version Agnostic:** Never hardcodes personal paths. All environments, CASA builds, and pipeline checkouts live in a gitignored `config.toml`.
-- **100% Backward Compatible:** Preserves legacy runner shims in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
+- **Backward Compatible:** Preserves legacy runner shims in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
 
 ---
 
@@ -166,12 +166,8 @@ For advanced CLI options, Slurm batch queues, and legacy wrapper compatibility, 
 
 ## Testing
 
-Run the full test suite verifying against golden reference specifications:
+Run the offline test suite:
 
 ```bash
-python3 -m unittest discover -s tests -v
-# or
-pytest tests/
-# or with uv
 uv run --extra dev pytest tests/
 ```
