@@ -152,6 +152,9 @@ calibpipe env --env=main --print-env
 
 Use `scripts/calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
 
+> [!NOTE]
+> If the default OS `python3` is older than 3.10, run the Python shims with your own interpreter (`/path/to/conda/bin/python scripts/calibPipeIF.py ...`, or activate a Python $\ge 3.10$ environment first), or set `CALIBPIPE_PYTHON=/path/to/conda/bin/python` when sourcing `scripts/calibpipe_env.sh`. See [Backward Compatibility](docs/guide.md#backward-compatibility) for details.
+
 ### 4. Inspect Configuration
 
 Inspect active settings, paths, and environment defaults resolved from `config.toml`:

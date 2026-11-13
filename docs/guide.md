@@ -1508,6 +1508,30 @@ calibpipe update-ref --apply ./
 
 This allows gradual migration to the unified `calibpipe` CLI without breaking older job wrappers or polluting the global `$PATH`.
 
+### Specifying a Python Interpreter for Legacy Shims
+
+`calibpipe` requires Python $\ge 3.10$. On clusters where the system `python3` is older, the Python shims in `scripts/` use `#!/usr/bin/env python3` and add `src/` automatically, so you can select your own interpreter (such as conda, miniforge, `uv`, or the repository `.venv`):
+
+```bash
+# 1. Invoke your interpreter explicitly (works in any shell or batch script):
+/path/to/conda/envs/py312/bin/python /path/to/calibpipe/scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
+/path/to/calibpipe/.venv/bin/python /path/to/calibpipe/scripts/runbatch.py quick.run --env=main
+uv run --project /path/to/calibpipe python /path/to/calibpipe/scripts/calibPipeIF.py --mous=...
+
+# 2. Or put Python >= 3.10 first on PATH (or activate conda) so #!/usr/bin/env python3 picks it up:
+conda activate py312
+/path/to/calibpipe/scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
+```
+
+For `scripts/calibpipe_env.sh`, if `calibpipe` is not on `$PATH`, the script automatically checks `<repo>/.venv/bin/python` before falling back to `python3`. You can also override the interpreter explicitly via `CALIBPIPE_PYTHON`:
+
+```bash
+CALIBPIPE_PYTHON=/path/to/conda/envs/py312/bin/python source /path/to/calibpipe/scripts/calibpipe_env.sh --env=main
+```
+
+> [!TIP] Running directly from a checkout without installing dependencies
+> Python $\ge 3.11$ includes `tomllib` in the standard library, so a bare conda/miniforge Python $\ge 3.11$ can run the `scripts/` shims directly from a repository checkout (`psrecord-io` is only required when `--psrecord` profiling is enabled). Python 3.10 requires `tomli`.
+
 ---
 
 ## Testing
