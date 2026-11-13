@@ -2010,6 +2010,44 @@ class TestCasarundataConsolidation(unittest.TestCase):
         run_opts = resolve_run_options(cfg, Namespace(profile="custom_data"))
         self.assertEqual(run_opts.casarundata, str(self.data2))
         self.assertEqual(run_opts.casadata, str(self.data2))
+        self.assertEqual(
+            run_opts.rundata,
+            [str(self.root / "nonexistent"), str(self.data2)],
+        )
+        self.assertTrue(run_opts.rundata_specified)
+
+    def test_profile_data_alias_override(self):
+        cfg_data = {
+            "default_env": "main",
+            "paths": {
+                "casarundata": str(self.data1),
+            },
+            "envs": {"main": {"casa_root": "/fake/casa"}},
+            "profiles": {
+                "custom_data": {
+                    "data": [
+                        str(self.root / "nonexistent"),
+                        str(self.data2),
+                    ]
+                }
+            },
+        }
+        cfg = CalibpipeConfig.from_dict(cfg_data)
+        self.assertEqual(cfg.profiles["custom_data"].casarundata, str(self.data2))
+        self.assertEqual(cfg.profiles["custom_data"].casadata, str(self.data2))
+        self.assertEqual(
+            cfg.profiles["custom_data"].rundata,
+            [str(self.root / "nonexistent"), str(self.data2)],
+        )
+
+        run_opts = resolve_run_options(cfg, Namespace(profile="custom_data"))
+        self.assertEqual(run_opts.casarundata, str(self.data2))
+        self.assertEqual(run_opts.casadata, str(self.data2))
+        self.assertEqual(
+            run_opts.rundata,
+            [str(self.root / "nonexistent"), str(self.data2)],
+        )
+        self.assertTrue(run_opts.rundata_specified)
 
     def test_cli_flags_casarundata_and_casadata(self):
         cfg = CalibpipeConfig.from_dict({"paths": {"casarundata": str(self.data1)}})
