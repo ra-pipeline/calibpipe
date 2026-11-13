@@ -2509,6 +2509,74 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
             expected_working_parent = str(proj_root / "my_run")
             self.assertEqual(batch_opts_working.chdir, expected_working_parent)
 
+    def test_staticobscal_oldcont_obscaldir_cascading(self):
+        from argparse import Namespace
+        from calibpipe.config import CalibpipeConfig, resolve_run_options
+
+        cfg = CalibpipeConfig.from_dict({
+            "paths": {"obscaldir": "/site/obscal"},
+            "run": {"staticobscal": True, "oldcont": False},
+            "profiles": {
+                "cont_prof": {
+                    "oldcont": True,
+                    "obscaldir": "/prof/obscal",
+                }
+            },
+        })
+
+        # Base [run] + [paths]
+        base = resolve_run_options(cfg, Namespace())
+        self.assertTrue(base.staticobscal)
+        self.assertFalse(base.oldcont)
+        self.assertEqual(base.obscaldir, "/site/obscal")
+
+        # Profile overrides oldcont & obscaldir, inherits staticobscal from [run]
+        prof = resolve_run_options(cfg, Namespace(profile="cont_prof"))
+        self.assertTrue(prof.staticobscal)
+        self.assertTrue(prof.oldcont)
+        self.assertEqual(prof.obscaldir, "/prof/obscal")
+
+        # CLI flags override profile and [run]/[paths]
+        cli = resolve_run_options(
+            cfg,
+            Namespace(
+                profile="cont_prof",
+                staticobscal=False,
+                oldcont=False,
+                obscaldir="/cli/obscal",
+            ),
+        )
+        self.assertFalse(cli.staticobscal)
+        self.assertFalse(cli.oldcont)
+        self.assertEqual(cli.obscaldir, "/cli/obscal")
+
+        # List-valued obscaldir resolves without UnboundLocalError
+        with tempfile.TemporaryDirectory() as tmpd:
+            existing_obscal = os.path.join(tmpd, "obscal_b")
+            os.makedirs(existing_obscal)
+            cfg_list = CalibpipeConfig.from_dict({
+                "paths": {
+                    "obscaldir": [os.path.join(tmpd, "missing"), existing_obscal],
+                },
+                "profiles": {
+                    "list_prof": {
+                        "obscaldir": [os.path.join(tmpd, "missing2"), existing_obscal],
+                    }
+                },
+            })
+            self.assertEqual(resolve_run_options(cfg_list, Namespace()).obscaldir, existing_obscal)
+            self.assertEqual(
+                resolve_run_options(cfg_list, Namespace(profile="list_prof")).obscaldir,
+                existing_obscal,
+            )
+            cfg_tilde_list = CalibpipeConfig.from_dict({
+                "paths": {"obscaldir": ["~/nonexistent_obscal_a", "~/nonexistent_obscal_b"]},
+            })
+            self.assertEqual(
+                resolve_run_options(cfg_tilde_list, Namespace()).obscaldir,
+                os.path.expanduser("~/nonexistent_obscal_a"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

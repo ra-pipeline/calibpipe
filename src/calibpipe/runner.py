@@ -19,11 +19,14 @@ from typing import Any
 
 from calibpipe import config as envconfig, pmr
 from calibpipe.steps.staging import (
+    extract_eb_uids_from_ppr,
     find_dirs,
     find_files,
+    infer_mous_uid_from_ppr,
     rotate_directory,
     stage_ancillary_files,
     stage_flags_and_wvr,
+    stage_obscal_files,
 )
 from calibpipe.templates import render_template
 from calibpipe.workspace import create_project_symlinks, link_weblog
@@ -605,6 +608,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override casarundata / casadata runtime measures directory",
     )
+    p.add_argument(
+        "--obscaldir",
+        dest="obscaldir",
+        default=None,
+        help="Override static calibrator database directory ([paths].obscaldir)",
+    )
     p.add_argument("--subdir", help="Extra subdirectory appended to SCIPIPE_ROOTDIR")
     p.add_argument(
         "--print-env", action="store_true", help="Print resolved environment and exit"
@@ -658,11 +667,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--staticobscal",
-        action="store_true",
-        help="Use previous flux.csv from obscaldir",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Use previous flux.csv, antennapos.csv, and flag templates from obscaldir "
+            "(--staticobscal / --no-staticobscal)"
+        ),
     )
     p.add_argument(
-        "--oldcont", action="store_true", help="Use previous cont.dat from obscaldir"
+        "--oldcont",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use previous cont.dat from obscaldir (--oldcont / --no-oldcont)",
     )
     p.add_argument(
         "--noupdate", action="store_true", default=True, help="Don't update CASA IERS"
@@ -1155,6 +1171,11 @@ def _run_mous(
         print(f"[DRY RUN] MOUS UID: {mous_uid}")
         print(f"[DRY RUN] Environment: {env_spec.name} ({casaroot})")
         print(f"[DRY RUN] PMR command:\n    {pmr_cmd}")
+        if run_opts.staticobscal or run_opts.oldcont:
+            print(
+                f"[DRY RUN] Obscal staging: staticobscal={run_opts.staticobscal}, "
+                f"oldcont={run_opts.oldcont}, obscaldir={run_opts.obscaldir or '(not set)'}"
+            )
         print(f"[DRY RUN] Planned CASA execution prefix:\n    {casarun}")
         return 0
 
@@ -1277,7 +1298,7 @@ def _run_mous(
     # Prepare working execution directory and fixes script
     working_path.mkdir(parents=True, exist_ok=True)
     link_batch_job_files_start(working_path, log_message)
-    stage_ancillary_files(
+    ancillary_staged = stage_ancillary_files(
         working_path,
         cont_dat=run_opts.cont_dat,
         jyperk_csv=run_opts.jyperk_csv,
@@ -1286,6 +1307,24 @@ def _run_mous(
         recipe=recipe,
         log_func=log_message,
     )
+    if flag_and_go or run_opts.staticobscal or run_opts.oldcont:
+        ppr_for_ebs = (
+            Path(ppr_override)
+            if ppr_override
+            else (ppr_matches[0] if ppr_matches else None)
+        )
+        eb_uids = extract_eb_uids_from_ppr(ppr_for_ebs)
+        stage_obscal_files(
+            working_path,
+            obscaldir=run_opts.obscaldir,
+            mous_uid=mous_uid,
+            eb_uids=eb_uids,
+            staticobscal=run_opts.staticobscal,
+            oldcont=run_opts.oldcont,
+            flag_dir=flag_and_go_dir if flag_and_go else None,
+            skip_files=[p.name for p in ancillary_staged],
+            log_func=log_message,
+        )
     if recipe not in ["image", "image_selfcal"]:
         fixes_file = working_path / "sacmPL-fixes.casa.py.txt"
         rawdata_fixes = (
@@ -1690,7 +1729,7 @@ def _run_standalone_ppr(
             mylog.log(f"Warning: Could not copy PPR to working directory ({err})")
             staged_ppr = ppr_path
 
-    stage_ancillary_files(
+    ancillary_staged = stage_ancillary_files(
         working_path,
         cont_dat=run_opts.cont_dat,
         jyperk_csv=run_opts.jyperk_csv,
@@ -1699,6 +1738,37 @@ def _run_standalone_ppr(
         recipe=run_opts.recipe,
         log_func=mylog.log,
     )
+    if not run_opts.dry_run:
+        flag_dir = run_opts.flag_dir or getattr(opts, "flag", None)
+        if flag_dir:
+            flag_dir_abs = os.path.abspath(flag_dir)
+            if os.path.isdir(flag_dir_abs):
+                stage_flags_and_wvr(flag_dir_abs, str(project_root), mylog.log)
+            else:
+                mylog.log(f"Warning: --flag directory {flag_dir_abs} does not exist, skipping.")
+                flag_dir_abs = None
+        else:
+            flag_dir_abs = None
+
+        if flag_dir_abs or run_opts.staticobscal or run_opts.oldcont:
+            effective_ppr = staged_ppr if staged_ppr.exists() else ppr_path
+            eb_uids = extract_eb_uids_from_ppr(effective_ppr)
+            inferred_mous = (
+                run_opts.mous
+                or getattr(opts, "mous", "")
+                or infer_mous_uid_from_ppr(effective_ppr, working_path)
+            )
+            stage_obscal_files(
+                working_path,
+                obscaldir=run_opts.obscaldir,
+                mous_uid=inferred_mous,
+                eb_uids=eb_uids,
+                staticobscal=run_opts.staticobscal,
+                oldcont=run_opts.oldcont,
+                flag_dir=flag_dir_abs,
+                skip_files=[p.name for p in ancillary_staged],
+                log_func=mylog.log,
+            )
 
     if run_opts.use_custom_rcdir:
         rcdir = working_path / ".casa"
@@ -1778,6 +1848,11 @@ def _run_standalone_ppr(
             print(f"[DRY RUN] Rawdata source: {rawdata_src_str}")
             print(f"[DRY RUN] Rawdata destination: {rawdata_path}")
         print(f"[DRY RUN] Pipeline module: {import_module}")
+        if run_opts.staticobscal or run_opts.oldcont:
+            print(
+                f"[DRY RUN] Obscal staging: staticobscal={run_opts.staticobscal}, "
+                f"oldcont={run_opts.oldcont}, obscaldir={run_opts.obscaldir or '(not set)'}"
+            )
         print(f"[DRY RUN] Generated script: {piperun_file}")
         print(f"[DRY RUN] Command to execute:\n    {cmd}")
         mylog.close()
@@ -2239,6 +2314,8 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         crd_val = getattr(run_opts, "casarundata", None) or run_opts.casadata
         paths_effective["casarundata"] = crd_val
         paths_effective["casadata"] = crd_val
+    if getattr(run_opts, "obscaldir", None):
+        paths_effective["obscaldir"] = run_opts.obscaldir
     cfg_effective["paths"] = paths_effective
 
     env_spec = envconfig.resolve_env(

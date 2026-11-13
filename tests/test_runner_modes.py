@@ -1025,6 +1025,168 @@ class TestBatchJobColocation(unittest.TestCase):
             self.assertEqual(existing_out.read_text(), "DIRECT OUTPUT\n")
             self.assertEqual(existing_script.read_text(), "#!/bin/sh\n")
 
+    def test_stage_obscal_files_and_precedence(self) -> None:
+        from calibpipe.steps.staging import (
+            extract_eb_uids_from_ppr,
+            infer_mous_uid_from_ppr,
+            stage_obscal_files,
+        )
+
+        ppr_file = self.working / "PPR_uid___A001_X1_Xc.xml"
+        ppr_file.write_text(
+            "<PipelineProcessingRequest>\n"
+            "  <RelativePath>2025.1.00001.S/SOUS_uid___A001_X1_Xa/GOUS_uid___A001_X1_Xb/MOUS_uid___A001_X1_Xc</RelativePath>\n"
+            "  <ProjectSummary>\n"
+            "    <ExecBlockId>uid://A002/Xaaa/X111</ExecBlockId>\n"
+            "    <ExecBlockId>uid://A002/Xbbb/X222</ExecBlockId>\n"
+            "    <ExecBlockId>uid://A002/Xaaa/X111</ExecBlockId>\n"
+            "  </ProjectSummary>\n"
+            "</PipelineProcessingRequest>\n"
+        )
+        self.assertEqual(
+            extract_eb_uids_from_ppr(ppr_file),
+            ["uid://A002/Xaaa/X111", "uid://A002/Xbbb/X222"],
+        )
+        self.assertEqual(infer_mous_uid_from_ppr(ppr_file, self.working), "uid___A001_X1_Xc")
+
+        obscal = self.tmp / "obscal"
+        (obscal / "a_first").mkdir(parents=True)
+        (obscal / "b_second").mkdir(parents=True)
+        (obscal / "html").mkdir(parents=True)
+
+        # Multiple matches: lexicographically first (a_first) should win; html/ is ignored
+        (obscal / "html" / "stage1").mkdir(parents=True)
+        (obscal / "html" / "uid___A001_X1_Xc.flux.csv").write_text("html flux\n")
+        (obscal / "html" / "stage1" / "uid___A001_X1_Xc.cont.dat").write_text("nested html cont\n")
+        (obscal / "a_first" / "uid___A001_X1_Xc.flux.csv").write_text("first flux\n")
+        (obscal / "b_second" / "uid___A001_X1_Xc.flux.csv").write_text("second flux\n")
+        (obscal / "a_first" / "uid___A001_X1_Xc.antennapos.csv").write_text("first antpos\n")
+        (obscal / "a_first" / "uid___A001_X1_Xc.cont.dat").write_text("old cont\n")
+        (obscal / "a_first" / "uid___A002_Xaaa_X111.flagtemplate.txt").write_text("obscal flag1\n")
+        (obscal / "b_second" / "uid___A002_Xbbb_X222.flagtsystemplate.txt").write_text("obscal flag2\n")
+
+        # --flag overrides flux.csv and flag1, while antennapos/flag2/cont come from obscaldir
+        flagdir = self.tmp / "flagdir"
+        flagdir.mkdir()
+        (flagdir / "flux.csv").write_text("flagdir flux\n")
+        (flagdir / "uid___A002_Xaaa_X111.flagtemplate.txt").write_text("flagdir flag1\n")
+        (self.working / "uid___A002_Xaaa_X111.flagtemplate.txt").write_text("flagdir flag1\n")
+
+        logs: list[str] = []
+        staged = stage_obscal_files(
+            self.working,
+            obscaldir=obscal,
+            mous_uid="uid://A001/X1/Xc",
+            eb_uids=extract_eb_uids_from_ppr(ppr_file),
+            staticobscal=True,
+            oldcont=True,
+            flag_dir=flagdir,
+            skip_cont_dat=False,
+            log_func=logs.append,
+        )
+
+        self.assertEqual((self.working / "flux.csv").read_text(), "flagdir flux\n")
+        self.assertEqual((self.working / "antennapos.csv").read_text(), "first antpos\n")
+        self.assertEqual((self.working / "cont.dat").read_text(), "old cont\n")
+        self.assertEqual(
+            (self.working / "uid___A002_Xaaa_X111.flagtemplate.txt").read_text(),
+            "flagdir flag1\n",
+        )
+        self.assertEqual(
+            (self.working / "uid___A002_Xbbb_X222.flagtsystemplate.txt").read_text(),
+            "obscal flag2\n",
+        )
+        self.assertTrue(any("takes precedence" in msg for msg in logs))
+        self.assertGreaterEqual(len(staged), 4)
+
+        # Explicit cont_dat (skip_cont_dat=True) prevents --flag or --oldcont from overwriting cont.dat
+        (self.working / "cont.dat").write_text("explicit cont\n")
+        (flagdir / "cont.dat").write_text("flagdir cont\n")
+        stage_obscal_files(
+            self.working,
+            obscaldir=obscal,
+            mous_uid="uid://A001/X1/Xc",
+            oldcont=True,
+            flag_dir=flagdir,
+            skip_cont_dat=True,
+        )
+        self.assertEqual((self.working / "cont.dat").read_text(), "explicit cont\n")
+
+    def test_stage_obscal_missing_obscaldir_logs_warning(self) -> None:
+        from calibpipe.steps.staging import stage_obscal_files
+
+        logs: list[str] = []
+        staged = stage_obscal_files(
+            self.working,
+            obscaldir=None,
+            mous_uid="uid://A001/X1/Xc",
+            staticobscal=True,
+            log_func=logs.append,
+        )
+        self.assertEqual(staged, [])
+        self.assertTrue(any("Warning:" in msg for msg in logs))
+
+
+class TestStandalonePPRObscal(DriverModesTestCase):
+    """Tests for --staticobscal, --oldcont, and --flag in standalone PPR mode."""
+
+    def test_standalone_ppr_stages_obscal_and_dry_run_output(self) -> None:
+        ppr_file = self.tmp / "PPR_uid___A001_X9_Xa.xml"
+        ppr_file.write_text(
+            "<PipelineProcessingRequest>\n"
+            "  <RelativePath>2025.1.00001.S/SOUS_uid___A001_X9_X1/GOUS_uid___A001_X9_X2/MOUS_uid___A001_X9_Xa</RelativePath>\n"
+            "  <ProjectSummary>\n"
+            "    <ExecBlockId>uid://A002/Xeee/X333</ExecBlockId>\n"
+            "  </ProjectSummary>\n"
+            "</PipelineProcessingRequest>\n"
+        )
+
+        obscal = self.tmp / "obscal"
+        obscal.mkdir()
+        (obscal / "uid___A001_X9_Xa.flux.csv").write_text("ppr static flux\n")
+        (obscal / "uid___A001_X9_Xa.cont.dat").write_text("ppr old cont\n")
+        (obscal / "uid___A002_Xeee_X333.flagtemplate.txt").write_text("ppr eb flag\n")
+
+        # Dry run prints obscal summary without staging files
+        dry_workdir = self.tmp / "work_dry_ppr"
+        dry_workdir.mkdir()
+        dry_stdout = io.StringIO()
+        with (
+            patch.object(runner, "getoutput", return_value=""),
+            redirect_stdout(dry_stdout),
+            redirect_stderr(io.StringIO()),
+        ):
+            runner.main([
+                "--PPR", str(ppr_file),
+                f"--config={self.config}",
+                f"--workdir={dry_workdir}",
+                "--staticobscal",
+                "--oldcont",
+                f"--obscaldir={obscal}",
+                "--dry-run",
+            ])
+        self.assertIn("[DRY RUN] Obscal staging: staticobscal=True, oldcont=True", dry_stdout.getvalue())
+        self.assertFalse((dry_workdir / "working" / "flux.csv").exists())
+
+        # Actual standalone PPR execution stages flux.csv, cont.dat, and EB flag template
+        workdir = self.tmp / "work_exec_ppr"
+        workdir.mkdir()
+        _, exit_code = self.run_driver([
+            "--PPR", str(ppr_file),
+            f"--config={self.config}",
+            f"--workdir={workdir}",
+            "--staticobscal",
+            "--oldcont",
+            f"--obscaldir={obscal}",
+        ])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual((workdir / "working" / "flux.csv").read_text(), "ppr static flux\n")
+        self.assertEqual((workdir / "working" / "cont.dat").read_text(), "ppr old cont\n")
+        self.assertEqual(
+            (workdir / "working" / "uid___A002_Xeee_X333.flagtemplate.txt").read_text(),
+            "ppr eb flag\n",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

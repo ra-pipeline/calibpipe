@@ -640,6 +640,83 @@ class TestSymlinkShortcuts(unittest.TestCase):
         args_off = p.parse_args(["--mous=uid://A001/X1/X1", "--no-log2term"])
         self.assertFalse(args_off.log2term)
 
+    def test_driver_parser_obscal_flags(self):
+        p = calibPipeIF.build_parser()
+        args_default = p.parse_args(["--mous=uid://A001/X1/X1"])
+        self.assertIsNone(args_default.staticobscal)
+        self.assertIsNone(args_default.oldcont)
+        self.assertIsNone(args_default.obscaldir)
+
+        args_on = p.parse_args(
+            [
+                "--mous=uid://A001/X1/X1",
+                "--staticobscal",
+                "--oldcont",
+                "--obscaldir=/tmp/obscal",
+            ]
+        )
+        self.assertTrue(args_on.staticobscal)
+        self.assertTrue(args_on.oldcont)
+        self.assertEqual(args_on.obscaldir, "/tmp/obscal")
+
+        args_off = p.parse_args(
+            ["--mous=uid://A001/X1/X1", "--no-staticobscal", "--no-oldcont"]
+        )
+        self.assertFalse(args_off.staticobscal)
+        self.assertFalse(args_off.oldcont)
+
+
+class TestStaticObscalAndOldcontExecution(CalibPipeIFCaptureCase):
+    """Test --staticobscal and --oldcont staging during MOUS execution."""
+
+    def test_staticobscal_and_oldcont_stage_files_from_obscaldir(self):
+        obscal = self.tmp / "obscaldir"
+        obscal.mkdir()
+        mous_under = "uid___A001_X1_X1"
+        (obscal / f"{mous_under}.flux.csv").write_text("static flux\n")
+        (obscal / f"{mous_under}.antennapos.csv").write_text("static antpos\n")
+        (obscal / f"{mous_under}.cont.dat").write_text("static cont\n")
+        (obscal / "uid___A002_Xaaa_Xbbb.flagtemplate.txt").write_text("static eb flag\n")
+
+        self.run_and_capture(
+            ["--staticobscal", "--oldcont", f"--obscaldir={obscal}"]
+        )
+
+        self.assertEqual((self.working / "flux.csv").read_text(), "static flux\n")
+        self.assertEqual(
+            (self.working / "antennapos.csv").read_text(), "static antpos\n"
+        )
+        self.assertEqual((self.working / "cont.dat").read_text(), "static cont\n")
+        self.assertEqual(
+            (self.working / "uid___A002_Xaaa_Xbbb.flagtemplate.txt").read_text(),
+            "static eb flag\n",
+        )
+
+    def test_missing_cont_dat_allows_oldcont_and_ancillary_takes_precedence(self):
+        obscal = self.tmp / "obscaldir"
+        obscal.mkdir()
+        mous_under = "uid___A001_X1_X1"
+        (obscal / f"{mous_under}.flux.csv").write_text("static flux\n")
+        (obscal / f"{mous_under}.cont.dat").write_text("static cont\n")
+
+        anc_flux = self.tmp / "flux.csv"
+        anc_flux.write_text("ancillary flux\n")
+
+        self.run_and_capture(
+            [
+                "--staticobscal",
+                "--oldcont",
+                f"--obscaldir={obscal}",
+                f"--cont-dat={self.tmp / 'nonexistent_cont.dat'}",
+                f"--ancillary={anc_flux}",
+            ]
+        )
+
+        # Explicit ancillary flux.csv must not be overwritten by obscaldir
+        self.assertEqual((self.working / "flux.csv").read_text(), "ancillary flux\n")
+        # Non-existent --cont-dat must allow --oldcont fallback from obscaldir
+        self.assertEqual((self.working / "cont.dat").read_text(), "static cont\n")
+
 
 class TestLog2termExecution(CalibPipeIFCaptureCase):
     """Test log2term CLI and configuration behavior during execution."""

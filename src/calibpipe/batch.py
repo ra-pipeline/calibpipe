@@ -291,6 +291,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rotate existing output/working directory to timestamped backup before execution",
     )
     p.add_argument(
+        "--staticobscal",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="staticobscal",
+        help="Use previous flux.csv, antennapos.csv, and flag templates from obscaldir (--staticobscal / --no-staticobscal)",
+    )
+    p.add_argument(
+        "--oldcont",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        dest="oldcont",
+        help="Use previous cont.dat from obscaldir (--oldcont / --no-oldcont)",
+    )
+    p.add_argument(
+        "--obscaldir",
+        type=str,
+        default=None,
+        dest="obscaldir",
+        help="Override static calibrator database directory ([paths].obscaldir)",
+    )
+    p.add_argument(
         "--should-transfer-files",
         type=str,
         default=None,
@@ -402,6 +423,17 @@ def check_submit_host(config: dict) -> None:
     if hostname != submit_host:
         print(f"Jobs must be submitted from {submit_host}, exiting.")
         sys.exit(1)
+
+
+def _append_bool_cli_flag(
+    parts: list[str], args: argparse.Namespace, attr: str, flag: str
+) -> None:
+    """Forward a BooleanOptionalAction CLI flag when explicitly True or False."""
+    val = getattr(args, attr, None)
+    if val is True:
+        parts.append(f"--{flag}")
+    elif val is False:
+        parts.append(f"--no-{flag}")
 
 
 def _sbatch_directive(flag: str, value: object) -> str | None:
@@ -1290,12 +1322,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 mousname = parts[0]
                 recipe = parts[1] if len(parts) > 1 else "calimage"
 
-                pipejob_parts = [
-                    str(CALIBPIPEIF),
-                    "--staticobscal",
-                    f"--mous={mousname}",
-                    f"--recipe={recipe}",
-                ]
+                pipejob_parts = [str(CALIBPIPEIF)]
+                if getattr(args, "staticobscal", None) is False:
+                    pipejob_parts.append("--no-staticobscal")
+                else:
+                    pipejob_parts.append("--staticobscal")
+                pipejob_parts.extend([f"--mous={mousname}", f"--recipe={recipe}"])
                 if args.config:
                     pipejob_parts.append(f"--config={args.config}")
                 if getattr(args, "no_site_config", False):
@@ -1320,6 +1352,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                             p.psrecord,
                             p.memstats,
                             p.backup,
+                            p.staticobscal is not None,
+                            p.oldcont is not None,
+                            p.obscaldir,
                             p.workspaces,
                             p.casadata,
                         ]
@@ -1336,6 +1371,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                     pipejob_parts.append("--backup")
                 elif getattr(args, "backup", None) is False:
                     pipejob_parts.append("--no-backup")
+                _append_bool_cli_flag(pipejob_parts, args, "oldcont", "oldcont")
+                if getattr(args, "obscaldir", None):
+                    pipejob_parts.append(f"--obscaldir={shlex.quote(args.obscaldir)}")
                 pipejob_parts.extend(batch_opts.extra_args)
                 pipejob = " ".join(pipejob_parts)
 
@@ -1483,6 +1521,10 @@ def main(argv: Sequence[str] | None = None) -> None:
                 pipejob_parts.append("--backup")
             elif getattr(args, "backup", None) is False:
                 pipejob_parts.append("--no-backup")
+            _append_bool_cli_flag(pipejob_parts, args, "staticobscal", "staticobscal")
+            _append_bool_cli_flag(pipejob_parts, args, "oldcont", "oldcont")
+            if getattr(args, "obscaldir", None):
+                pipejob_parts.append(f"--obscaldir={shlex.quote(args.obscaldir)}")
             pipejob_parts.extend(batch_opts.extra_args)
             pipejob = " ".join(pipejob_parts)
 

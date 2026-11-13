@@ -469,6 +469,8 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `memstats`: Pipeline memory statistics tracking via `pipeline.infrastructure.utils.enable_memstats()` (default: `false`).
 - `pl_psrecord`: Pipeline internal telemetry tracking via `pipeline.infrastructure.utils.enable_psrecord()` (default: `false`).
 - `backup`: Rotate existing non-empty working directories to timestamped `_backup_<timestamp>` directories before execution (default: `false`).
+- `staticobscal`: Stage prior `flux.csv`, `antennapos.csv`, and `*flag*template.txt` files for the MOUS/EBs from `[paths].obscaldir` (default: `false`; override via `--staticobscal` / `--no-staticobscal`).
+- `oldcont`: Stage prior `cont.dat` for the MOUS from `[paths].obscaldir` (default: `false`; override via `--oldcont` / `--no-oldcont`).
 - `cont_dat`: File path to `cont.dat` staged into the working execution directory.
 - `jyperk_csv`: File path to `jyperk.csv` staged into the working execution directory.
 - `parameter_list`: File path to parameter list override staged into the working execution directory (automatically prefixed with `SEIP_` or `QLIP_` for matching recipes).
@@ -588,6 +590,8 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `memstats` | | Enable pipeline memory statistics tracking. |
 | | `pl_psrecord` | | Enable pipeline internal telemetry tracking. |
 | | `backup` | | Rotate existing run directory to timestamped `_backup_<timestamp>`. |
+| | `staticobscal` | | Stage prior `flux.csv`, `antennapos.csv`, and flag templates from `obscaldir` (`true`/`false`). |
+| | `oldcont` | | Stage prior `cont.dat` from `obscaldir` (`true`/`false`). |
 | | `cont_dat` | | File path to `cont.dat` staged into working directory. |
 | | `jyperk_csv` | | File path to `jyperk.csv` staged into working directory. |
 | | `parameter_list` | | Parameter list override staged into working directory. |
@@ -808,6 +812,9 @@ calibpipe run --vis /data/vlass.ms --procedure=procedure_hifv_vlassSEIP.xml --pa
 ```
 
 - `--backup`: Non-destructively rotates existing non-empty working directories to `<workdir>_backup_<YYYYMMDD_HHMMSS>` (with collision suffix `_1`, `_2` if needed).
+- `--staticobscal` / `--no-staticobscal`: Stages prior `flux.csv`, `antennapos.csv`, and EB `*flag*template.txt` files from `obscaldir` in `--mous` and `--PPR` modes (overridden by `--flag` or explicit `--ancillary`; also forwarded by `calibpipe batch`).
+- `--oldcont` / `--no-oldcont`: Stages prior `cont.dat` from `obscaldir` in `--mous` and `--PPR` modes (overridden by `--cont-dat`, `--ancillary`, or `--flag`; also forwarded by `calibpipe batch`).
+- `--obscaldir <path>`: Overrides `[paths].obscaldir` for static calibrator and continuum lookup (supported by both `calibpipe run` and `calibpipe batch`).
 - `--cont-dat <path>`: Copies continuum frequency selection file to `cont.dat` in the execution directory.
 - `--jyperk-csv <path>`: Copies Single-Dish Kelvin-to-Jansky conversion factors to `jyperk.csv`.
 - `--parameter-list <path>`: Copies parameter override file to `parameter.list` (or `SEIP_parameter.list` / `QLIP_parameter.list` when matching VLASS recipe names).

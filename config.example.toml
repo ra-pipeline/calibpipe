@@ -51,7 +51,7 @@ scipipe_logdir = "/data/pipeline/logs/{user}"
 # [Optional] Directory for post-run pickle files (legacy run tracking):
 pickle_dir = "/data/pipeline/pickles/{user}"
 
-# [Optional] Shared static calibrator database (passed to pipeline via --staticobscal):
+# [Optional] Shared static calibrator database (used with --staticobscal / --oldcont):
 obscaldir = "/data/pipeline/obscal2021"
 
 # [Optional] Directory containing auxiliary analysis scripts (e.g. analysisUtils / aU):
@@ -253,6 +253,8 @@ pixi_dir = "/data/pipeline/branches/main"
 # memstats = false                        # Enable pipeline memory statistics tracking
 # pl_psrecord = false                     # Enable pipeline psrecord profiling
 # backup = false                          # Rotate existing working directories to timestamped _backup_ directories
+# staticobscal = false                    # Stage flux.csv, antennapos.csv, and flag templates from obscaldir (--staticobscal)
+# oldcont = false                         # Stage cont.dat from obscaldir (--oldcont)
 # cont_dat = "cont.dat"                   # Path to continuum ranges file to stage into working directory
 # jyperk_csv = "jyperk.csv"               # Path to Single-Dish Jy/K conversion table to stage into working directory
 # parameter_list = "parameter.list"       # Path to pipeline parameter override list to stage into working directory

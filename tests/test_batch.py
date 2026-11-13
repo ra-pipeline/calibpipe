@@ -1285,6 +1285,71 @@ casa_root = "/fake/casa/main"
         finally:
             os.unlink(cfg_path)
 
+    def test_batch_submit_forwards_staticobscal_and_oldcont(self):
+        """Verify pipefile and single-job profile submissions forward obscal flags cleanly."""
+        test_cfg = (
+            'default_env = "main"\n'
+            "[envs.main]\n"
+            'casa_root = "/fake/casa/main"\n'
+            "[profiles.mous_prof]\n"
+            'env = "main"\n'
+            'mous = "uid://A001/X1/X1"\n'
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
+            cf.write(test_cfg)
+            cfg_path = cf.name
+        with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as pf:
+            pf.write("uid___A001_X1_X1 calimage\n")
+            pipe_path = pf.name
+        try:
+            # Pipefile mode: --no-staticobscal, --oldcont, --obscaldir, and obscal-only profile
+            test_cfg_obscal_prof = test_cfg + (
+                "[profiles.obscal_only]\n"
+                "oldcont = true\n"
+                'obscaldir = "/prof/obscal"\n'
+            )
+            with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf2:
+                cf2.write(test_cfg_obscal_prof)
+                cfg2_path = cf2.name
+            try:
+                calls_pipe = self.run_and_capture(
+                    [
+                        "--config", cfg2_path,
+                        "-p", "obscal_only",
+                        "--no-staticobscal",
+                        "--oldcont",
+                        "--obscaldir", "/cli/obscal",
+                        pipe_path,
+                    ]
+                )
+                self.assertEqual(len(calls_pipe), 1)
+                _, pipe_script = calls_pipe[0]
+                self.assertIn("--no-staticobscal", pipe_script)
+                self.assertIn("--oldcont", pipe_script)
+                self.assertIn("--obscaldir=/cli/obscal", pipe_script)
+                self.assertIn("--profile=obscal_only", pipe_script)
+            finally:
+                os.unlink(cfg2_path)
+
+            # Single-job profile mode: forwards --staticobscal, --oldcont, and --obscaldir
+            calls_prof = self.run_and_capture(
+                [
+                    "--config", cfg_path,
+                    "-p", "mous_prof",
+                    "--staticobscal",
+                    "--oldcont",
+                    "--obscaldir", "/cli/obscal",
+                ]
+            )
+            self.assertEqual(len(calls_prof), 1)
+            _, prof_script = calls_prof[0]
+            self.assertIn("--staticobscal", prof_script)
+            self.assertIn("--oldcont", prof_script)
+            self.assertIn("--obscaldir=/cli/obscal", prof_script)
+        finally:
+            os.unlink(cfg_path)
+            os.unlink(pipe_path)
+
 
 if __name__ == "__main__":
     unittest.main()

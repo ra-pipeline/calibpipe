@@ -674,6 +674,8 @@ class RunConfig:
     memstats: bool = False
     pl_psrecord: bool = False
     backup: bool = False
+    staticobscal: bool = False
+    oldcont: bool = False
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -711,6 +713,8 @@ class RunConfig:
         memstats: bool = False,
         pl_psrecord: bool = False,
         backup: bool = False,
+        staticobscal: bool = False,
+        oldcont: bool = False,
         cont_dat: str | None = None,
         jyperk_csv: str | None = None,
         parameter_list: str | None = None,
@@ -751,6 +755,8 @@ class RunConfig:
         self.memstats = memstats
         self.pl_psrecord = pl_psrecord
         self.backup = backup
+        self.staticobscal = staticobscal
+        self.oldcont = oldcont
         self.cont_dat = cont_dat
         self.jyperk_csv = jyperk_csv
         self.parameter_list = parameter_list
@@ -799,6 +805,8 @@ class RunConfig:
             memstats=bool(data.get("memstats", default_inst.memstats)),
             pl_psrecord=bool(data.get("pl_psrecord", default_inst.pl_psrecord)),
             backup=bool(data.get("backup", default_inst.backup)),
+            staticobscal=bool(data.get("staticobscal", default_inst.staticobscal)),
+            oldcont=bool(data.get("oldcont", default_inst.oldcont)),
             cont_dat=_str_or_none(data.get("cont_dat")),
             jyperk_csv=_str_or_none(data.get("jyperk_csv")),
             parameter_list=_str_or_none(data.get("parameter_list")),
@@ -889,6 +897,8 @@ class ProfileConfig:
     memstats: bool | None = None
     pl_psrecord: bool | None = None
     backup: bool | None = None
+    staticobscal: bool | None = None
+    oldcont: bool | None = None
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -1284,7 +1294,15 @@ class ProfileConfig:
                 else None
             ),
             pickle_dir=_str_or_none(flat.get("pickle_dir")),
-            obscaldir=_str_or_none(flat.get("obscaldir")),
+            obscaldir=(
+                resolve_first_existing_path(
+                    flat.get("obscaldir"),
+                    workspaces=flat.get("workspaces") or (),
+                )
+                or None
+                if flat.get("obscaldir") is not None
+                else None
+            ),
             aUdir=_str_or_none(flat.get("aUdir")),
             validation_dir=_str_or_none(flat.get("validation_dir")),
             recipe=_str_or_none(flat.get("recipe")),
@@ -1309,6 +1327,8 @@ class ProfileConfig:
             memstats=bool(flat["memstats"]) if "memstats" in flat else None,
             pl_psrecord=bool(flat["pl_psrecord"]) if "pl_psrecord" in flat else None,
             backup=bool(flat["backup"]) if "backup" in flat else None,
+            staticobscal=bool(flat["staticobscal"]) if "staticobscal" in flat else None,
+            oldcont=bool(flat["oldcont"]) if "oldcont" in flat else None,
             cont_dat=_str_or_none(flat.get("cont_dat")),
             jyperk_csv=_str_or_none(flat.get("jyperk_csv")),
             parameter_list=_str_or_none(flat.get("parameter_list")),
@@ -1677,6 +1697,8 @@ class ResolvedRunOptions:
 
     # Ancillary staging & backup
     backup: bool = False
+    staticobscal: bool = False
+    oldcont: bool = False
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -1701,6 +1723,7 @@ class ResolvedRunOptions:
     scipipe_logdir: str | None = None
     casarundata: str | None = None
     casadata: str | None = None
+    obscaldir: str | None = None
 
     def __init__(
         self,
@@ -1738,6 +1761,8 @@ class ResolvedRunOptions:
         memstats: bool = False,
         pl_psrecord: bool = False,
         backup: bool = False,
+        staticobscal: bool = False,
+        oldcont: bool = False,
         cont_dat: str | None = None,
         jyperk_csv: str | None = None,
         parameter_list: str | None = None,
@@ -1760,6 +1785,7 @@ class ResolvedRunOptions:
         scipipe_logdir: str | None = None,
         casarundata: str | None = None,
         casadata: str | None = None,
+        obscaldir: str | None = None,
         casa_ver: str | None = None,
         casa_dir: str | None = None,
         pl_ver: str | None = None,
@@ -1802,6 +1828,8 @@ class ResolvedRunOptions:
         self.memstats = memstats
         self.pl_psrecord = pl_psrecord
         self.backup = backup
+        self.staticobscal = staticobscal
+        self.oldcont = oldcont
         self.cont_dat = cont_dat
         self.jyperk_csv = jyperk_csv
         self.parameter_list = parameter_list
@@ -1839,6 +1867,7 @@ class ResolvedRunOptions:
             else (str(chosen_crd).strip() or None if chosen_crd is not None else None)
         )
         self.casadata = self.casarundata
+        self.obscaldir = str(obscaldir).strip() or None if obscaldir is not None else None
 
     @property
     def ncores(self) -> int:
@@ -1984,6 +2013,8 @@ def resolve_run_options(
     memstats = _val("memstats", cfg.run.memstats)
     pl_psrecord = _val("pl_psrecord", cfg.run.pl_psrecord)
     backup = _val("backup", cfg.run.backup)
+    staticobscal = _val("staticobscal", cfg.run.staticobscal)
+    oldcont = _val("oldcont", cfg.run.oldcont)
     cont_dat = _val("cont_dat", cfg.run.cont_dat)
     jyperk_csv = _val("jyperk_csv", cfg.run.jyperk_csv)
     parameter_list = _val("parameter_list", cfg.run.parameter_list)
@@ -2175,6 +2206,9 @@ def resolve_run_options(
     prof_branch = profile.branch if profile else None
     resolved_branch = cli_branch or prof_branch
 
+    prof_workspaces = profile.workspaces if profile and profile.workspaces else None
+    resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
+
     cli_casarundata = getattr(cli_opts, "casarundata", None)
     cli_casadata = getattr(cli_opts, "casadata", None)
     prof_casarundata = (
@@ -2213,8 +2247,18 @@ def resolve_run_options(
     prof_scipipe_logdir = profile.scipipe_logdir if profile else None
     resolved_scipipe_logdir = cli_scipipe_logdir or prof_scipipe_logdir
 
-    prof_workspaces = profile.workspaces if profile and profile.workspaces else None
-    resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
+    cli_obscaldir = getattr(cli_opts, "obscaldir", None)
+    prof_obscaldir = profile.obscaldir if profile else None
+    raw_obscaldir = cli_obscaldir or prof_obscaldir or cfg.paths.obscaldir
+    if isinstance(raw_obscaldir, (list, tuple)):
+        obscal_str = resolve_first_existing_path(
+            raw_obscaldir, workspaces=resolved_workspaces
+        )
+    elif raw_obscaldir is not None:
+        obscal_str = str(raw_obscaldir).strip()
+    else:
+        obscal_str = ""
+    resolved_obscaldir = os.path.expanduser(obscal_str) if obscal_str else None
 
     if isinstance(resolved_scipipe_rootdir, (list, tuple)):
         resolved_scipipe_rootdir = resolve_first_existing_path(
@@ -2379,6 +2423,8 @@ def resolve_run_options(
         memstats=bool(memstats),
         pl_psrecord=bool(pl_psrecord),
         backup=bool(backup),
+        staticobscal=bool(staticobscal),
+        oldcont=bool(oldcont),
         cont_dat=str(cont_dat) if cont_dat is not None else None,
         jyperk_csv=str(jyperk_csv) if jyperk_csv is not None else None,
         parameter_list=str(parameter_list) if parameter_list is not None else None,
@@ -2401,6 +2447,7 @@ def resolve_run_options(
         scipipe_logdir=resolved_scipipe_logdir,
         casarundata=resolved_casarundata,
         casadata=resolved_casadata,
+        obscaldir=resolved_obscaldir,
     )
 
 
