@@ -8,8 +8,8 @@
 # A) Site / Cluster Administrator (Shared Infrastructure Defaults):
 #      cp config.example.toml /etc/calibpipe/config.toml
 #      (or config.site.toml in repo root, or export CALIBPIPE_SITE_CONFIG=/path)
-#    Configure [site] tools, [batch] Slurm defaults, and standard [envs.*]
-#    so all cluster users inherit them automatically.
+#    Configure [site] policies, [paths] tools, [batch] Slurm defaults, and standard
+#    [envs.*] so all cluster users inherit them automatically.
 #
 # B) Individual User / Data Reducer (Personal Overrides):
 #      cp config.example.toml ~/.config/calibpipe/config.toml
@@ -21,7 +21,7 @@
 #   1. Site config:        /etc/calibpipe/config.toml, $CALIBPIPE_SITE_CONFIG, or config.site.toml
 #   2. User config:        ~/.config/calibpipe/config.toml and/or ~/.calibpipe/config.toml
 #   3. Workspace config:   ./config.toml (or .calibpipe.toml in current directory)
-#   4. Explicit override:  --config=<path> or $CALIBPIPE_CONFIG
+#   4. Explicit override:  --config=<path> or $CALIBPIPE_CONFIG (replaces layers 2-3 while keeping layer 1; 'calibpipe run --config-only' loads only --config)
 #
 # To run completely isolated without site configuration, pass --no-site-config
 # or set CALIBPIPE_NO_SITE_CONFIG=1.
@@ -51,7 +51,7 @@ scipipe_logdir = "/data/pipeline/logs/{user}"
 # [Optional] Directory for post-run pickle files (legacy run tracking):
 pickle_dir = "/data/pipeline/pickles/{user}"
 
-# [Optional] Shared static calibrator database (used with --staticobscal / --oldcont):
+# [Optional] Shared static calibrator database (used with staticobscal / oldcont):
 obscaldir = "/data/pipeline/obscal2021"
 
 # [Optional] Directory containing auxiliary analysis scripts (e.g. analysisUtils / aU):
@@ -63,10 +63,8 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 # [Optional] Workspace search directories for resolving relative datasets, scripts, and ancillary files:
 # workspaces = ["/data/pipeline/datasets", "/data/pipeline/testdata"]
 
-# [Optional] CASA measures and runtime data directory (supports a single path string or candidate list;
-# aliases: casadata, rundata):
+# [Optional] CASA measures and runtime data directory (supports a single path string or candidate list):
 # casarundata = "/data/casa/casarundata"
-# casadata = "/data/casa/distro"
 # rundata = ["/data/casa/distro"]
 
 # [Optional] List of directories for CASA datapath (runtime data and test datasets):
@@ -77,11 +75,7 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 #   {heuristics_root}/{branch}
 # heuristics_root = "/data/pipeline/branches"
 
-# [Optional] External tooling installation paths (can also be configured under [site]):
-# pmr_home = "/opt/pipetools/latest"
-# datapacker_home = "/opt/datapacker/current"
-# acsdata = "/opt/acsdata"
-# java_home = "/usr/lib/jvm/default-java"
+# [Optional] Custom Pixi executable path (defaults to 'pixi' on $PATH):
 # pixi_bin = "/opt/pixi/bin/pixi"
 
 
@@ -93,7 +87,7 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 #   A) Traditional monolithic CASA installation (via 'casa_root')
 #   B) Modular CASA environment managed by Pixi (via 'pixi_dir')
 #
-# Select at runtime with: calibpipe run --env=<name> (or calibpipe batch ... --env=<name>)
+# Select at runtime with: calibpipe run --env=<name> (or calibpipe submit ... --env=<name>)
 #
 # Available fields per environment:
 #   casa_root      [Required for A] Directory containing bin/casa and bin/mpicasa.
@@ -102,7 +96,8 @@ validation_dir = "/data/pipeline_validation/CASA6.1.63"
 #   branch         [Optional] Branch name (defaults to table name, e.g. "main").
 #   heuristics_dir [Optional] Custom pipeline checkout path. Supports template
 #                             variables '{casa_root}', '{pixi_dir}', and '{branch}'.
-#                             If omitted in Pixi mode, defaults to {pixi_dir}/pipeline.
+#                             If omitted, defaults to {heuristics_root}/{branch} (or {pixi_dir} in Pixi mode).
+#   extra_vars     [Optional] Subtable of custom environment variables ([envs.<name>.extra_vars]).
 
 # Default production environment (Monolithic CASA)
 [envs.main]
@@ -112,6 +107,7 @@ casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 [envs.dev]
 casa_root = "/opt/casa/casa-6.7.4-8-pipeline-2026.2.0.23-py3.12"
 heuristics_dir = "/data/pipeline/branches/dev"
+# extra_vars = { OPENBLAS_VERBOSE = "0" } # Optional inline custom env vars (values must be strings)
 
 # Example: Pipeline heuristics bundled directly inside the CASA installation tree
 [envs.pl2025]
@@ -124,31 +120,32 @@ pixi_dir = "/data/pipeline/branches/main"
 # pixi_env = "default"                 # Optional environment name in pixi workspace (default: "default")
 # branch = "main"                      # Optional branch name (defaults to table name)
 # heuristics_dir = "{pixi_dir}/pipeline" # Optional custom heuristics path (defaults to {pixi_dir}/pipeline)
+#
+# Optional subtable of custom environment variables exported for this environment (values must be strings):
+# [envs.modular.extra_vars]
+# OPENBLAS_VERBOSE = "0"
+# PYTHONUNBUFFERED = "1"
 
 # ------------------------------------------------------------------------------
-# 3. Site & Cluster Overrides ([site]) (Optional)
+# 3. Site & Cluster Policies ([site]) (Optional)
 # ------------------------------------------------------------------------------
-# Built-in defaults are generic fallbacks (/opt/pipetools/latest, etc.).
-# Configure this section to match your site or observatory cluster tooling paths.
+# Configure cluster-level submission policies, ALMA archive service endpoints,
+# and external PMR / archive tooling installation paths.
 #
 # [site]
 # submit_host = "submit-node-1"           # Refuses to submit Slurm batches unless run on this host
-# pixi_bin = "/opt/pixi/bin/pixi"        # Custom Pixi executable path (defaults to 'pixi' in PATH)
-# java_home = "/usr/lib/jvm/java-21"      # Java runtime for PMR and datapacker
 # pmr_home = "/opt/pipetools/latest"      # pipelineMakeRequest installation root
-# acsdata = "/opt/pipedrive/acsdata"      # ACS data directory
-# datapacker_home = "/opt/datapacker"     # ALMA datapacker installation root
+# datapacker_home = "/opt/datapacker/current" # ALMA datapacker installation root
+# acsdata = "/opt/acsdata"                # ACS data directory
+# java_home = "/usr/lib/jvm/default-java" # Java runtime for PMR and datapacker
 # flux_service_url = "https://almascience.org/sc/flux"
 # flux_service_url_backup = "https://asa.alma.cl/sc/flux"
-# casa_enable_telemetry = false           # Set to true to enable CASA telemetry
-# use_custom_rcdir = true                 # Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: true)
 # strict_paths = false                    # Fail immediately on missing tools instead of emitting warnings
-# log2term = false                        # Mirror CASA log messages to terminal/stdout in real time (default: false)
 
 # ------------------------------------------------------------------------------
-# 4. Batch Job Defaults ([batch]) & Profiles ([batches.<name>]) (Optional)
+# 4. Batch Job Defaults ([batch]) (Optional)
 # ------------------------------------------------------------------------------
-# Resource allocation and scheduler directives for 'calibpipe submit' and 'calibpipe batch'.
+# Resource allocation and scheduler directives for 'calibpipe submit'.
 #
 # Direct Scheduler Mapping:
 #   -----------------------------------------------------------------------------
@@ -156,7 +153,7 @@ pixi_dir = "/data/pipeline/branches/main"
 #   -----------------------------------------------------------------------------
 #   cores             #SBATCH --ntasks=<cores>          request_cpus = <cores>
 #   partition         #SBATCH --partition=<partition>   +partition = "<partition>"
-#   mem               #SBATCH --mem=<mem>               request_memory = <mem>G
+#   mem               #SBATCH --mem=<mem>G              request_memory = <mem>G
 #   mem_per_cpu       #SBATCH --mem-per-cpu=<val>       request_memory = cores * val
 #   chdir             #SBATCH --chdir=<dir>             initialdir = <dir>
 #   nodelist          #SBATCH --nodelist=<host>         TARGET.Machine == "<host>"
@@ -184,10 +181,16 @@ pixi_dir = "/data/pipeline/branches/main"
 # scheduler = "slurm"                     # Batch cluster scheduler ("slurm" or "htcondor", default: "slurm")
 # dry_run = false                         # Simulate batch submission without submitting jobs (default: false)
 # logdir = "~/Workspace/logs"             # Directory for batch scheduler script and log records
+# outfile = "batch.out"                   # Custom stdout filename or path for batch jobs
+# errfile = "batch.err"                   # Custom stderr filename or path for batch jobs
+# save_runfile = "tests.run"              # Persist collected regression test node IDs to a runfile
+# max_concurrent = 8                      # Chained Slurm dependency slot throttle
+# omp_num_threads = 1                     # OMP_NUM_THREADS override in batch wrapper scripts
+# openblas_num_threads = 1                # OPENBLAS_NUM_THREADS override in batch wrapper scripts
 
 # # --- Shared Resource Allocation [Slurm & HTCondor] ---
-# partition = "plwg"                      # Slurm partition / HTCondor partition (alias: queue)
-# cores = 8                               # Tasks/CPUs per batch job (Slurm: --ntasks; HTCondor: request_cpus; alias: ntasks = 8)
+# partition = "plwg"                      # Slurm partition / HTCondor partition
+# cores = 8                               # Tasks/CPUs per batch job (Slurm: --ntasks; HTCondor: request_cpus)
 # mem = 248                               # Total memory in GB per batch job (Slurm: --mem; HTCondor: request_memory; mutually exclusive with mem_per_cpu)
 # mem_per_cpu = "5G"                      # Memory per CPU (Slurm: --mem-per-cpu; HTCondor: converts to request_memory = cores * mem_per_cpu)
 # mail_type = "ALL"                       # Notification policy (Slurm: --mail-type; HTCondor: notification = Always|Never|Complete|Error)
@@ -197,7 +200,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # # --- Slurm-Specific Directives [Slurm only] ---
 # node = "1"                              # Number of nodes (--nodes)
 # walltime = "24:00:00"                   # Slurm walltime limit (--time; omitted if unset)
-# cpus_per_task = 3                       # Logical CPUs/threads per task (Slurm: --cpus-per-task; alias: threads = 3)
+# cpus_per_task = 3                       # Logical CPUs/threads per task (Slurm: --cpus-per-task)
 # ntasks_per_core = 1                     # Limit tasks per physical core (--ntasks-per-core; 1 prevents hyperthread sharing)
 # hint = "nomultithread"                  # Scheduler placement hint (--hint, e.g. 'nomultithread')
 # distribution = "cyclic:cyclic"          # Task distribution policy (--distribution)
@@ -205,29 +208,27 @@ pixi_dir = "/data/pipeline/branches/main"
 
 # # --- HTCondor-Specific Directives [HTCondor only] ---
 # requirements = "none"                   # HTCondor ClassAd requirements override ("none", "default", or custom expression)
-# request_gpus = 0                        # Number of GPUs requested (HTCondor: request_gpus; Slurm: --gpus; alias: gpus = 0)
-# pool = "cm.example.org"                 # Central Manager host (condor_submit -pool <host>; alias: central_manager)
-# schedd = "schedd.example.org"           # Target schedd daemon name (condor_submit -name <schedd>; note: -remote implicitly forces -spool; alias: schedd_name, remote)
+# request_gpus = 0                        # Number of GPUs requested (HTCondor: request_gpus; Slurm: --gpus)
+# pool = "cm.example.org"                 # Central Manager host (condor_submit -pool <host>)
+# schedd = "schedd.example.org"           # Target schedd daemon name (condor_submit -name <schedd>; note: -remote implicitly forces -spool)
 # spool = false                           # Spool job files over network to remote schedd (condor_submit -spool)
 # should_transfer_files = "YES"           # Transfer sandbox files between AP and execute node ("YES", "IF_NEEDED", "NO")
 # when_to_transfer_output = "ON_EXIT"     # Transfer output on job completion ("ON_EXIT", "ON_EXIT_OR_EVICT")
 #
 # Named resource profiles override baseline [batch] settings and are selectable via
-# 'calibpipe submit ... --profile=<name>' (or 'calibpipe batch ...'):
+# 'calibpipe submit ... --profile=<name>':
 #
 # [profiles.debug]
 # partition = "debug"                     # Test/debug partition
-# cores = 4                               # Reduced CPU/task count (alias: ntasks = 4)
+# cores = 4                               # Reduced CPU/task count
 # mem = 32                                # Reduced RAM (GB)
 # walltime = "01:00:00"                   # Short walltime limit
 #
 # [profiles.heavy]
 # partition = "batch2"                    # High-capacity partition
-# cores = 16                              # High CPU/task count (alias: ntasks = 16)
+# cores = 16                              # High CPU/task count
 # mem = 500
-# cpus_per_task = 2                       # Logical CPUs/threads per task (alias: threads = 2)
-#
-# (Note: Legacy [batches.<name>] tables remain fully supported for backward compatibility).
+# cpus_per_task = 2                       # Logical CPUs/threads per task
 
 # ------------------------------------------------------------------------------
 # 5. Pipeline Run Defaults ([run]) (Optional)
@@ -235,8 +236,8 @@ pixi_dir = "/data/pipeline/branches/main"
 # Defaults when executing 'calibpipe run':
 #
 # [run]
-# recipe = "calimage"                     # Pipeline recipe (cal, calimage, image, etc.)
-# nprocs = 8                              # Number of MPI processes for CASA/mpicasa (alias: ncores)
+# recipe = "calimage"                     # Recipe shorthand (cal, calimage, image, ...) or procedure XML filename/path
+# nprocs = 8                              # Number of MPI processes for CASA/mpicasa
 # loglevel = "debug"                      # Pipeline log level
 # useresume = false                       # Use break/resume instead of two contexts
 # symlink_shortcuts = true                # Create convenience symlinks (working, products, rawdata, weblog) in project root
@@ -253,8 +254,8 @@ pixi_dir = "/data/pipeline/branches/main"
 # memstats = false                        # Enable pipeline memory statistics tracking
 # pl_psrecord = false                     # Enable pipeline psrecord profiling
 # backup = false                          # Rotate existing working directories to timestamped _backup_ directories
-# staticobscal = false                    # Stage flux.csv, antennapos.csv, and flag templates from obscaldir (--staticobscal)
-# oldcont = false                         # Stage cont.dat from obscaldir (--oldcont)
+# staticobscal = false                    # Stage flux.csv, antennapos.csv, and flag templates from obscaldir
+# oldcont = false                         # Stage cont.dat from obscaldir
 # cont_dat = "cont.dat"                   # Path to continuum ranges file to stage into working directory
 # jyperk_csv = "jyperk.csv"               # Path to Single-Dish Jy/K conversion table to stage into working directory
 # parameter_list = "parameter.list"       # Path to pipeline parameter override list to stage into working directory
@@ -271,6 +272,9 @@ pixi_dir = "/data/pipeline/branches/main"
 # rawdata = "~/Workspace/archive/rawdata" # Location of raw data archive/ASDM directory to symlink into workdir/rawdata
 # ppr = "~/Workspace/projs/PPR.xml"       # Standalone Pipeline Processing Request (PPR) XML file to execute
 # vla = false                             # Use VLA pipeline interface (executevlappr) instead of ALMA (executeppr)
+# flag_dir = "/data/reuse/working"        # Directory with prior flag/WVR products to stage into working/
+# subdir = "experiment"                   # Extra subdirectory appended to SCIPIPE_ROOTDIR
+# onlysemipass = "uid://A002/X1/X2"       # Comma-separated list of semipass ASDMs for PMR
 
 # ------------------------------------------------------------------------------
 # 6. Execution Profiles ([profiles.<name>]) (Optional)
@@ -278,18 +282,14 @@ pixi_dir = "/data/pipeline/branches/main"
 # Pre-packaged execution configurations that combine environment, run options,
 # and cluster resource settings. Select via:
 #   calibpipe run --profile=vlass_seip ...
-#   calibpipe batch ... --profile=vlass_seip
+#   calibpipe submit ... --profile=vlass_seip
 #
 # Execution profiles can also define self-contained targets (cmd, script, vis, mous, ppr, interactive),
 # allowing single-command runs like 'calibpipe run -p regression/fast' with zero CLI target flags:
 #
 # Precedence: CLI flags > [profiles.<name>] > [run] / [batch] > built-in defaults.
 #
-# Profiles support flat keys as well as nested subtables:
-#   [profiles.<name>.paths]  - workspaces, casadata, scipipe_rootdir, scipipe_logdir
-#   [profiles.<name>.run]    - recipe, nprocs, verbose, log2term, omp_num_threads, etc.
-#   [profiles.<name>.batch]  - partition, cores, mem, mem_per_cpu, cpus_per_task, etc.
-#   [profiles.<name>.env]    - casa_root, heuristics_dir, pixi_dir, pixi_env, branch
+# Profiles use flat keys to override [paths], [envs.<name>], [run], and [batch] settings:
 #
 # [profiles.vlass_seip]
 # env = "main"
@@ -323,14 +323,14 @@ pixi_dir = "/data/pipeline/branches/main"
 # [profiles.regression_array]
 # env = "main"
 # test_target = "tests/regression/fast"     # Pytest test directory or file to collect
-# test_marker = "regression"                # Marker filter (alias: marker)
-# test_opts = "--cov=pipeline --cov-branch --cov-report=" # Additional pytest options (alias: pytest_opts)
+# test_marker = "regression"                # Marker filter
+# test_opts = "--cov=pipeline --cov-branch --cov-report=" # Additional pytest options
 # workdir = "~/Workspace/tests/fast_reg"    # Base workdir (tests run in sub-folders)
 # partition = "plwg"
 # cores = 8
 # mem = 64
 # backup = true                             # Safe directory rotation per test
-# max_concurrent = 8                       # Chained Slurm slot throttling (alias: throttle)
+# max_concurrent = 8                        # Chained Slurm slot throttling
 # with_report = true                        # Auto-schedule dependent Slurm wrap-up report job
 #
 # [profiles.interactive_dev]
@@ -339,6 +339,3 @@ pixi_dir = "/data/pipeline/branches/main"
 # interactive = true
 # autoreload = true
 # nprocs = 4
-
-
-

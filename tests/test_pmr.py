@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import argparse
+import io
 import os
 import subprocess
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from calibpipe import pmr
@@ -222,39 +222,42 @@ class TestPMRExecution(unittest.TestCase):
 
     def test_project_shortcuts_after_rename(self):
         for enabled, exit_code in ((True, 0), (False, 0), (None, 0), (True, 1)):
-            with self.subTest(enabled=enabled, exit_code=exit_code):
-                with tempfile.TemporaryDirectory() as td:
-                    root = Path(td) / "project_generated"
-                    working = root / "SOUS_example/GOUS_example/MOUS_example/working"
-                    html = working / "pipeline-20990101T000000/html"
-                    html.mkdir(parents=True)
-                    for name in ("rawdata", "products"):
-                        (working.parent / name).mkdir()
-                    req = PMRRequest(mous="uid://A001/X1/X1", rename="project")
-                    with patch("calibpipe.pmr.validate_files"), patch(
-                        "calibpipe.pmr.subprocess.Popen"
-                    ) as popen:
-                        proc = popen.return_value
-                        proc.stdout.readline.side_effect = [
-                            f"Project root directory is {root}\n", ""
-                        ]
-                        proc.returncode = exit_code
-                        result = run_pmr(
-                            req, runtime=self.runtime,
-                            **({"symlink_shortcuts": enabled} if enabled is not None else {}),
-                            cfg=pmr.envconfig.CalibpipeConfig.from_dict(
-                                {"run": {"symlink_shortcuts": True}}
-                            ),
-                            logger=lambda message: None,
-                        )
-                    expected_root = Path(td) / "project" if exit_code == 0 else root
-                    self.assertEqual(result.project_root, expected_root)
-                    for name in ("working", "rawdata", "products", "weblog"):
-                        link = expected_root / name
-                        self.assertEqual(link.is_symlink(), bool(enabled) and exit_code == 0)
-                        if link.is_symlink():
-                            self.assertTrue(link.exists())
-                            self.assertFalse(link.readlink().is_absolute())
+            with (
+                self.subTest(enabled=enabled, exit_code=exit_code),
+                tempfile.TemporaryDirectory() as td,
+            ):
+                root = Path(td) / "project_generated"
+                working = root / "SOUS_example/GOUS_example/MOUS_example/working"
+                html = working / "pipeline-20990101T000000/html"
+                html.mkdir(parents=True)
+                for name in ("rawdata", "products"):
+                    (working.parent / name).mkdir()
+                req = PMRRequest(mous="uid://A001/X1/X1", rename="project")
+                with (
+                    patch("calibpipe.pmr.validate_files"),
+                    patch("calibpipe.pmr.subprocess.Popen") as popen,
+                ):
+                    proc = popen.return_value
+                    proc.stdout.readline.side_effect = [
+                        f"Project root directory is {root}\n", ""
+                    ]
+                    proc.returncode = exit_code
+                    result = run_pmr(
+                        req, runtime=self.runtime,
+                        **({"symlink_shortcuts": enabled} if enabled is not None else {}),
+                        cfg=pmr.envconfig.CalibpipeConfig.from_dict(
+                            {"run": {"symlink_shortcuts": True}}
+                        ),
+                        logger=lambda message: None,
+                    )
+                expected_root = Path(td) / "project" if exit_code == 0 else root
+                self.assertEqual(result.project_root, expected_root)
+                for name in ("working", "rawdata", "products", "weblog"):
+                    link = expected_root / name
+                    self.assertEqual(link.is_symlink(), bool(enabled) and exit_code == 0)
+                    if link.is_symlink():
+                        self.assertTrue(link.exists())
+                        self.assertFalse(link.readlink().is_absolute())
 
     def test_symlink_shortcuts_parser(self):
         parser = pmr.build_parser()
@@ -297,7 +300,7 @@ class TestPMRExecution(unittest.TestCase):
                         f"Project root directory is {root}\n", ""
                     ]
                     proc.returncode = 0
-                    popen.side_effect = lambda command, **kwargs: (
+                    popen.side_effect = lambda command, proc=proc, **kwargs: (
                         real_popen(command, **kwargs) if isinstance(command, list) else proc
                     )
                     result = run_pmr(
@@ -330,22 +333,24 @@ class TestPMRExecution(unittest.TestCase):
 
     def test_mocked_execution_success(self):
         req = PMRRequest(mous="uid://A001/X1/X1")
-        with patch("calibpipe.pmr.validate_files"):
-            with patch("subprocess.Popen") as mock_popen:
-                process_mock = MagicMock()
-                process_mock.stdout.readline.side_effect = [
-                    "Initializing MakeProcessingRequests\n",
-                    "Project root directory is /scratch/runs/uid___A001_X1_X1\n",
-                    "",
-                ]
-                process_mock.wait.return_value = None
-                process_mock.returncode = 0
-                mock_popen.return_value = process_mock
+        with (
+            patch("calibpipe.pmr.validate_files"),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            process_mock = MagicMock()
+            process_mock.stdout.readline.side_effect = [
+                "Initializing MakeProcessingRequests\n",
+                "Project root directory is /scratch/runs/uid___A001_X1_X1\n",
+                "",
+            ]
+            process_mock.wait.return_value = None
+            process_mock.returncode = 0
+            mock_popen.return_value = process_mock
 
-                res = run_pmr(req, runtime=self.runtime, dry_run=False)
-                self.assertEqual(res.exit_code, 0)
-                self.assertEqual(res.project_root, Path("/scratch/runs/uid___A001_X1_X1"))
-                self.assertIn("Project root directory is", res.output)
+            res = run_pmr(req, runtime=self.runtime, dry_run=False)
+            self.assertEqual(res.exit_code, 0)
+            self.assertEqual(res.project_root, Path("/scratch/runs/uid___A001_X1_X1"))
+            self.assertIn("Project root directory is", res.output)
 
     def test_download_restore_products_convenience_helper(self):
         with patch("calibpipe.pmr.validate_files"):
@@ -406,32 +411,64 @@ class TestPMRCLI(unittest.TestCase):
         self.assertTrue(args.dry_run)
 
     def test_main_restore_only(self):
-        with patch("calibpipe.pmr.PMRRuntime.from_env"):
-            with patch("calibpipe.pmr.run_pmr") as mock_run:
-                mock_run.return_value = PMRResult(0, [], "", "", None)
-                exit_code = pmr.main([
-                    "uid://A001/X1/X1",
-                    "--restore",
-                ])
-                self.assertEqual(exit_code, 0)
-                req = mock_run.call_args[0][0]
-                self.assertEqual(req.mous, "uid://A001/X1/X1")
-                self.assertFalse(req.download_asdms)
-                self.assertTrue(req.download_restore)
+        with (
+            patch("calibpipe.pmr.PMRRuntime.from_env"),
+            patch("calibpipe.pmr.run_pmr") as mock_run,
+        ):
+            mock_run.return_value = PMRResult(0, [], "", "", None)
+            exit_code = pmr.main([
+                "uid://A001/X1/X1",
+                "--restore",
+            ])
+            self.assertEqual(exit_code, 0)
+            req = mock_run.call_args[0][0]
+            self.assertEqual(req.mous, "uid://A001/X1/X1")
+            self.assertFalse(req.download_asdms)
+            self.assertTrue(req.download_restore)
 
     def test_main_download_only(self):
-        with patch("calibpipe.pmr.PMRRuntime.from_env"):
-            with patch("calibpipe.pmr.run_pmr") as mock_run:
-                mock_run.return_value = PMRResult(0, [], "", "", None)
-                exit_code = pmr.main([
-                    "uid://A001/X1/X1",
-                    "--download",
-                ])
-                self.assertEqual(exit_code, 0)
-                req = mock_run.call_args[0][0]
-                self.assertEqual(req.mous, "uid://A001/X1/X1")
-                self.assertTrue(req.download_asdms)
-                self.assertFalse(req.download_restore)
+        with (
+            patch("calibpipe.pmr.PMRRuntime.from_env"),
+            patch("calibpipe.pmr.run_pmr") as mock_run,
+        ):
+            mock_run.return_value = PMRResult(0, [], "", "", None)
+            exit_code = pmr.main([
+                "uid://A001/X1/X1",
+                "--download",
+            ])
+            self.assertEqual(exit_code, 0)
+            req = mock_run.call_args[0][0]
+            self.assertEqual(req.mous, "uid://A001/X1/X1")
+            self.assertTrue(req.download_asdms)
+            self.assertFalse(req.download_restore)
+
+    def test_main_missing_config_returns_error(self):
+        stderr = io.StringIO()
+        with patch("sys.stderr", stderr):
+            exit_code = pmr.main(
+                ["uid://A001/X1/X1", "--config", "/nonexistent/calibpipe_missing.toml"]
+            )
+        self.assertEqual(exit_code, 1)
+        self.assertIn("ERROR:", stderr.getvalue())
+
+    def test_main_unknown_env_returns_error(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as tf:
+            tf.write(
+                'default_env = "main"\n'
+                "[envs.main]\n"
+                'casa_root = "/opt/casa/main"\n'
+            )
+            cfg_path = tf.name
+        try:
+            stderr = io.StringIO()
+            with patch("sys.stderr", stderr):
+                exit_code = pmr.main(
+                    ["uid://A001/X1/X1", "--config", cfg_path, "--env", "nonexistent_env"]
+                )
+            self.assertEqual(exit_code, 1)
+            self.assertIn("ERROR:", stderr.getvalue())
+        finally:
+            os.unlink(cfg_path)
 
     def test_runner_run_mous_delegates_to_pmr_run_pmr(self):
         from calibpipe import runner
@@ -446,12 +483,6 @@ class TestPMRCLI(unittest.TestCase):
             ppr_file = working_dir / "PPR.xml"
             ppr_file.write_text("<PPR/>")
 
-            opts = argparse.Namespace(
-                mous="uid://A001/X1/X1",
-                flag="",
-                ppr="",
-                onlysemipass="",
-            )
             run_opts = ResolvedRunOptions(
                 mous="uid://A001/X1/X1",
                 recipe="calimage",
@@ -474,36 +505,37 @@ class TestPMRCLI(unittest.TestCase):
                 project_root=root_dir,
             )
 
-            with patch("calibpipe.pmr.run_pmr", return_value=mock_res) as mock_pmr_run:
-                with patch("calibpipe.runner.RunLogger") as mock_logger_cls:
-                    mock_logger_inst = MagicMock()
-                    mock_logger_inst.run.return_value = 0
-                    mock_logger_inst.runquiet.return_value = 0
-                    mock_logger_cls.return_value = mock_logger_inst
+            with (
+                patch("calibpipe.pmr.run_pmr", return_value=mock_res) as mock_pmr_run,
+                patch("calibpipe.runner.RunLogger") as mock_logger_cls,
+            ):
+                mock_logger_inst = MagicMock()
+                mock_logger_inst.run.return_value = 0
+                mock_logger_inst.runquiet.return_value = 0
+                mock_logger_cls.return_value = mock_logger_inst
 
-                    with patch.dict("os.environ", {"CALIBPIPE_SKIP_PATH_CHECK": "1"}):
-                        orig_getoutput = runner.getoutput
-                        try:
-                            runner.getoutput = runner.subprocess.getoutput
-                            exit_code = runner._run_mous(
-                                opts=opts,
-                                run_opts=run_opts,
-                                env_spec=env_spec,
-                                env=env,
-                                casaroot="/fake/casa",
-                                casarun="casa",
-                                site_cfg=site_cfg,
-                            )
-                            self.assertEqual(exit_code, 0)
-                            mock_pmr_run.assert_called_once()
-                            req = mock_pmr_run.call_args[0][0]
-                            self.assertEqual(req.mous, "uid://A001/X1/X1")
-                            self.assertEqual(req.procedure, "procedure_hifa_calimage.xml")
-                            self.assertTrue(req.download_asdms)
-                            self.assertFalse(req.download_restore)
-                            self.assertIsNone(req.rename)
-                        finally:
-                            runner.getoutput = orig_getoutput
+                with patch.dict("os.environ", {"CALIBPIPE_SKIP_PATH_CHECK": "1"}):
+                    orig_getoutput = runner.getoutput
+                    try:
+                        runner.getoutput = runner.subprocess.getoutput
+                        exit_code = runner._run_mous(
+                            run_opts=run_opts,
+                            env_spec=env_spec,
+                            env=env,
+                            casaroot="/fake/casa",
+                            casarun="casa",
+                            site_cfg=site_cfg,
+                        )
+                        self.assertEqual(exit_code, 0)
+                        mock_pmr_run.assert_called_once()
+                        req = mock_pmr_run.call_args[0][0]
+                        self.assertEqual(req.mous, "uid://A001/X1/X1")
+                        self.assertEqual(req.procedure, "procedure_hifa_calimage.xml")
+                        self.assertTrue(req.download_asdms)
+                        self.assertFalse(req.download_restore)
+                        self.assertIsNone(req.rename)
+                    finally:
+                        runner.getoutput = orig_getoutput
 
     def test_runner_run_mous_passes_workdir_rename_to_pmr(self):
         from calibpipe import runner
@@ -519,13 +551,6 @@ class TestPMRCLI(unittest.TestCase):
             ppr_file = working_dir / "PPR.xml"
             ppr_file.write_text("<PPR/>")
 
-            opts = argparse.Namespace(
-                mous="uid://A001/X1/X1",
-                flag="",
-                ppr="",
-                onlysemipass="",
-                workdir=str(custom_workdir),
-            )
             run_opts = ResolvedRunOptions(
                 mous="uid://A001/X1/X1",
                 recipe="calimage",
@@ -549,33 +574,34 @@ class TestPMRCLI(unittest.TestCase):
                 project_root=custom_workdir,
             )
 
-            with patch("calibpipe.pmr.run_pmr", return_value=mock_res) as mock_pmr_run:
-                with patch("calibpipe.runner.RunLogger") as mock_logger_cls:
-                    mock_logger_inst = MagicMock()
-                    mock_logger_inst.run.return_value = 0
-                    mock_logger_inst.runquiet.return_value = 0
-                    mock_logger_cls.return_value = mock_logger_inst
+            with (
+                patch("calibpipe.pmr.run_pmr", return_value=mock_res) as mock_pmr_run,
+                patch("calibpipe.runner.RunLogger") as mock_logger_cls,
+            ):
+                mock_logger_inst = MagicMock()
+                mock_logger_inst.run.return_value = 0
+                mock_logger_inst.runquiet.return_value = 0
+                mock_logger_cls.return_value = mock_logger_inst
 
-                    with patch.dict("os.environ", {"CALIBPIPE_SKIP_PATH_CHECK": "1"}):
-                        orig_getoutput = runner.getoutput
-                        try:
-                            runner.getoutput = runner.subprocess.getoutput
-                            exit_code = runner._run_mous(
-                                opts=opts,
-                                run_opts=run_opts,
-                                env_spec=env_spec,
-                                env=env,
-                                casaroot="/fake/casa",
-                                casarun="casa",
-                                site_cfg=site_cfg,
-                            )
-                            self.assertEqual(exit_code, 0)
-                            mock_pmr_run.assert_called_once()
-                            req = mock_pmr_run.call_args[0][0]
-                            self.assertEqual(req.mous, "uid://A001/X1/X1")
-                            self.assertEqual(req.rename, str(custom_workdir))
-                        finally:
-                            runner.getoutput = orig_getoutput
+                with patch.dict("os.environ", {"CALIBPIPE_SKIP_PATH_CHECK": "1"}):
+                    orig_getoutput = runner.getoutput
+                    try:
+                        runner.getoutput = runner.subprocess.getoutput
+                        exit_code = runner._run_mous(
+                            run_opts=run_opts,
+                            env_spec=env_spec,
+                            env=env,
+                            casaroot="/fake/casa",
+                            casarun="casa",
+                            site_cfg=site_cfg,
+                        )
+                        self.assertEqual(exit_code, 0)
+                        mock_pmr_run.assert_called_once()
+                        req = mock_pmr_run.call_args[0][0]
+                        self.assertEqual(req.mous, "uid://A001/X1/X1")
+                        self.assertEqual(req.rename, str(custom_workdir))
+                    finally:
+                        runner.getoutput = orig_getoutput
 
 
 class TestPMRRenaming(unittest.TestCase):
@@ -716,23 +742,25 @@ class TestPMRRenaming(unittest.TestCase):
                 acsdata=Path("/opt/acsdata"),
                 scriptdir=Path("/opt/recipes"),
             )
-            with patch("calibpipe.pmr.validate_files"):
-                with patch("subprocess.Popen") as mock_popen:
-                    proc = MagicMock()
-                    proc.stdout.readline.side_effect = [
-                        f"Project root directory is {gen_dir}\n",
-                        "",
-                    ]
-                    proc.wait.return_value = None
-                    proc.returncode = 0
-                    mock_popen.return_value = proc
+            with (
+                patch("calibpipe.pmr.validate_files"),
+                patch("subprocess.Popen") as mock_popen,
+            ):
+                proc = MagicMock()
+                proc.stdout.readline.side_effect = [
+                    f"Project root directory is {gen_dir}\n",
+                    "",
+                ]
+                proc.wait.return_value = None
+                proc.returncode = 0
+                mock_popen.return_value = proc
 
-                    res = run_pmr(req, runtime=runtime)
-                    self.assertEqual(res.exit_code, 0)
-                    expected_root = base / "2099.1.00001.S"
-                    self.assertEqual(res.project_root, expected_root)
-                    self.assertTrue(expected_root.is_dir())
-                    self.assertFalse(gen_dir.exists())
+                res = run_pmr(req, runtime=runtime)
+                self.assertEqual(res.exit_code, 0)
+                expected_root = base / "2099.1.00001.S"
+                self.assertEqual(res.project_root, expected_root)
+                self.assertTrue(expected_root.is_dir())
+                self.assertFalse(gen_dir.exists())
 
     def test_run_pmr_with_explicit_rename(self):
         with tempfile.TemporaryDirectory() as td:
@@ -749,22 +777,24 @@ class TestPMRRenaming(unittest.TestCase):
                 acsdata=Path("/opt/acsdata"),
                 scriptdir=Path("/opt/recipes"),
             )
-            with patch("calibpipe.pmr.validate_files"):
-                with patch("subprocess.Popen") as mock_popen:
-                    proc = MagicMock()
-                    proc.stdout.readline.side_effect = [
-                        f"Project root directory is {gen_dir}\n",
-                        "",
-                    ]
-                    proc.wait.return_value = None
-                    proc.returncode = 0
-                    mock_popen.return_value = proc
+            with (
+                patch("calibpipe.pmr.validate_files"),
+                patch("subprocess.Popen") as mock_popen,
+            ):
+                proc = MagicMock()
+                proc.stdout.readline.side_effect = [
+                    f"Project root directory is {gen_dir}\n",
+                    "",
+                ]
+                proc.wait.return_value = None
+                proc.returncode = 0
+                mock_popen.return_value = proc
 
-                    res = run_pmr(req, runtime=runtime)
-                    self.assertEqual(res.exit_code, 0)
-                    expected_root = base / "custom_project_name"
-                    self.assertEqual(res.project_root, expected_root)
-                    self.assertTrue(expected_root.is_dir())
+                res = run_pmr(req, runtime=runtime)
+                self.assertEqual(res.exit_code, 0)
+                expected_root = base / "custom_project_name"
+                self.assertEqual(res.project_root, expected_root)
+                self.assertTrue(expected_root.is_dir())
 
 
 if __name__ == "__main__":

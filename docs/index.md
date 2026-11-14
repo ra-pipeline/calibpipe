@@ -20,13 +20,13 @@ The package keeps site-specific execution details in TOML configuration rather t
 
     ---
 
-    Launch standard ALMA MOUS reductions (`--mous`), direct recipe runs on local datasets (`--vis` + `--procedure`), standalone PPRs (`--PPR`), custom scripts (`--script`), inline commands (`--cmd`), or interactive CASA sessions (`-i`).
+    Launch standard ALMA MOUS reductions (`--mous`), direct recipe runs on local datasets (`--vis` with configured `recipe`), standalone PPRs (`--ppr`), custom scripts (`--script`), inline commands (`--cmd`), or interactive CASA sessions (`-i`).
 
 -   :lucide-layers:{ .lg .middle } **Slurm & HTCondor Batch Queues**
 
     ---
 
-    Submit pipefiles (`calibpipe submit pipefile.txt`), regression test arrays (`calibpipe submit quick.run -p <profile>` or `calibpipe submit -p <profile> --collect`), throttled arrays (`--max-concurrent` / `--throttle`), or single jobs from named profiles (`calibpipe submit -p <profile>`).
+    Submit pipefiles (`calibpipe submit pipefile.txt`), regression test arrays (`calibpipe submit quick.run -p <profile>` or a profile with `collect = true`), throttled arrays (profile `max_concurrent`), or single jobs from named profiles (`calibpipe submit -p <profile>`).
 
 -   :lucide-search:{ .lg .middle } **Regression Test Discovery**
 
@@ -38,7 +38,7 @@ The package keeps site-specific execution details in TOML configuration rather t
 
     ---
 
-    Consolidate distributed JUnit XML test summaries, merge `.coverage.*` files with source path remapping, and build HTML reports (`calibpipe report`, `calibpipe coverage`, or `--with-report`).
+    Consolidate distributed JUnit XML test summaries, merge `.coverage.*` files with source path remapping, and build HTML reports (`calibpipe report`, `calibpipe coverage`, or profile `with_report = true`).
 
 -   :lucide-file-check:{ .lg .middle } **Reference File Updates**
 
@@ -102,7 +102,7 @@ For the complete multi-layer cascading architecture (`[paths]`, `[envs.<name>]`,
 Execute a single MOUS reduction with the configured environment:
 
 ```bash
-calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
+calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
 ```
 
 For Slurm batch execution, interactive shell sourcing, and legacy wrapper mappings, see [Command-Line Workflows](guide.md#command-line-workflows).

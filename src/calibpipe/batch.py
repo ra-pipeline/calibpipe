@@ -18,396 +18,21 @@ import tempfile
 import time
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from calibpipe import collect
 from calibpipe import config as envconfig
+from calibpipe.config import RunRequest, SubmitRequest
 from calibpipe.templates import render_template
 
-# Fallback path to calibPipeIF executable (can be overridden or patched)
-_candidate = (
-    Path(__file__).resolve().parent.parent.parent / "scripts" / "calibPipeIF.py"
-)
-if _candidate.is_file():
-    CALIBPIPEIF = _candidate
-else:
-    CALIBPIPEIF = Path(shutil.which("calibpipe") or "calibpipe")
 
+def build_parser():
+    from .cli import execution_parser
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the parser for Slurm batch submission.
-
-    Returns:
-        Configured argument parser for `calibpipe batch`.
-    """
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument(
-        "pipefile",
-        nargs="?",
-        default=None,
-        help="Optional pipefile with one '<mous_uid> [recipe]' per line",
-    )
-    p.add_argument(
-        "--config", help="Path to TOML config (default: resolved config.toml)"
-    )
-    p.add_argument(
-        "--no-site-config",
-        action="store_true",
-        default=False,
-        help="Do not load site-level configuration",
-    )
-    p.add_argument("--env", help="[envs.<name>] to use; default: config's default_env")
-    p.add_argument(
-        "-c",
-        "--cores",
-        "--ntasks",
-        type=int,
-        default=None,
-        dest="cores",
-        help="Tasks/CPUs per job (Slurm: --ntasks; HTCondor: request_cpus; default: from [batch].cores or 8)",
-    )
-    p.add_argument(
-        "-M",
-        "--mail-type",
-        default=None,
-        dest="mail_type",
-        help="Notification policy (Slurm: --mail-type; HTCondor: notification; default: ALL)",
-    )
-    p.add_argument(
-        "-n",
-        "--node",
-        default=None,
-        dest="node",
-        help="[Slurm only] Number of nodes --nodes (default: from [batch].node or 1)",
-    )
-    p.add_argument(
-        "-o",
-        "--outfile",
-        dest="outfile",
-        help="Stdout log file path (Slurm: --output; HTCondor: output; default: batch.<job>.out)",
-    )
-    p.add_argument(
-        "-e",
-        "--errfile",
-        dest="errfile",
-        help="Stderr log file path (Slurm: --error; HTCondor: error; default: batch.<job>.err)",
-    )
-    p.add_argument(
-        "--logdir",
-        default=None,
-        dest="logdir",
-        help="Directory for scheduler log and script output (Slurm & HTCondor; default: from [batch].logdir or [paths].scipipe_logdir)",
-    )
-    # Memory options (mutually exclusive)
-    mem_group = p.add_mutually_exclusive_group()
-    mem_group.add_argument(
-        "-m",
-        "--mem",
-        type=int,
-        default=None,
-        dest="mem",
-        help="Total memory in GB per job (Slurm: --mem; HTCondor: request_memory; default: 248); "
-        "mutually exclusive with --mem-per-cpu",
-    )
-    mem_group.add_argument(
-        "--mem-per-cpu",
-        default=None,
-        dest="mem_per_cpu",
-        help="Memory per logical CPU (Slurm: --mem-per-cpu; HTCondor: request_memory = cores × mem_per_cpu; e.g. '5G'); "
-        "mutually exclusive with --mem",
-    )
-    # Walltime / scheduling
-    p.add_argument(
-        "-t",
-        "--walltime",
-        default=None,
-        dest="walltime",
-        help="[Slurm only] Walltime limit --time (e.g. '24:00:00'); omitted if unset",
-    )
-    p.add_argument(
-        "--nodelist",
-        default=None,
-        dest="nodelist",
-        help="Target host pinning (Slurm: --nodelist; HTCondor: TARGET.Machine)",
-    )
-    p.add_argument(
-        "--chdir",
-        default=None,
-        dest="chdir",
-        help="Working directory override (Slurm: --chdir; HTCondor: initialdir)",
-    )
-    # CPU topology
-    p.add_argument(
-        "--cpus-per-task",
-        type=int,
-        default=None,
-        dest="cpus_per_task",
-        help="[Slurm only] Logical CPUs / hardware threads per task (--cpus-per-task) for OpenMP/multi-threading; "
-        "total allocated CPUs = ntasks × cpus-per-task",
-    )
-    p.add_argument(
-        "--ntasks-per-core",
-        type=int,
-        default=None,
-        dest="ntasks_per_core",
-        help="[Slurm only] Tasks per physical silicon core (--ntasks-per-core); set to 1 to spread tasks across physical cores and prevent hyperthread sharing",
-    )
-    p.add_argument(
-        "--hint",
-        default=None,
-        dest="hint",
-        help="[Slurm only] Scheduler placement hint (--hint, e.g. 'nomultithread')",
-    )
-    p.add_argument(
-        "--distribution",
-        default=None,
-        dest="distribution",
-        help="[Slurm only] Task distribution across nodes/sockets (--distribution, e.g. 'cyclic:cyclic')",
-    )
-    # Requeue
-    p.add_argument(
-        "--no-requeue",
-        dest="no_requeue",
-        action="store_true",
-        default=None,
-        help="[Slurm only] Prevent silent job resubmission on failure (--no-requeue, default: on)",
-    )
-    p.add_argument(
-        "--requeue",
-        dest="no_requeue",
-        action="store_false",
-        help="[Slurm only] Allow Slurm to requeue job on node failure",
-    )
-    # Batch profile selection
-    p.add_argument(
-        "-p",
-        "--profile",
-        "--batch-profile",
-        dest="profile",
-        default=None,
-        help="Named profile from [profiles.<name>] or [batches.<name>] in config",
-    )
-    # Queue / partition selection
-    queue = p.add_mutually_exclusive_group()
-    queue.add_argument(
-        "-b",
-        dest="partition",
-        action="store_const",
-        const="batch2",
-        default=None,
-        help="Submit to the batch2 partition",
-    )
-    queue.add_argument(
-        "--partition",
-        "--queue",
-        dest="partition",
-        default=None,
-        help="Slurm partition (--partition) or HTCondor (+partition) name (overrides [batch].partition or profile)",
-    )
-    p.add_argument(
-        "--extra-arg",
-        action="append",
-        default=[],
-        dest="extra_args",
-        help="Extra flag passed through to calibpipe driver, repeatable",
-    )
-    p.add_argument(
-        "--log2term",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="log2term",
-        help="Mirror CASA log messages to terminal/stdout in real time",
-    )
-    p.add_argument(
-        "--omp-num-threads",
-        type=int,
-        default=None,
-        dest="omp_num_threads",
-        help="OpenMP thread count override for batch execution",
-    )
-    p.add_argument(
-        "--openblas-num-threads",
-        type=int,
-        default=None,
-        dest="openblas_num_threads",
-        help="OpenBLAS thread count override for batch execution",
-    )
-    p.add_argument(
-        "--scheduler",
-        choices=["slurm", "htcondor"],
-        default=None,
-        dest="scheduler",
-        help="Batch scheduler to target: 'slurm' (default) or 'htcondor'",
-    )
-    p.add_argument(
-        "--requirements",
-        default=None,
-        dest="requirements",
-        help="[HTCondor only] ClassAd requirements expression override (e.g. 'none', 'default', or custom expression)",
-    )
-    p.add_argument(
-        "--request-gpus",
-        "--gpus",
-        type=int,
-        default=None,
-        dest="request_gpus",
-        help="Request number of GPUs (HTCondor: request_gpus; Slurm: --gpus)",
-    )
-    p.add_argument(
-        "--pool",
-        "--central-manager",
-        "--central-manager-host",
-        type=str,
-        default=None,
-        dest="pool",
-        help="[HTCondor only] Central Manager host to query or route via (-pool <host>)",
-    )
-    p.add_argument(
-        "--schedd",
-        "--schedd-name",
-        "--remote",
-        type=str,
-        default=None,
-        dest="schedd",
-        help="[HTCondor only] Target schedd daemon name (condor_submit -name <schedd>; avoids implicit -spool from -remote)",
-    )
-    p.add_argument(
-        "--spool",
-        action="store_true",
-        default=None,
-        dest="spool",
-        help="[HTCondor only] Spool job sandbox over the network to the remote schedd (-spool)",
-    )
-    p.add_argument(
-        "--no-spool",
-        action="store_false",
-        dest="spool",
-        help="[HTCondor only] Do not spool job files over the network",
-    )
-    p.add_argument(
-        "--backup",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="backup",
-        help="Rotate existing output/working directory to timestamped backup before execution",
-    )
-    p.add_argument(
-        "--staticobscal",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="staticobscal",
-        help="Use previous flux.csv, antennapos.csv, and flag templates from obscaldir (--staticobscal / --no-staticobscal)",
-    )
-    p.add_argument(
-        "--oldcont",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="oldcont",
-        help="Use previous cont.dat from obscaldir (--oldcont / --no-oldcont)",
-    )
-    p.add_argument(
-        "--obscaldir",
-        type=str,
-        default=None,
-        dest="obscaldir",
-        help="Override static calibrator database directory ([paths].obscaldir)",
-    )
-    p.add_argument(
-        "--should-transfer-files",
-        type=str,
-        default=None,
-        dest="should_transfer_files",
-        help="[HTCondor only] File transfer mode: 'YES', 'NO', or 'IF_NEEDED'",
-    )
-    p.add_argument(
-        "--when-to-transfer-output",
-        type=str,
-        default=None,
-        dest="when_to_transfer_output",
-        help="[HTCondor only] When to transfer output: 'ON_EXIT' or 'ON_EXIT_OR_EVICT'",
-    )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        default=False,
-        dest="dry_run",
-        help="Print submit scripts and commands without submitting jobs to the scheduler (Slurm & HTCondor)",
-    )
-    # Test array collection & batch execution
-    p.add_argument(
-        "--collect",
-        action="store_true",
-        default=None,
-        dest="collect",
-        help="Collect and submit an array of individual test jobs from profile test_target",
-    )
-    p.add_argument(
-        "--target",
-        "--test-target",
-        dest="test_target",
-        default=None,
-        help="Pytest test target path or directory to collect from (e.g. tests/regression/fast)",
-    )
-    p.add_argument(
-        "--marker",
-        "--test-marker",
-        dest="test_marker",
-        default=None,
-        help="Pytest marker expression to filter collected tests (e.g. 'regression')",
-    )
-    p.add_argument(
-        "-k",
-        "--filter",
-        "--test-filter",
-        dest="test_filter",
-        default=None,
-        help="Pytest keyword expression filter for collected tests (e.g. 'uid___A002')",
-    )
-    p.add_argument(
-        "--test-opts",
-        "--pytest-opts",
-        dest="test_opts",
-        default=None,
-        help="Additional pytest CLI options passed when executing collected tests",
-    )
-    p.add_argument(
-        "--save-runfile",
-        dest="save_runfile",
-        default=None,
-        help="Save collected test nodes to a test runfile before submitting",
-    )
-    p.add_argument(
-        "--with-report",
-        "--report",
-        dest="with_report",
-        action="store_true",
-        default=None,
-        help="Submit a dependent Slurm wrap-up job that combines coverage and summarizes test results after all test jobs complete",
-    )
-    p.add_argument(
-        "--max-concurrent",
-        "--throttle",
-        dest="max_concurrent",
-        type=int,
-        default=None,
-        help="Limit maximum concurrently active batch jobs using Slurm dependency slots",
-    )
-    return p
-
-
-def parse_args(args: Sequence[str] | None = None) -> argparse.Namespace:
-    """Parse command-line arguments for batch submission.
-
-    Args:
-        args: Optional argument sequence.
-
-    Returns:
-        Parsed namespace.
-    """
-    parser = build_parser()
-    if args is None and len(sys.argv) == 1:
-        parser.print_help()
-        sys.exit(0)
-    return parser.parse_args(args)
+    parser = execution_parser("submit")
+    parser.prog = "calibpipe submit"
+    parser.add_argument("-h", "--help", action="help")
+    return parser
 
 
 def check_submit_host(config: dict) -> None:
@@ -416,7 +41,7 @@ def check_submit_host(config: dict) -> None:
     Args:
         config: Parsed TOML configuration dictionary.
     """
-    submit_host = config.get("site", {}).get("submit_host")
+    submit_host = config.site.submit_host if isinstance(config, envconfig.CalibpipeConfig) else config.get("site", {}).get("submit_host")
     if not submit_host:
         return
     hostname = subprocess.getoutput("hostname").strip()
@@ -936,7 +561,7 @@ def _dispatch_htcondor(
     mem_str: str | None,
     batch_opts: envconfig.ResolvedBatchOptions,
     user: str,
-) -> bool:
+) -> str | None:
     """Build and dispatch an HTCondor batch job."""
     script_record_sh = str(Path(outfile).with_suffix(".sh"))
     script_record_htc = str(Path(outfile).with_suffix(".htc"))
@@ -977,7 +602,7 @@ def _dispatch_htcondor(
         print(f"    script saved → {script_record_htc_path}")
     except OSError as exc:
         print(f"    ERROR: could not save HTCondor script records: {exc}")
-        return False
+        return None
 
     cmd = ["condor_submit"]
     if getattr(batch_opts, "pool", None):
@@ -1141,10 +766,14 @@ def _submit_report_job(
     batch_opts: envconfig.ResolvedBatchOptions,
     profile: envconfig.ProfileConfig | None,
     cfg: envconfig.CalibpipeConfig,
-    args: argparse.Namespace,
+    args: Any,
     user: str,
 ) -> str | None:
     """Submit a dependent wrap-up Slurm job to synthesize test results and coverage."""
+    if batch_opts.scheduler != "slurm":
+        raise envconfig.ConfigError(
+            "with_report=True (dependent wrap-up report job) is only supported with scheduler='slurm'."
+        )
     valid_ids = [jid for jid in job_ids if jid]
     if not valid_ids:
         print("    No job IDs available for report job dependency.")
@@ -1153,14 +782,46 @@ def _submit_report_job(
     dep_type = "afterany"
     dep_str = f"{dep_type}:{':'.join(valid_ids)}"
 
-    calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
-    report_cmd_parts = [calibpipe_exe, "report", str(base_workdir)]
-    resolved_casa_root = profile.casa_root if profile else None
-    if not resolved_casa_root and profile and profile.env and profile.env in cfg.envs:
-        resolved_casa_root = cfg.envs[profile.env].casa_root
+    report_cmd_parts = [*_calibpipe_argv(), "report", str(base_workdir)]
+    req_overrides = getattr(args, "overrides", None) or {}
+    resolved_pixi_dir = getattr(batch_opts, "pixi_dir", None)
+    if isinstance(cfg, envconfig.CalibpipeConfig):
+        env_name = getattr(args, "env", None) or (profile.env if profile else None) or cfg.default_env
+        spec = envconfig.resolve_env(
+            cfg,
+            env_name,
+            casa_root=getattr(args, "casa_root", None)
+            or req_overrides.get("casa_root")
+            or (profile.casa_root if profile else None),
+            heuristics_dir=getattr(args, "heuristics_dir", None)
+            or req_overrides.get("heuristics_dir")
+            or (profile.heuristics_dir if profile else None),
+            pixi_dir=getattr(args, "pixi_dir", None)
+            or req_overrides.get("pixi_dir")
+            or (profile.pixi_dir if profile else None)
+            or resolved_pixi_dir,
+            pixi_env=getattr(args, "pixi_env", None)
+            or req_overrides.get("pixi_env")
+            or (profile.pixi_env if profile else None),
+            branch=getattr(args, "branch", None)
+            or req_overrides.get("branch")
+            or (profile.branch if profile else None),
+            workspaces=req_overrides.get("workspaces")
+            or (profile.workspaces if profile else None)
+            or cfg.paths.workspaces,
+        )
+        resolved_casa_root = "" if spec.is_pixi else spec.casa_root
+        if spec.is_pixi:
+            resolved_pixi_dir = spec.pixi_dir
+    else:
+        resolved_casa_root = profile.casa_root if profile else None
+        if not resolved_casa_root and profile and profile.env and profile.env in cfg.envs:
+            resolved_casa_root = cfg.envs[profile.env].casa_root
     if resolved_casa_root:
         report_cmd_parts.append(f"--casa-root={resolved_casa_root}")
-    report_pipejob = " ".join(report_cmd_parts)
+    report_pipejob = shlex.join(report_cmd_parts)
+    if getattr(args, "no_site_config", False):
+        report_pipejob = f"CALIBPIPE_NO_SITE_CONFIG=1 {report_pipejob}"
 
     ts = time.strftime("%Y%m%d-%H%M%S")
     display_name = f"{batch_opts.profile}/report_{ts}" if batch_opts.profile else f"report_{ts}"
@@ -1176,6 +837,8 @@ def _submit_report_job(
         outfile=f"batch.{file_name}.out",
         errfile=f"batch.{file_name}.err",
     )
+    if resolved_pixi_dir:
+        report_batch_opts.pixi_dir = resolved_pixi_dir
 
     print(f"\nSubmitting dependent finalize report job (dependency: {dep_str})...")
     return _dispatch_job(
@@ -1188,360 +851,372 @@ def _submit_report_job(
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Submit one or more pipeline jobs to Slurm.
+    """Submit batch jobs via the native 'calibpipe submit' interface."""
+    from .cli import main as cli_main
+
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if not args:
+        cli_main(["submit", "--help"])
+        return
+    cli_main(["submit", *args])
+
+
+def _calibpipe_argv() -> list[str]:
+    """Return the executable argv prefix for invoking `calibpipe` inside batch scripts."""
+    sibling = Path(sys.executable).with_name("calibpipe")
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return [str(sibling)]
+    return [sys.executable, "-m", "calibpipe.cli"]
+
+
+def _format_shell_command(groups: list[list[str]]) -> str:
+    """Format grouped argv tokens as a readable multi-line POSIX shell command."""
+    lines = [
+        " ".join(shlex.quote(tok) for tok in group)
+        for group in groups
+        if group
+    ]
+    return " \\\n    ".join(lines)
+
+
+def _resolve_snapshot_dir(
+    batch_opts: envconfig.ResolvedBatchOptions,
+    user: str,
+) -> Path:
+    """Resolve and prepare the directory holding the shared batch config snapshot."""
+    if batch_opts.logdir:
+        raw_logdir = batch_opts.logdir.replace("{user}", user)
+        target = Path(os.path.expanduser(raw_logdir)).resolve()
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            return target
+        except OSError as exc:
+            print(
+                f"    WARNING: could not create snapshot directory {target}: {exc}"
+            )
+    return Path.cwd().resolve()
+
+
+def _write_batch_snapshot(
+    snapshot_dir: Path,
+    snapshot_data: dict[str, Any],
+) -> Path:
+    """Write the frozen TOML snapshot into `snapshot_dir`, avoiding name collisions."""
+    timestr = time.strftime("%Y%m%d-%H%M%S")
+    candidate = snapshot_dir / f"batch.{timestr}.toml"
+    suffix = 1
+    while candidate.exists():
+        candidate = snapshot_dir / f"batch.{timestr}-{suffix}.toml"
+        suffix += 1
+    candidate.write_text(envconfig.dump_toml(snapshot_data), encoding="utf-8")
+    return candidate
+
+
+def _absolutize_batch_arg(
+    value: str,
+    *,
+    workspaces: Sequence[str | Path],
+    cwd: Path,
+) -> str:
+    """Resolve a path-valued CLI argument against workspaces or submission CWD."""
+    resolved = envconfig.resolve_workspace_path(value, workspaces)
+    resolved_path = Path(resolved).expanduser()
+    if resolved_path.is_absolute():
+        return str(resolved_path)
+    return str((cwd / resolved_path).resolve())
+
+
+def _build_batch_command(
+    *,
+    snapshot_path: Path,
+    run_request: RunRequest,
+    run_options: envconfig.ResolvedRunOptions,
+    isolate_root: bool,
+    cwd: Path,
+) -> str:
+    """Build a readable `calibpipe run --config=... --config-only ...` command."""
+    groups: list[list[str]] = [
+        [*_calibpipe_argv(), "run"],
+        [f"--config={snapshot_path}", "--config-only"],
+    ]
+    if run_options.profile:
+        groups.append(["-p", run_options.profile])
+    if run_options.env_name:
+        groups.append([f"--env={run_options.env_name}"])
+
+    if run_request.workdir:
+        abs_workdir = _absolutize_batch_arg(
+            str(run_options.workdir or run_request.workdir),
+            workspaces=run_options.workspaces,
+            cwd=cwd,
+        )
+        groups.append([f"--workdir={abs_workdir}"])
+
+    if run_request.mous:
+        groups.append([f"--mous={run_request.mous}"])
+    elif run_request.vis:
+        vis_args = [
+            _absolutize_batch_arg(str(v), workspaces=run_options.workspaces, cwd=cwd)
+            for v in (run_options.vis or run_request.vis)
+        ]
+        groups.append(["--vis", *vis_args])
+    elif run_request.script:
+        abs_script = _absolutize_batch_arg(
+            str(run_options.script or run_request.script),
+            workspaces=run_options.workspaces,
+            cwd=cwd,
+        )
+        groups.append([f"--script={abs_script}"])
+    elif run_request.cmd:
+        groups.append([f"--cmd={run_request.cmd}"])
+    elif run_request.ppr:
+        abs_ppr = _absolutize_batch_arg(
+            str(run_options.ppr or run_request.ppr),
+            workspaces=run_options.workspaces,
+            cwd=cwd,
+        )
+        groups.append([f"--ppr={abs_ppr}"])
+
+    if run_request.recipe:
+        recipe_val = envconfig.freeze_recipe_path(
+            run_options.recipe,
+            workspaces=run_options.workspaces,
+            cwd=cwd,
+        )
+        if recipe_val:
+            groups.append([f"--recipe={recipe_val}"])
+
+    if run_request.verbose is True:
+        groups.append(["--verbose"])
+    elif run_request.verbose is False:
+        groups.append(["--no-verbose"])
+
+    if isolate_root:
+        groups.append(["--isolate-root"])
+
+    return _format_shell_command(groups)
+
+
+def submit_request(request: SubmitRequest) -> int:
+    """Resolve native batch jobs and submit self-contained execution settings.
 
     Args:
-        argv: Optional argument sequence. When omitted, values are read from
-            `sys.argv`.
+        request: Parsed `calibpipe submit` request.
+
+    Returns:
+        Process exit status (`0` on success, `1` if any submission failed).
     """
-    args = parse_args(argv)
-
-    try:
-        cfg = envconfig.load_merged_config(
-            cli_arg=args.config,
-            include_site=not getattr(args, "no_site_config", False),
-        )
-        batch_opts = envconfig.resolve_batch_options(cfg, args)
-    except envconfig.ConfigError as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
-
+    cfg = envconfig.load_merged_config(
+        request.config, include_site=not request.no_site_config
+    )
+    options = envconfig.resolve_batch_options(cfg, request)
     check_submit_host(cfg)
+    profile = cfg.profiles.get(options.profile) if options.profile else None
+
+    base_request = RunRequest(
+        profile=options.profile,
+        env=request.env,
+        workdir=request.workdir,
+        recipe=request.recipe,
+        verbose=request.verbose,
+        overrides=dict(request.overrides),
+    )
+    submit_cwd = Path.cwd().resolve()
+    base_run = envconfig.resolve_run_options(cfg, base_request)
+    base_workdir = Path(base_run.workdir or submit_cwd).expanduser().resolve()
+
+    tasks: list[tuple[Any, Any]] = []
+    test_jobs = False
+
+    if options.pipefile:
+        if not options.pipefile.is_file():
+            raise envconfig.ConfigError(f"Runfile does not exist: {options.pipefile}")
+        lines = [
+            line.strip()
+            for line in options.pipefile.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        test_jobs = any("::" in line for line in lines)
+        if test_jobs:
+            if not all("::" in line for line in lines):
+                raise envconfig.ConfigError(
+                    "Runfile cannot mix pytest node IDs with dataset/MOUS targets"
+                )
+            tasks = collect.read_test_runfile(options.pipefile)
+        else:
+            for line in lines:
+                parts = shlex.split(line)
+                if len(parts) > 2:
+                    raise envconfig.ConfigError(
+                        f"Expected '<MOUS/dataset> [recipe]' in runfile: {line}"
+                    )
+                target = parts[0]
+                targets = (
+                    {"mous": target}
+                    if target.startswith(("uid://", "uid___"))
+                    else {"vis": [target]}
+                )
+                tasks.append(
+                    (targets, parts[1] if len(parts) > 1 else base_run.recipe)
+                )
+    elif options.collect:
+        # Array test collection mode
+        test_jobs = True
+        spec = envconfig.resolve_env(
+            cfg,
+            base_run.env_name,
+            casa_root=base_run.casa_root,
+            heuristics_dir=base_run.heuristics_dir,
+            pixi_dir=base_run.pixi_dir,
+            pixi_env=base_run.pixi_env,
+            branch=base_run.branch,
+            workspaces=base_run.workspaces,
+        )
+        nodes = collect.collect_tests(
+            target=options.test_target or "tests/regression/fast",
+            casa_root=spec.casa_root,
+            heuristics_dir=spec.heuristics_dir,
+            marker=options.test_marker,
+            filter_k=options.test_filter,
+            extra_opts=options.test_opts,
+            logger=print,
+        )
+        if options.save_runfile:
+            collect.write_test_runfile(options.save_runfile, nodes)
+        tasks = [(node, collect.parse_test_name(node)) for node in nodes]
+    else:
+        # Single-job profile submission mode
+        envconfig.validate_target(base_run)
+        tasks = [(None, None)]
+
+    if not tasks:
+        print("No jobs to submit.")
+        return 0
+
+    if test_jobs and options.with_report and options.scheduler != "slurm":
+        raise envconfig.ConfigError(
+            "with_report=True (dependent wrap-up report job) is only supported with scheduler='slurm'."
+        )
+
+    resolved_tasks: list[
+        tuple[RunRequest, envconfig.ResolvedRunOptions, str | tuple[str, str], envconfig.ResolvedBatchOptions]
+    ] = []
+    # Validate every job before writing the snapshot or submitting any jobs.
+    for target, detail in tasks:
+        job_options = options
+        test_name: str | None = None
+        if test_jobs:
+            test_name = detail
+            test_workdir = base_workdir / test_name
+            run_request = dataclasses.replace(
+                base_request,
+                cmd=collect.build_test_cmd(
+                    target, test_name=test_name, extra_opts=options.test_opts
+                ),
+                workdir=str(test_workdir),
+            )
+            job_options = dataclasses.replace(
+                options, chdir=options.chdir or str(base_workdir)
+            )
+        elif target:
+            run_request = dataclasses.replace(base_request, **target, recipe=detail)
+        else:
+            run_request = base_request
+
+        run_options = envconfig.resolve_run_options(cfg, run_request)
+        envconfig.validate_target(run_options)
+        # Explicit resolved environment selection controls Pixi worker exports too.
+        spec = envconfig.resolve_env(
+            cfg,
+            run_options.env_name,
+            casa_root=run_options.casa_root,
+            heuristics_dir=run_options.heuristics_dir,
+            pixi_dir=run_options.pixi_dir,
+            pixi_env=run_options.pixi_env,
+            branch=run_options.branch,
+            workspaces=run_options.workspaces,
+        )
+        if spec.is_pixi:
+            job_options = dataclasses.replace(job_options)
+            job_options.pixi_dir = spec.pixi_dir
+        name = job_name(
+            f"--mous={run_options.mous}" if run_options.mous else "",
+            profile_name=options.profile,
+            test_name=test_name,
+        )
+        resolved_tasks.append((run_request, run_options, name, job_options))
 
     user = os.environ.get("USER", "")
-    submitted = 0
-
-    cli_rootdir = getattr(args, "scipipe_rootdir", None)
-    profile = cfg.profiles.get(batch_opts.profile) if batch_opts.profile else None
-    prof_rootdir = profile.scipipe_rootdir if profile else None
-    effective_rootdir = cli_rootdir or prof_rootdir or cfg.paths.scipipe_rootdir
-    if isinstance(effective_rootdir, (list, tuple)):
-        prof_workspaces = profile.workspaces if profile and profile.workspaces else None
-        resolved_workspaces = list(prof_workspaces or cfg.paths.workspaces or [])
-        effective_rootdir = envconfig.resolve_first_existing_path(
-            effective_rootdir, workspaces=resolved_workspaces, user=user
-        )
-    root_dir = (
-        Path(effective_rootdir.replace("{user}", user)).expanduser()
-        if effective_rootdir
-        else None
+    snapshot_dir = _resolve_snapshot_dir(options, user)
+    snapshot_data = envconfig.build_batch_snapshot(
+        cfg,
+        base_run,
+        cwd=submit_cwd,
+        overrides=request.overrides or None,
     )
+    snapshot_path = _write_batch_snapshot(snapshot_dir, snapshot_data)
+    print(f"Batch config snapshot: {snapshot_path}")
 
-    pipefile = batch_opts.pipefile
-    if pipefile is not None:
-        if not pipefile.is_file():
-            print(f"{pipefile} does not exist, exiting")
-            sys.exit(1)
+    prepared: list[tuple[str, str | tuple[str, str], envconfig.ResolvedBatchOptions]] = [
+        (
+            _build_batch_command(
+                snapshot_path=snapshot_path,
+                run_request=run_req,
+                run_options=run_opts,
+                isolate_root=test_jobs,
+                cwd=submit_cwd,
+            ),
+            name,
+            job_opts,
+        )
+        for run_req, run_opts, name, job_opts in resolved_tasks
+    ]
 
-        with open(pipefile, encoding="utf-8") as fd:
-            lines = fd.readlines()
-
-        valid_lines = [
-            line.strip()
-            for line in lines
-            if line.strip() and not line.strip().startswith("#")
-        ]
-
-        is_test_runfile = any("::" in line for line in valid_lines)
-        if is_test_runfile:
-            # Test array batch submission from runfile
-            test_items = collect.read_test_runfile(pipefile)
-            raw_workdir = (profile.workdir if profile and profile.workdir else None) or Path.cwd()
-            base_workdir = Path(os.path.expanduser(str(raw_workdir)))
-            if not base_workdir.is_absolute() and not str(base_workdir).startswith("~") and root_dir is not None:
-                base_workdir = root_dir / base_workdir
-
-            submitted_job_ids: list[str] = []
-            for idx, (test_name, node_id) in enumerate(test_items, 1):
-                test_cmd = collect.build_test_cmd(
-                    node_id, test_name=test_name, extra_opts=batch_opts.test_opts
-                )
-                test_workdir = base_workdir / test_name
-
-                calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
-                pipejob_parts = [calibpipe_exe, "run"]
-                if batch_opts.profile:
-                    pipejob_parts.append(f"-p={batch_opts.profile}")
-                elif batch_opts.env_name:
-                    pipejob_parts.append(f"--env={batch_opts.env_name}")
-                pipejob_parts.append(f"--workdir={test_workdir}")
-                pipejob_parts.append(f"--cmd={shlex.quote(test_cmd)}")
-
-                if args.config:
-                    pipejob_parts.append(f"--config={args.config}")
-                if getattr(args, "no_site_config", False):
-                    pipejob_parts.append("--no-site-config")
-                if getattr(args, "log2term", None) is True:
-                    pipejob_parts.append("--log2term")
-                elif getattr(args, "log2term", None) is False:
-                    pipejob_parts.append("--no-log2term")
-                if getattr(args, "backup", None) is True:
-                    pipejob_parts.append("--backup")
-                elif getattr(args, "backup", None) is False:
-                    pipejob_parts.append("--no-backup")
-                pipejob_parts.extend(batch_opts.extra_args)
-                pipejob = " ".join(pipejob_parts)
-
-                chdir_to_use = getattr(args, "chdir", None) or str(base_workdir)
-                test_batch_opts = dataclasses.replace(batch_opts, chdir=chdir_to_use)
-                name = job_name(pipejob, profile_name=batch_opts.profile, test_name=test_name)
-
-                job_dep: str | None = None
-                if (
-                    batch_opts.max_concurrent
-                    and batch_opts.max_concurrent > 0
-                    and len(submitted_job_ids) >= batch_opts.max_concurrent
-                ):
-                    pred_id = submitted_job_ids[len(submitted_job_ids) - batch_opts.max_concurrent]
-                    if pred_id:
-                        job_dep = f"afterany:{pred_id}"
-
-                job_id = _dispatch_job(pipejob, name, test_batch_opts, user, dependency=job_dep)
-                if job_id:
-                    submitted += 1
-                    submitted_job_ids.append(job_id)
-
-                if idx < len(test_items) and not batch_opts.dry_run:
-                    time.sleep(1)
-
-            if batch_opts.with_report and (submitted_job_ids or batch_opts.dry_run):
-                rep_id = _submit_report_job(
-                    base_workdir=base_workdir,
-                    job_ids=submitted_job_ids,
-                    batch_opts=batch_opts,
-                    profile=profile,
-                    cfg=cfg,
-                    args=args,
-                    user=user,
-                )
-                if rep_id:
-                    submitted += 1
+    ids: list[str] = []
+    failed = False
+    for index, (command, name, job_options) in enumerate(prepared):
+        dependency: str | None = None
+        if (
+            options.max_concurrent
+            and options.max_concurrent > 0
+            and len(ids) >= options.max_concurrent
+        ):
+            dependency = f"afterany:{ids[-options.max_concurrent]}"
+        job_id = _dispatch_job(
+            command, name, job_options, user, dependency=dependency
+        )
+        if job_id:
+            ids.append(job_id)
         else:
-            for idx, line in enumerate(valid_lines, 1):
-                parts = line.split()
-                mousname = parts[0]
-                recipe = parts[1] if len(parts) > 1 else "calimage"
+            failed = True
+        if index + 1 < len(prepared) and not options.dry_run:
+            time.sleep(1)
 
-                pipejob_parts = [str(CALIBPIPEIF)]
-                if getattr(args, "staticobscal", None) is False:
-                    pipejob_parts.append("--no-staticobscal")
-                else:
-                    pipejob_parts.append("--staticobscal")
-                pipejob_parts.extend([f"--mous={mousname}", f"--recipe={recipe}"])
-                if args.config:
-                    pipejob_parts.append(f"--config={args.config}")
-                if getattr(args, "no_site_config", False):
-                    pipejob_parts.append("--no-site-config")
-                if (
-                    getattr(args, "profile", None)
-                    and args.profile in cfg.profiles
-                    and args.profile not in cfg.batches
-                ):
-                    p = cfg.profiles[args.profile]
-                    has_run_or_env = any(
-                        [
-                            p.casa_root,
-                            p.heuristics_dir,
-                            p.pixi_dir,
-                            p.pixi_env,
-                            p.branch,
-                            p.recipe,
-                            p.loglevel,
-                            p.useresume,
-                            p.omp_num_threads,
-                            p.psrecord,
-                            p.memstats,
-                            p.backup,
-                            p.staticobscal is not None,
-                            p.oldcont is not None,
-                            p.obscaldir,
-                            p.workspaces,
-                            p.casadata,
-                        ]
-                    )
-                    if has_run_or_env:
-                        pipejob_parts.append(f"--profile={args.profile}")
-                if batch_opts.env_name:
-                    pipejob_parts.append(f"--env={batch_opts.env_name}")
-                if getattr(args, "log2term", None) is True:
-                    pipejob_parts.append("--log2term")
-                elif getattr(args, "log2term", None) is False:
-                    pipejob_parts.append("--no-log2term")
-                if getattr(args, "backup", None) is True:
-                    pipejob_parts.append("--backup")
-                elif getattr(args, "backup", None) is False:
-                    pipejob_parts.append("--no-backup")
-                _append_bool_cli_flag(pipejob_parts, args, "oldcont", "oldcont")
-                if getattr(args, "obscaldir", None):
-                    pipejob_parts.append(f"--obscaldir={shlex.quote(args.obscaldir)}")
-                pipejob_parts.extend(batch_opts.extra_args)
-                pipejob = " ".join(pipejob_parts)
-
-                name = job_name(pipejob, profile_name=batch_opts.profile)
-                if _dispatch_job(pipejob, name, batch_opts, user):
-                    submitted += 1
-
-                if idx < len(valid_lines) and not batch_opts.dry_run:
-                    time.sleep(1)
-
-    elif batch_opts.profile:
-        if batch_opts.collect:
-            # Array test collection mode
-            target = (
-                batch_opts.test_target
-                or (profile.test_target if profile else None)
-                or "tests/regression/fast"
-            )
-            marker = batch_opts.test_marker or (profile.test_marker if profile else None)
-            filter_k = batch_opts.test_filter or (profile.test_filter if profile else None)
-            test_opts = batch_opts.test_opts or (profile.test_opts if profile else None)
-
-            env_name = (
-                (profile.env if profile and profile.env else None)
-                or batch_opts.env_name
-                or cfg.default_env
-            )
-            env_spec = (
-                envconfig.resolve_env(
-                    cfg,
-                    env_name,
-                    casa_root=profile.casa_root if profile else None,
-                    heuristics_dir=profile.heuristics_dir if profile else None,
-                    workspaces=profile.workspaces if profile else None,
-                )
-                if env_name
-                else None
-            )
-            casa_root = env_spec.casa_root if env_spec else (profile.casa_root if profile else None)
-            heuristics_dir = env_spec.heuristics_dir if env_spec else (profile.heuristics_dir if profile else None)
-
-            print(f"Collecting tests for profile '{batch_opts.profile}' from {target}...")
-            collected_nodes = collect.collect_tests(
-                target=target,
-                casa_root=casa_root,
-                heuristics_dir=heuristics_dir,
-                marker=marker,
-                filter_k=filter_k,
-                extra_opts=getattr(args, "collect_opts", None),
-                logger=print,
-            )
-            if not collected_nodes:
-                print(f"No tests collected from {target} (marker={marker}, filter={filter_k}).")
-                sys.exit(0)
-
-            if getattr(args, "save_runfile", None):
-                saved_file = collect.write_test_runfile(args.save_runfile, collected_nodes)
-                print(f"Saved {len(collected_nodes)} test(s) to runfile: {saved_file}")
-
-            print(f"Submitting {len(collected_nodes)} test batch job(s)...")
-
-            raw_workdir = (profile.workdir if profile and profile.workdir else None) or Path.cwd()
-            base_workdir = Path(os.path.expanduser(str(raw_workdir)))
-            if not base_workdir.is_absolute() and not str(base_workdir).startswith("~") and root_dir is not None:
-                base_workdir = root_dir / base_workdir
-
-            submitted_job_ids: list[str] = []
-            for idx, node_id in enumerate(collected_nodes, 1):
-                test_name = collect.parse_test_name(node_id)
-                test_cmd = collect.build_test_cmd(
-                    node_id, test_name=test_name, extra_opts=test_opts
-                )
-                test_workdir = base_workdir / test_name
-
-                calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
-                pipejob_parts = [
-                    calibpipe_exe,
-                    "run",
-                    f"-p={batch_opts.profile}",
-                    f"--workdir={test_workdir}",
-                    f"--cmd={shlex.quote(test_cmd)}",
-                ]
-                if args.config:
-                    pipejob_parts.append(f"--config={args.config}")
-                if getattr(args, "no_site_config", False):
-                    pipejob_parts.append("--no-site-config")
-                if getattr(args, "log2term", None) is True:
-                    pipejob_parts.append("--log2term")
-                elif getattr(args, "log2term", None) is False:
-                    pipejob_parts.append("--no-log2term")
-                if getattr(args, "backup", None) is True:
-                    pipejob_parts.append("--backup")
-                elif getattr(args, "backup", None) is False:
-                    pipejob_parts.append("--no-backup")
-                pipejob_parts.extend(batch_opts.extra_args)
-                pipejob = " ".join(pipejob_parts)
-
-                chdir_to_use = getattr(args, "chdir", None) or str(base_workdir)
-                test_batch_opts = dataclasses.replace(batch_opts, chdir=chdir_to_use)
-                name = job_name(pipejob, profile_name=batch_opts.profile, test_name=test_name)
-
-                job_dep: str | None = None
-                if (
-                    batch_opts.max_concurrent
-                    and batch_opts.max_concurrent > 0
-                    and len(submitted_job_ids) >= batch_opts.max_concurrent
-                ):
-                    pred_id = submitted_job_ids[len(submitted_job_ids) - batch_opts.max_concurrent]
-                    if pred_id:
-                        job_dep = f"afterany:{pred_id}"
-
-                job_id = _dispatch_job(pipejob, name, test_batch_opts, user, dependency=job_dep)
-                if job_id:
-                    submitted += 1
-                    submitted_job_ids.append(job_id)
-
-                if idx < len(collected_nodes) and not batch_opts.dry_run:
-                    time.sleep(1)
-
-            if batch_opts.with_report and (submitted_job_ids or batch_opts.dry_run):
-                rep_id = _submit_report_job(
-                    base_workdir=base_workdir,
-                    job_ids=submitted_job_ids,
-                    batch_opts=batch_opts,
-                    profile=profile,
-                    cfg=cfg,
-                    args=args,
-                    user=user,
-                )
-                if rep_id:
-                    submitted += 1
+    if test_jobs and options.with_report and ids:
+        report_id = _submit_report_job(
+            base_workdir=base_workdir,
+            job_ids=ids,
+            batch_opts=options,
+            profile=profile,
+            cfg=cfg,
+            args=request,
+            user=user,
+        )
+        if report_id:
+            ids.append(report_id)
         else:
-            # Single-job submission mode from named profile
-            calibpipe_exe = shutil.which("calibpipe") or "calibpipe"
-            pipejob_parts = [calibpipe_exe, "run", f"-p={batch_opts.profile}"]
-            if args.config:
-                pipejob_parts.append(f"--config={args.config}")
-            if getattr(args, "no_site_config", False):
-                pipejob_parts.append("--no-site-config")
-            if getattr(args, "log2term", None) is True:
-                pipejob_parts.append("--log2term")
-            elif getattr(args, "log2term", None) is False:
-                pipejob_parts.append("--no-log2term")
-            if getattr(args, "backup", None) is True:
-                pipejob_parts.append("--backup")
-            elif getattr(args, "backup", None) is False:
-                pipejob_parts.append("--no-backup")
-            _append_bool_cli_flag(pipejob_parts, args, "staticobscal", "staticobscal")
-            _append_bool_cli_flag(pipejob_parts, args, "oldcont", "oldcont")
-            if getattr(args, "obscaldir", None):
-                pipejob_parts.append(f"--obscaldir={shlex.quote(args.obscaldir)}")
-            pipejob_parts.extend(batch_opts.extra_args)
-            pipejob = " ".join(pipejob_parts)
+            failed = True
 
-            name = job_name(pipejob, profile_name=batch_opts.profile)
-            if _dispatch_job(pipejob, name, batch_opts, user):
-                submitted += 1
-
-    if submitted > 0 and not batch_opts.dry_run:
-        current_user = os.environ.get("USER", "")
-        if current_user:
-            print_queue(
-                current_user,
-                scheduler=batch_opts.scheduler,
-                pool=getattr(batch_opts, "pool", None),
-                schedd=getattr(batch_opts, "schedd", None),
-            )
+    print(f"Submitted {len(ids)} job(s).")
+    if not options.dry_run and ids:
+        print_queue(
+            user,
+            scheduler=options.scheduler,
+            pool=options.pool,
+            schedd=options.schedd,
+        )
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

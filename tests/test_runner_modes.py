@@ -29,16 +29,27 @@ class DriverModesTestCase(unittest.TestCase):
         self.root.mkdir()
         self.logdir.mkdir()
 
-        self.config.write_text(f"""
-default_env = "main"
+        self.config.write_text(self._render_config())
 
-[paths]
-scipipe_rootdir = "{self.root}"
-scipipe_logdir  = "{self.logdir}"
+    def _render_config(self, run_toml: str = "", paths_toml: str = "") -> str:
+        parts = [
+            'default_env = "main"',
+            "",
+            "[paths]",
+            f'scipipe_rootdir = "{self.root}"',
+            f'scipipe_logdir  = "{self.logdir}"',
+        ]
+        if paths_toml:
+            parts.append(paths_toml.strip())
+        parts.extend(["", "[envs.main]", 'casa_root = "/fake/casa/main"'])
+        if run_toml:
+            parts.extend(["", "[run]", run_toml.strip()])
+        return "\n".join(parts) + "\n"
 
-[envs.main]
-casa_root = "/fake/casa/main"
-""")
+    def _write_config(self, name: str = "custom_config.toml", *, run_toml: str = "", paths_toml: str = "") -> Path:
+        cfg_path = self.tmp / name
+        cfg_path.write_text(self._render_config(run_toml=run_toml, paths_toml=paths_toml))
+        return cfg_path
 
     def run_driver(self, args: list[str]) -> tuple[list[tuple[str, str]], int]:
         """Run driver with captured subprocess and logger calls."""
@@ -65,13 +76,13 @@ casa_root = "/fake/casa/main"
             patch.object(runner.RunLogger, "run", side_effect=fake_run),
             patch.object(runner.RunLogger, "runquiet", side_effect=fake_run),
             patch.object(runner.subprocess, "call", side_effect=fake_call),
-            patch.dict(runner.os.environ, {}, clear=False),
+            patch.dict(runner.os.environ, {"CALIBPIPE_NO_SITE_CONFIG": "1"}, clear=False),
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
         ):
             try:
-                runner.main(args)
-                exit_code = 0
+                res = runner.main(args)
+                exit_code = int(res) if res is not None else 0
             except SystemExit as e:
                 exit_code = int(e.code) if e.code is not None else 0
             finally:
@@ -90,10 +101,13 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         workdir = self.tmp / "work_reducer"
         workdir.mkdir()
 
+        cfg_file = self._write_config(
+            "reducer.toml",
+            run_toml='recipe = "procedure_hifa_calimage.xml"',
+        )
         calls, exit_code = self.run_driver([
             "--vis", str(ms_path),
-            "--procedure", "procedure_hifa_calimage.xml",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -138,10 +152,10 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         workdir = self.tmp / "work_reducer_cal"
         workdir.mkdir()
 
+        cfg_file = self._write_config("reducer_cal.toml", run_toml='recipe = "cal"')
         _, exit_code = self.run_driver([
             "--vis", str(ms_path),
-            "--recipe=cal",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -158,10 +172,10 @@ class TestDirectRecipeReducer(DriverModesTestCase):
         working_dir = project_dir / "working"
         working_dir.mkdir(parents=True)
 
+        cfg_file = self._write_config("reducer_working.toml", run_toml='recipe = "cal"')
         _, exit_code = self.run_driver([
             "--vis", str(ms_path),
-            "--recipe=cal",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={working_dir}",
         ])
 
@@ -187,7 +201,7 @@ class TestStandalonePPR(DriverModesTestCase):
         workdir.mkdir()
 
         calls, exit_code = self.run_driver([
-            "--PPR", str(ppr_file),
+            "--ppr", str(ppr_file),
             f"--config={self.config}",
             f"--workdir={workdir}",
         ])
@@ -210,10 +224,10 @@ class TestStandalonePPR(DriverModesTestCase):
         workdir = self.tmp / "work_vla"
         workdir.mkdir()
 
+        cfg_file = self._write_config("vla.toml", run_toml="vla = true")
         _, exit_code = self.run_driver([
-            "--PPR", str(ppr_file),
-            "--vla",
-            f"--config={self.config}",
+            "--ppr", str(ppr_file),
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -252,7 +266,7 @@ ppr = "{ppr_file}"
 vla = true
 """)
 
-        calls, exit_code = self.run_driver([
+        _calls, exit_code = self.run_driver([
             f"--config={cfg_file}",
         ])
 
@@ -304,7 +318,7 @@ ppr = "{ppr_file}"
 vla = false
 """)
 
-        calls, exit_code = self.run_driver([
+        _calls, exit_code = self.run_driver([
             f"--config={cfg_file}",
         ])
 
@@ -437,11 +451,13 @@ class TestHardwareAndMpiTuning(DriverModesTestCase):
         script_file = self.tmp / "test.py"
         script_file.touch()
 
+        cfg_file = self._write_config(
+            "hw_threads.toml",
+            run_toml="omp_num_threads = 4\nopenblas_num_threads = 2",
+        )
         _, exit_code = self.run_driver([
             "--script", str(script_file),
-            "--omp-num-threads=4",
-            "--openblas-num-threads=2",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -455,12 +471,13 @@ class TestHardwareAndMpiTuning(DriverModesTestCase):
         script_file = self.tmp / "test.py"
         script_file.touch()
 
+        cfg_file = self._write_config(
+            "mpi.toml",
+            run_toml='oversubscribe = true\nbind_to = "core"\nmap_by = "socket"',
+        )
         calls, exit_code = self.run_driver([
             "--script", str(script_file),
-            "--oversubscribe",
-            "--bind-to=core",
-            "--map-by=socket",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -480,11 +497,13 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         ms_path = self.tmp / "test.ms"
         ms_path.mkdir()
 
+        cfg_file = self._write_config(
+            "telemetry1.toml",
+            run_toml="mem_frac = 0.75\nmemstats = true",
+        )
         _, exit_code = self.run_driver([
             "--vis", str(ms_path),
-            "--mem-frac=0.75",
-            "--memstats",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -502,11 +521,13 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         ms_path = self.tmp / "test.ms"
         ms_path.mkdir()
 
+        cfg_file = self._write_config(
+            "telemetry2.toml",
+            run_toml="omp_max_threads = 6\npl_psrecord = true",
+        )
         _, exit_code = self.run_driver([
             "--vis", str(ms_path),
-            "--omp-max-threads=6",
-            "--pl-psrecord",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -522,11 +543,11 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         workdir = self.tmp / "work_psrecord"
         workdir.mkdir()
 
+        cfg_file = self._write_config("psrecord_avail.toml", run_toml="psrecord = true")
         with patch("calibpipe.runner.shutil.which", return_value="/usr/bin/psrecord"):
             calls, exit_code = self.run_driver([
                 "--cmd", "print(123)",
-                "--psrecord",
-                f"--config={self.config}",
+                f"--config={cfg_file}",
                 f"--workdir={workdir}",
             ])
 
@@ -545,11 +566,11 @@ class TestTelemetryAndProfiling(DriverModesTestCase):
         workdir = self.tmp / "work_no_psrecord"
         workdir.mkdir()
 
+        cfg_file = self._write_config("psrecord_miss.toml", run_toml="psrecord = true")
         with patch("calibpipe.runner.shutil.which", return_value=None):
             calls, exit_code = self.run_driver([
                 "--cmd", "print(123)",
-                "--psrecord",
-                f"--config={self.config}",
+                f"--config={cfg_file}",
                 f"--workdir={workdir}",
             ])
 
@@ -719,11 +740,13 @@ class TestStagingAndDirectoryRotation(DriverModesTestCase):
         script_file = self.tmp / "test_backup.py"
         script_file.touch()
 
+        cfg_file = self._write_config(
+            "backup.toml",
+            run_toml=f'backup = true\ncont_dat = "{cont_file}"',
+        )
         _, exit_code = self.run_driver([
             "--script", str(script_file),
-            "--backup",
-            f"--cont-dat={cont_file}",
-            f"--config={self.config}",
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
         ])
 
@@ -752,15 +775,15 @@ class TestNamedProfiles(DriverModesTestCase):
         script_file = self.tmp / "test_prof.py"
         script_file.touch()
 
-        cfg = envconfig.load_merged_config(cli_arg=str(self.config))
+        cfg = envconfig.load_merged_config(cli_arg=str(self.config), include_site=False)
         cfg.profiles["fast_prof"] = ProfileConfig(
-            ncores=4,
+            nprocs=4,
             log2term=True,
             omp_num_threads=2,
             openblas_num_threads=2,
         )
 
-        with patch("calibpipe.runner.envconfig.load_merged_config", return_value=cfg):
+        with patch("calibpipe.config.load_merged_config", return_value=cfg):
             calls, exit_code = self.run_driver([
                 "--script", str(script_file),
                 "--profile=fast_prof",
@@ -786,15 +809,15 @@ class TestNamedProfiles(DriverModesTestCase):
         vis_file = self.tmp / "test.ms"
         vis_file.touch()
 
-        cfg = envconfig.load_merged_config(cli_arg=str(self.config))
+        cfg = envconfig.load_merged_config(cli_arg=str(self.config), include_site=False)
         cfg.profiles["self_contained"] = ProfileConfig(
-            vis=str(vis_file),
-            procedure="procedure_hifa_calimage.xml",
-            ncores=4,
+            vis=[str(vis_file)],
+            recipe="procedure_hifa_calimage.xml",
+            nprocs=4,
             workdir=str(workdir),
         )
 
-        with patch("calibpipe.runner.envconfig.load_merged_config", return_value=cfg):
+        with patch("calibpipe.config.load_merged_config", return_value=cfg):
             calls, exit_code = self.run_driver([
                 "-p", "self_contained",
                 f"--config={self.config}",
@@ -821,13 +844,13 @@ class TestNamedProfiles(DriverModesTestCase):
         script_file = self.tmp / "script.py"
         script_file.touch()
 
-        cfg = envconfig.load_merged_config(cli_arg=str(self.config))
+        cfg = envconfig.load_merged_config(cli_arg=str(self.config), include_site=False)
         cfg.profiles["script_prof"] = ProfileConfig(
             script=str(script_file),
             workdir=str(workdir),
         )
 
-        with patch("calibpipe.runner.envconfig.load_merged_config", return_value=cfg):
+        with patch("calibpipe.config.load_merged_config", return_value=cfg):
             calls, exit_code = self.run_driver([
                 "-p", "script_prof",
                 "--cmd", "import casatasks",
@@ -1147,22 +1170,26 @@ class TestStandalonePPRObscal(DriverModesTestCase):
         (obscal / "uid___A001_X9_Xa.cont.dat").write_text("ppr old cont\n")
         (obscal / "uid___A002_Xeee_X333.flagtemplate.txt").write_text("ppr eb flag\n")
 
+        cfg_file = self._write_config(
+            "obscal_ppr.toml",
+            run_toml="staticobscal = true\noldcont = true",
+            paths_toml=f'obscaldir = "{obscal}"',
+        )
+
         # Dry run prints obscal summary without staging files
         dry_workdir = self.tmp / "work_dry_ppr"
         dry_workdir.mkdir()
         dry_stdout = io.StringIO()
         with (
             patch.object(runner, "getoutput", return_value=""),
+            patch.dict(runner.os.environ, {"CALIBPIPE_NO_SITE_CONFIG": "1"}, clear=False),
             redirect_stdout(dry_stdout),
             redirect_stderr(io.StringIO()),
         ):
             runner.main([
-                "--PPR", str(ppr_file),
-                f"--config={self.config}",
+                "--ppr", str(ppr_file),
+                f"--config={cfg_file}",
                 f"--workdir={dry_workdir}",
-                "--staticobscal",
-                "--oldcont",
-                f"--obscaldir={obscal}",
                 "--dry-run",
             ])
         self.assertIn("[DRY RUN] Obscal staging: staticobscal=True, oldcont=True", dry_stdout.getvalue())
@@ -1172,12 +1199,9 @@ class TestStandalonePPRObscal(DriverModesTestCase):
         workdir = self.tmp / "work_exec_ppr"
         workdir.mkdir()
         _, exit_code = self.run_driver([
-            "--PPR", str(ppr_file),
-            f"--config={self.config}",
+            "--ppr", str(ppr_file),
+            f"--config={cfg_file}",
             f"--workdir={workdir}",
-            "--staticobscal",
-            "--oldcont",
-            f"--obscaldir={obscal}",
         ])
         self.assertEqual(exit_code, 0)
         self.assertEqual((workdir / "working" / "flux.csv").read_text(), "ppr static flux\n")

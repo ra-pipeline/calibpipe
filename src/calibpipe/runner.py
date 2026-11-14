@@ -5,7 +5,6 @@ Decomposes and modernizes the legacy calibPipeIF.py script.
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
 import shlex
@@ -15,9 +14,14 @@ import sys
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import TYPE_CHECKING, Any
 
-from calibpipe import config as envconfig, pmr
+if TYPE_CHECKING:
+    from typing import Self
+
+from calibpipe import config as envconfig
+from calibpipe import pmr
 from calibpipe.steps.staging import (
     extract_eb_uids_from_ppr,
     find_dirs,
@@ -124,13 +128,19 @@ class RunLogger:
             now = datetime.now().strftime("%Y%m%d-%H%M%S")
             target_path = f"{filename}.{now}.log"
         self.filename = target_path
-        Path(target_path).parent.mkdir(parents=True, exist_ok=True)
-        self.fd = open(target_path, "w", encoding="utf-8")
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = target.open("w", encoding="utf-8")
 
-    def __enter__(self) -> RunLogger:
+    def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         self.close()
 
     def log(self, text: str) -> None:
@@ -345,10 +355,12 @@ def get_casa_rcdir_args(casaroot: str | Path, rcdir: Path) -> list[str]:
             casa_path,
         ]
         for search_root in candidate_subdirs:
-            if search_root.is_dir():
-                if next(search_root.glob("**/casaconfig"), None) is not None:
-                    has_casaconfig = True
-                    break
+            if (
+                search_root.is_dir()
+                and next(search_root.glob("**/casaconfig"), None) is not None
+            ):
+                has_casaconfig = True
+                break
     else:
         # Default to modern casaconfig flags for mocked or nonexistent paths
         has_casaconfig = True
@@ -540,386 +552,15 @@ def finalize_batch_job_logs(
             _log(f"warning: could not finalize {log_name}: {exc}")
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the parser for the `calibpipe run` workflow.
+def build_parser():
+    """Build the native 'calibpipe run' parser."""
+    from .cli import execution_parser
 
-    Returns:
-        Configured argument parser for single-run execution.
-    """
-    p = argparse.ArgumentParser(
-        description="Assists in the execution of the interferometric pipeline.",
-        add_help=True,
-    )
-    p.add_argument("--mous", default="", help="MOUS status UID to execute")
-    p.add_argument(
-        "--flag", default="", help="Path to dir with flags/templates to re-use"
-    )
-    p.add_argument(
-        "--PPR", default="", dest="ppr", help="Path to a PPR xml file to re-use"
-    )
-    p.add_argument(
-        "--valid", action="store_true", help="Use validation start directory"
-    )
-    p.add_argument("--config", help="Path to TOML config file")
-    p.add_argument(
-        "--no-site-config",
-        action="store_true",
-        default=False,
-        help="Do not load site-level configuration",
-    )
-    p.add_argument("--env", help="[envs.<name>] table to use from config")
-    p.add_argument(
-        "--casa-root",
-        "--casa-dir",
-        "--casa-ver",
-        dest="casa_root",
-        default=None,
-        help="Override CASA installation root directory",
-    )
-    p.add_argument(
-        "--heuristics-dir",
-        "--heuristics-root",
-        "--pipe-dir",
-        "--pipe-ver",
-        "--pl-ver",
-        dest="heuristics_dir",
-        default=None,
-        help="Override pipeline heuristics directory",
-    )
-    p.add_argument(
-        "--pixi-dir",
-        default=None,
-        help="Override Pixi project root directory",
-    )
-    p.add_argument(
-        "--pixi-env",
-        default=None,
-        help="Override Pixi environment name (default: default)",
-    )
-    p.add_argument(
-        "--branch",
-        default=None,
-        help="Override pipeline branch / checkout name",
-    )
-    p.add_argument(
-        "--casarundata",
-        "--casadata",
-        dest="casadata",
-        default=None,
-        help="Override casarundata / casadata runtime measures directory",
-    )
-    p.add_argument(
-        "--obscaldir",
-        dest="obscaldir",
-        default=None,
-        help="Override static calibrator database directory ([paths].obscaldir)",
-    )
-    p.add_argument("--subdir", help="Extra subdirectory appended to SCIPIPE_ROOTDIR")
-    p.add_argument(
-        "--print-env", action="store_true", help="Print resolved environment and exit"
-    )
-    p.add_argument(
-        "--recipe",
-        default=None,
-        choices=[
-            "cal",
-            "image",
-            "image_selfcal",
-            "image_selfcal_nocube",
-            "calimage",
-            "calimage_selfcal",
-            "calsurvey",
-        ],
-        help="Pipeline recipe to execute (default: from [run].recipe or calimage)",
-    )
-    p.add_argument(
-        "--ebwfile", default="", help="File with effective bandwidth information"
-    )
-    p.add_argument(
-        "-n",
-        "--nprocs",
-        "--ncores",
-        dest="nprocs",
-        type=int,
-        default=None,
-        help="Number of MPI processes (default: from [run].nprocs or 8)",
-    )
-    p.add_argument(
-        "--loglevel",
-        default=None,
-        help="PL log level (default: from [run].loglevel or debug)",
-    )
-    p.add_argument(
-        "--pickle", action="store_true", help="Run picklePipeRun upon completion"
-    )
-    p.add_argument(
-        "--useresume",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Use break/resume instead of two contexts",
-    )
-    p.add_argument(
-        "--legacy", action="store_true", help="Run fixsyscaltimes, fixplanets"
-    )
-    p.add_argument("--aUdir", default="", help="Set analysisUtils directory path")
-    p.add_argument(
-        "--usegetalmaflux", action="store_true", help="Use aU.getALMAFluxCsv"
-    )
-    p.add_argument(
-        "--staticobscal",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=(
-            "Use previous flux.csv, antennapos.csv, and flag templates from obscaldir "
-            "(--staticobscal / --no-staticobscal)"
-        ),
-    )
-    p.add_argument(
-        "--oldcont",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Use previous cont.dat from obscaldir (--oldcont / --no-oldcont)",
-    )
-    p.add_argument(
-        "--noupdate", action="store_true", default=True, help="Don't update CASA IERS"
-    )
-    p.add_argument(
-        "-v",
-        "--verbose",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Verbose subprocess output logging (default: from [run].verbose)",
-    )
-    p.add_argument("--semipass", default="", help="Comma-delimited EB UIDs to process")
-    p.add_argument("--onlysemipass", default="", help="Process only the specified EBs")
-    p.add_argument(
-        "--custom-rcdir",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="custom_rcdir",
-        help="Generate isolated CASA rcdir (config.py/startup.py) in run tree (default: from [site].use_custom_rcdir)",
-    )
-    p.add_argument(
-        "--symlink-shortcuts",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="symlink_shortcuts",
-        help=(
-            "Create convenience symlinks (working, products, rawdata, weblog) in project root "
-            "(default: from [run].symlink_shortcuts)"
-        ),
-    )
-    p.add_argument(
-        "--log2term",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="log2term",
-        help=(
-            "Mirror CASA log messages to terminal/stdout in real time "
-            "(default: from [run].log2term / [site].log2term)"
-        ),
-    )
-    p.add_argument(
-        "--nologger",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="nologger",
-        help="Disable CASA GUI logger (--nologger / --no-nologger) (default: from [run].nologger)",
-    )
-    p.add_argument(
-        "--logfile",
-        default=None,
-        dest="logfile",
-        help="Path or filename for CASA execution logfile (default: from [run].logfile)",
-    )
-    # Alternative direct execution modes (pcasa-style decoupling from PMR)
-    p.add_argument(
-        "--vis",
-        nargs="+",
-        default=[],
-        help="One or more MeasurementSet or ASDM paths to process directly via recipe reducer",
-    )
-    p.add_argument(
-        "--procedure",
-        default="",
-        help="Pipeline procedure XML filename or path (default: resolved from --recipe)",
-    )
-    p.add_argument(
-        "--script",
-        default="",
-        help="Path to Python/CASA script to execute directly under the CASA environment",
-    )
-    p.add_argument(
-        "--cmd",
-        default="",
-        help="Inline Python command string to execute in CASA (e.g. pytest invocation)",
-    )
-    p.add_argument(
-        "--vla",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Use VLA pipeline interface (executevlappr) instead of ALMA (executeppr)",
-    )
-    p.add_argument(
-        "--rawdata",
-        default=None,
-        help="Path to raw data directory or dataset to symlink into workdir",
-    )
-    p.add_argument(
-        "--workdir",
-        default="",
-        help="Working directory for execution (default: working/ or current directory)",
-    )
-    p.add_argument(
-        "-i",
-        "--interactive",
-        action="store_true",
-        default=False,
-        help="Launch an interactive CASA shell session",
-    )
-    # Hardware & MPI runtime tuning
-    p.add_argument(
-        "--omp-num-threads",
-        type=int,
-        default=None,
-        dest="omp_num_threads",
-        help="Set OMP_NUM_THREADS environment variable",
-    )
-    p.add_argument(
-        "--openblas-num-threads",
-        type=int,
-        default=None,
-        dest="openblas_num_threads",
-        help="Set OPENBLAS_NUM_THREADS environment variable",
-    )
-    p.add_argument(
-        "--omp-max-threads",
-        type=int,
-        default=None,
-        dest="omp_max_threads",
-        help="Restrict maximum OpenMP threads via casalog.ompSetNumThreads",
-    )
-    p.add_argument(
-        "--mem-frac",
-        type=float,
-        default=None,
-        dest="mem_frac",
-        help="Set CASA memory fraction limit via casalog.setMemoryFraction (0.0 - 1.0)",
-    )
-    p.add_argument(
-        "--oversubscribe",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="oversubscribe",
-        help="Allow OpenMPI process oversubscription (--oversubscribe / --no-oversubscribe)",
-    )
-    p.add_argument(
-        "--bind-to",
-        type=str,
-        default=None,
-        dest="bind_to",
-        help="OpenMPI process binding policy (e.g. none, core, socket)",
-    )
-    p.add_argument(
-        "--map-by",
-        type=str,
-        default=None,
-        dest="map_by",
-        help="OpenMPI process mapping policy (e.g. core, socket, node)",
-    )
+    parser = execution_parser("run")
+    parser.prog = "calibpipe run"
+    parser.add_argument("-h", "--help", action="help")
+    return parser
 
-    # Telemetry and resource profiling
-    p.add_argument(
-        "--psrecord",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="psrecord",
-        help="Profile execution using psrecord CLI utility (--psrecord / --no-psrecord)",
-    )
-    p.add_argument(
-        "--memstats",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="memstats",
-        help="Enable pipeline memory statistics tracking (--memstats / --no-memstats)",
-    )
-    p.add_argument(
-        "--pl-psrecord",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="pl_psrecord",
-        help="Enable pipeline internal psrecord profiling (--pl-psrecord / --no-pl-psrecord)",
-    )
-
-    # Ancillary staging & safe backup rotation
-    p.add_argument(
-        "--backup",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="backup",
-        help="Rotate existing working directories to timestamped _backup_ directories before execution",
-    )
-    p.add_argument(
-        "--cont-dat",
-        default=None,
-        dest="cont_dat",
-        help="Path to cont.dat file to stage into working directory",
-    )
-    p.add_argument(
-        "--jyperk-csv",
-        default=None,
-        dest="jyperk_csv",
-        help="Path to jyperk.csv file to stage into working directory",
-    )
-    p.add_argument(
-        "--parameter-list",
-        default=None,
-        dest="parameter_list",
-        help="Path to parameter.list file to stage into working directory",
-    )
-    p.add_argument(
-        "--ancillary",
-        nargs="+",
-        default=None,
-        dest="ancillary",
-        help="Additional ancillary files or directories to stage into working directory",
-    )
-    p.add_argument(
-        "--datapath",
-        nargs="+",
-        default=None,
-        dest="datapath",
-        help="One or more directories to search for CASA runtime data, ephemerides, or testdata",
-    )
-    p.add_argument(
-        "--rundata",
-        nargs="+",
-        default=None,
-        dest="rundata",
-        help="One or more directories to search for CASA measures/geodetic tables (or 'none' to disable)",
-    )
-    p.add_argument(
-        "-p",
-        "--profile",
-        default=None,
-        dest="profile",
-        help="Named execution profile from [profiles.<name>]",
-    )
-    p.add_argument(
-        "--dry-run",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="dry_run",
-        help="Simulate execution without running subprocess commands (--dry-run / --no-dry-run)",
-    )
-    p.add_argument(
-        "--autoreload",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        dest="autoreload",
-        help="Enable IPython %%autoreload 2 for interactive CASA sessions (--autoreload / --no-autoreload)",
-    )
-    return p
 
 
 def build_piperun_preamble(run_opts: envconfig.ResolvedRunOptions) -> str:
@@ -994,6 +635,7 @@ def wrap_cmd(
             rec_file = f"{rec_prefix}.rec"
             plot_file = f"{rec_prefix}.rec.png"
             extra_flags = ["--include-children", "--include-io", "--include-cache"]
+            help_out = ""
             try:
                 help_out = subprocess.run(
                     [psrecord_exe, "--help"],
@@ -1001,10 +643,11 @@ def wrap_cmd(
                     text=True,
                     check=False,
                 ).stdout
-                if "--use-timestamp" in help_out:
-                    extra_flags.append("--use-timestamp")
-            except Exception:
-                pass
+            except (OSError, subprocess.SubprocessError) as exc:
+                if logger_fn:
+                    logger_fn(f"Notice: could not inspect psrecord options ({exc}).")
+            if "--use-timestamp" in help_out:
+                extra_flags.append("--use-timestamp")
             flags_str = " ".join(extra_flags)
             return (
                 f"xvfb-run -a {psrecord_exe} {quoted_cmd} "
@@ -1022,7 +665,7 @@ def wrap_cmd(
 
 def build_casarun_prefix(
     run_opts: envconfig.ResolvedRunOptions,
-    env_spec: envconfig.EnvironmentSpec,
+    env_spec: envconfig.EnvSpec,
     env: dict[str, str],
     site_cfg: dict[str, Any],
 ) -> tuple[str, str]:
@@ -1087,45 +730,39 @@ def build_casarun_prefix(
 
 
 def _run_mous(
-    opts: argparse.Namespace,
     run_opts: envconfig.ResolvedRunOptions,
-    env_spec: envconfig.EnvironmentSpec,
+    env_spec: envconfig.EnvSpec,
     env: dict[str, str],
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
 ) -> int:
     """Execute ALMA Science Pipeline via pipelineMakeRequest (legacy PMR mode)."""
-    mous_uid = run_opts.mous or opts.mous
-    flag_and_go_dir = run_opts.flag_dir or opts.flag
+    mous_uid = run_opts.mous
+    flag_and_go_dir = run_opts.flag_dir
     flag_and_go = bool(flag_and_go_dir)
     if flag_and_go:
         flag_and_go_dir = os.path.abspath(flag_and_go_dir)
         if not os.path.exists(flag_and_go_dir):
-            print(f"Cannot find the --flag directory {flag_and_go_dir}. Does it exist?")
-            sys.exit(0)
+            print(
+                f"Cannot find the flag_dir directory {flag_and_go_dir}. Does it exist?",
+                file=sys.stderr,
+            )
+            return 1
 
-    ppr_override = run_opts.ppr or opts.ppr
+    ppr_override = run_opts.ppr
     if ppr_override:
         ppr_override = os.path.abspath(ppr_override)
         if not os.path.exists(ppr_override):
-            print(f"Cannot find the --PPR file {ppr_override}. Does it exist?")
-            sys.exit(0)
+            print(
+                f"Cannot find the ppr (--ppr) file {ppr_override}. Does it exist?",
+                file=sys.stderr,
+            )
+            return 1
 
     # Derive recipe details
     recipe = run_opts.recipe
-    if recipe == "cal":
-        procedure_short = "hifa_cal"
-    elif recipe in ["calimage", "calimage_selfcal", "calimage_selfcal_nocube"]:
-        procedure_short = "hifa_calimage"
-    elif recipe == "image":
-        procedure_short = "hifa_image"
-    elif recipe == "calsurvey":
-        procedure_short = "hifa_calsurvey"
-    else:
-        procedure_short = f"hifa_{recipe}"
-
-    procedure = f"procedure_{procedure_short}.xml"
+    procedure = envconfig.resolve_recipe_procedure(recipe)
 
     # Check for pre-existing ASDMs
     oldasdms = []
@@ -1136,8 +773,8 @@ def _run_mous(
 
     # Pipeline Make Request
     asdms_arg = ""
-    if opts.onlysemipass:
-        asdms_arg = f"--asdms [{opts.onlysemipass}] "
+    if run_opts.onlysemipass:
+        asdms_arg = f"--asdms [{run_opts.onlysemipass}] "
 
     intents_xml = "intents_hsd.xml" if "hsd" in procedure else "intents_hifa.xml"
     dl_asdms = "false" if oldasdms else "true"
@@ -1153,7 +790,7 @@ def _run_mous(
         envconfig.check_paths(env, site_config=site_cfg, strict=strict, check_pmr=True)
 
     # If workdir is explicitly provided in MOUS/PMR mode, rename the generated project root to it
-    target_rename = run_opts.workdir or getattr(opts, "workdir", None)
+    target_rename = run_opts.workdir or None
 
     pmr_req = pmr.PMRRequest(
         mous=mous_uid,
@@ -1161,7 +798,7 @@ def _run_mous(
         procedure=procedure,
         download_asdms=(dl_asdms == "true"),
         download_restore=(dl_cal == "true"),
-        asdms=opts.onlysemipass,
+        asdms=run_opts.onlysemipass,
         rename=target_rename,
     )
 
@@ -1440,9 +1077,8 @@ def _run_mous(
 
 
 def _run_recipe_reducer(
-    opts: argparse.Namespace,
     run_opts: envconfig.ResolvedRunOptions,
-    env_spec: envconfig.EnvironmentSpec,
+    env_spec: envconfig.EnvSpec,
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
@@ -1451,7 +1087,7 @@ def _run_recipe_reducer(
     target_path = (
         Path(run_opts.workdir).expanduser().resolve()
         if run_opts.workdir
-        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+        else Path.cwd()
     )
     if target_path.name == "working":
         project_root = target_path.parent
@@ -1473,25 +1109,9 @@ def _run_recipe_reducer(
         products_path.mkdir(parents=True, exist_ok=True)
         rawdata_path.mkdir(parents=True, exist_ok=True)
 
-    procedure = run_opts.procedure or opts.procedure
-    if not procedure:
-        recipe = run_opts.recipe
-        if recipe.endswith(".xml"):
-            procedure = recipe
-        else:
-            if recipe == "cal":
-                procedure_short = "hifa_cal"
-            elif recipe in ["calimage", "calimage_selfcal", "calimage_selfcal_nocube"]:
-                procedure_short = "hifa_calimage"
-            elif recipe == "image":
-                procedure_short = "hifa_image"
-            elif recipe == "calsurvey":
-                procedure_short = "hifa_calsurvey"
-            else:
-                procedure_short = f"hifa_{recipe}"
-            procedure = f"procedure_{procedure_short}.xml"
+    procedure = envconfig.resolve_recipe_procedure(run_opts.recipe)
 
-    raw_vis = run_opts.vis or opts.vis
+    raw_vis = run_opts.vis
     vis_list = [str(Path(v).resolve()) if Path(v).exists() else v for v in raw_vis]
 
     # Symlink raw visibility data into rawdata/ if not already inside rawdata_path
@@ -1571,7 +1191,7 @@ def _run_recipe_reducer(
         if mylog:
             mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    casarun, casa_logfile = apply_casa_cli_flags(
+    casarun, _ = apply_casa_cli_flags(
         casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
     )
 
@@ -1627,16 +1247,15 @@ def _run_recipe_reducer(
 
 
 def _run_standalone_ppr(
-    opts: argparse.Namespace,
     run_opts: envconfig.ResolvedRunOptions,
-    env_spec: envconfig.EnvironmentSpec,
+    env_spec: envconfig.EnvSpec,
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
     env: dict[str, str] | None = None,
 ) -> int:
     """Execute standalone PPR XML via executeppr / executevlappr without PMR."""
-    ppr_str = run_opts.ppr or opts.ppr
+    ppr_str = run_opts.ppr
     ppr_path = Path(ppr_str).resolve()
     if not ppr_path.is_file():
         print(
@@ -1645,7 +1264,7 @@ def _run_standalone_ppr(
         )
         return 1
 
-    raw_workdir = run_opts.workdir or getattr(opts, "workdir", "")
+    raw_workdir = run_opts.workdir
     if raw_workdir:
         target_path = Path(raw_workdir).expanduser().resolve()
         if target_path.name == "working":
@@ -1683,7 +1302,7 @@ def _run_standalone_ppr(
     mylog.log(f"log file: {mylog.fd.name}")
     log_subprocess_environment(mylog.log, env=env, run_opts=run_opts)
 
-    rawdata_src_str = run_opts.rawdata or getattr(opts, "rawdata", None)
+    rawdata_src_str = run_opts.rawdata
     if rawdata_src_str and not run_opts.dry_run:
         rawdata_src = Path(rawdata_src_str).expanduser().resolve()
         if not rawdata_src.exists():
@@ -1739,7 +1358,7 @@ def _run_standalone_ppr(
         log_func=mylog.log,
     )
     if not run_opts.dry_run:
-        flag_dir = run_opts.flag_dir or getattr(opts, "flag", None)
+        flag_dir = run_opts.flag_dir
         if flag_dir:
             flag_dir_abs = os.path.abspath(flag_dir)
             if os.path.isdir(flag_dir_abs):
@@ -1755,7 +1374,6 @@ def _run_standalone_ppr(
             eb_uids = extract_eb_uids_from_ppr(effective_ppr)
             inferred_mous = (
                 run_opts.mous
-                or getattr(opts, "mous", "")
                 or infer_mous_uid_from_ppr(effective_ppr, working_path)
             )
             stage_obscal_files(
@@ -1801,7 +1419,7 @@ def _run_standalone_ppr(
         casarun = f"{casarun} " + " ".join(rcdir_args)
         mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    casarun, casa_logfile = apply_casa_cli_flags(
+    casarun, _ = apply_casa_cli_flags(
         casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
     )
 
@@ -1809,7 +1427,7 @@ def _run_standalone_ppr(
     resolved_workdir = str(working_path.resolve())
     import_module = (
         "pipeline.infrastructure.executevlappr"
-        if (run_opts.vla or getattr(opts, "vla", False))
+        if run_opts.vla
         else "pipeline.infrastructure.executeppr"
     )
     preamble = build_piperun_preamble(run_opts)
@@ -1882,16 +1500,15 @@ def _run_standalone_ppr(
 
 
 def _run_script(
-    opts: argparse.Namespace,
     run_opts: envconfig.ResolvedRunOptions,
-    env_spec: envconfig.EnvironmentSpec,
+    env_spec: envconfig.EnvSpec,
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
     env: dict[str, str] | None = None,
 ) -> int:
     """Execute a Python/CASA script under the managed CASA environment."""
-    script_str = run_opts.script or opts.script
+    script_str = run_opts.script
     script_path = Path(script_str).resolve()
     if not script_path.is_file():
         print(
@@ -1903,11 +1520,11 @@ def _run_script(
     working_path = (
         Path(run_opts.workdir).expanduser().resolve()
         if run_opts.workdir
-        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+        else Path.cwd()
     )
     if (
         run_opts.backup
-        and (run_opts.workdir or opts.workdir)
+        and run_opts.workdir
         and working_path.exists()
         and any(working_path.iterdir())
     ):
@@ -1970,7 +1587,7 @@ def _run_script(
         casarun = f"{casarun} " + " ".join(rcdir_args)
         mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    casarun, casa_logfile = apply_casa_cli_flags(
+    casarun, _ = apply_casa_cli_flags(
         casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
     )
 
@@ -2006,9 +1623,8 @@ def _run_script(
 
 
 def _run_cmd(
-    opts: argparse.Namespace,
     run_opts: envconfig.ResolvedRunOptions,
-    env_spec: envconfig.EnvironmentSpec,
+    env_spec: envconfig.EnvSpec,
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
@@ -2018,11 +1634,11 @@ def _run_cmd(
     working_path = (
         Path(run_opts.workdir).expanduser().resolve()
         if run_opts.workdir
-        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+        else Path.cwd()
     )
     if (
         run_opts.backup
-        and (run_opts.workdir or opts.workdir)
+        and run_opts.workdir
         and working_path.exists()
         and any(working_path.iterdir())
     ):
@@ -2039,7 +1655,7 @@ def _run_cmd(
     log_name = f"{working_path}/calibpipe.cmd.{now_ts}.log"
     mylog = RunLogger(log_name, print_flag=True)
     link_batch_job_files_start(working_path, mylog.log)
-    mylog.log(f"starting command execution: {opts.cmd or run_opts.cmd}")
+    mylog.log(f"starting command execution: {run_opts.cmd}")
     mylog.log(f"working directory: {working_path}")
     mylog.log(f"log file: {mylog.fd.name}")
     log_subprocess_environment(mylog.log, env=env, run_opts=run_opts)
@@ -2085,13 +1701,13 @@ def _run_cmd(
         casarun = f"{casarun} " + " ".join(rcdir_args)
         mylog.log(f"created isolated CASA rcdir at {rcdir}")
 
-    casarun, casa_logfile = apply_casa_cli_flags(
+    casarun, _ = apply_casa_cli_flags(
         casarun, run_opts, working_path, env_spec.is_pixi, now_ts=now_ts
     )
 
     cmd_file = (working_path / "casa_cmd.py").resolve()
     resolved_workdir = str(working_path.resolve())
-    cmd_str = run_opts.cmd or opts.cmd
+    cmd_str = run_opts.cmd
     code = f"import os\nos.chdir(r'{resolved_workdir}')\n{cmd_str}\n"
     cmd_file.write_text(code, encoding="utf-8")
     cmd = wrap_cmd(
@@ -2126,9 +1742,8 @@ def _run_cmd(
 
 
 def _run_interactive(
-    opts: argparse.Namespace,
     run_opts: envconfig.ResolvedRunOptions,
-    env_spec: envconfig.EnvironmentSpec,
+    env_spec: envconfig.EnvSpec,
     casaroot: str,
     casarun: str,
     site_cfg: dict[str, Any],
@@ -2138,7 +1753,7 @@ def _run_interactive(
     working_path = (
         Path(run_opts.workdir).expanduser().resolve()
         if run_opts.workdir
-        else (Path(opts.workdir).expanduser().resolve() if opts.workdir else Path.cwd())
+        else Path.cwd()
     )
     working_path.mkdir(parents=True, exist_ok=True)
     link_batch_job_files_start(working_path)
@@ -2196,128 +1811,68 @@ def _run_interactive(
         os.chdir(orig_cwd)
 
 
-def main(custom_argv: Sequence[str] | None = None) -> None:
-    """Execute a single pipeline run from command-line arguments.
-
-    Args:
-        custom_argv: Optional argument sequence. When omitted, the legacy
-            module-level `argv` wrapper is used for compatibility.
-    """
-    args_list = custom_argv if custom_argv is not None else argv[1:]
-    parser = build_parser()
-    if not args_list:
-        parser.print_help()
-        sys.exit(0)
-
-    # Support both standard flags and legacy positional mous argument
-    # If no target flags are passed, treat the first bare argument as --mous
-    has_target_flag = any(
-        arg.startswith(
-            (
-                "--vis",
-                "--script",
-                "--cmd",
-                "--interactive",
-                "-i",
-                "--PPR",
-                "--ppr",
-                "--mous",
-                "-p",
-                "--profile",
-            )
-        )
-        for arg in args_list
-    )
-    filtered_args = []
-    for a in args_list:
-        if (
-            a
-            and not a.startswith("-")
-            and not has_target_flag
-            and not any(x.startswith("--mous") for x in filtered_args)
-        ):
-            filtered_args.append(f"--mous={a}")
-        else:
-            filtered_args.append(a)
-
-    opts = parser.parse_args(filtered_args)
-
-    targets = []
-    if opts.mous:
-        targets.append(f"--mous={opts.mous}")
-    if opts.vis:
-        targets.append(f"--vis={' '.join(opts.vis)}")
-    if opts.script:
-        targets.append(f"--script={opts.script}")
-    if opts.cmd:
-        targets.append(f"--cmd={opts.cmd}")
-    if opts.interactive:
-        targets.append("-i/--interactive")
-    if opts.ppr and not opts.mous:
-        targets.append(f"--PPR={opts.ppr}")
-
-    if len(targets) > 1:
-        print(
-            f"ERROR: Conflicting execution targets specified: {', '.join(targets)}. "
-            "Please specify only one target.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Load configuration
-    try:
+def run_request(request: envconfig.RunRequest) -> int:
+    """Resolve configuration and execute a typed `calibpipe run` request."""
+    if request.config_only:
+        if not request.config:
+            raise envconfig.ConfigError("--config-only requires --config")
+        cfg = envconfig.load_config(request.config)
+    else:
         cfg = envconfig.load_merged_config(
-            cli_arg=opts.config,
-            include_site=not getattr(opts, "no_site_config", False),
+            request.config, include_site=not request.no_site_config
         )
-    except envconfig.ConfigError as e:
-        print(f"Configuration error: {e}", file=sys.stderr)
-        sys.exit(1)
+    options = envconfig.resolve_run_options(cfg, request)
+    envconfig.validate_target(options)
+    return execute(cfg, options, isolate_root=bool(request.isolate_root))
 
+
+def main(custom_argv: Sequence[str] | None = None) -> int:
+    """Parse CLI arguments via the native 'calibpipe run' parser and run."""
+    from .cli import execution_parser, request
+
+    argv = list(custom_argv) if custom_argv is not None else sys.argv[1:]
+    parser = execution_parser("run")
+    parser.prog = "calibpipe run"
+    parser.add_argument("-h", "--help", action="help")
+    ns = parser.parse_args(argv)
     try:
-        run_opts = envconfig.resolve_run_options(cfg, opts)
-    except envconfig.ConfigError as e:
-        print(f"Configuration error: {e}", file=sys.stderr)
-        sys.exit(1)
+        return run_request(request(ns, envconfig.RunRequest))
+    except envconfig.ConfigError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
 
-    resolved_targets = []
-    if run_opts.mous:
-        resolved_targets.append(f"mous={run_opts.mous}")
-    if run_opts.vis:
-        resolved_targets.append(f"vis={' '.join(run_opts.vis)}")
-    if run_opts.script:
-        resolved_targets.append(f"script={run_opts.script}")
-    if run_opts.cmd:
-        resolved_targets.append("cmd")
-    if run_opts.interactive:
-        resolved_targets.append("interactive")
-    if run_opts.ppr and not run_opts.mous:
-        resolved_targets.append(f"ppr={run_opts.ppr}")
 
-    if not resolved_targets and not opts.print_env:
-        print(
-            "ERROR: No execution target specified. Provide --mous, --vis, --script, "
-            "--cmd, --PPR, or -i/--interactive (or define a target in the profile).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+def execute(
+    cfg: envconfig.CalibpipeConfig,
+    run_opts: envconfig.ResolvedRunOptions,
+    *,
+    print_env: bool = False,
+    isolate_root: bool = False,
+) -> int:
+    """Execute canonical settings without reading CLI arguments or configuration files."""
+    from dataclasses import fields, replace
 
-    cfg_effective = dict(cfg)
-    paths_effective = dict(cfg.get("paths", {}))
-    if run_opts.workspaces:
-        paths_effective["workspaces"] = run_opts.workspaces
-    if run_opts.scipipe_rootdir:
-        paths_effective["scipipe_rootdir"] = run_opts.scipipe_rootdir
-    if run_opts.scipipe_logdir:
-        paths_effective["scipipe_logdir"] = run_opts.scipipe_logdir
-    if run_opts.casadata or getattr(run_opts, "casarundata", None):
-        crd_val = getattr(run_opts, "casarundata", None) or run_opts.casadata
-        paths_effective["casarundata"] = crd_val
-        paths_effective["casadata"] = crd_val
-    if getattr(run_opts, "obscaldir", None):
-        paths_effective["obscaldir"] = run_opts.obscaldir
-    cfg_effective["paths"] = paths_effective
-
+    envconfig.validate_target(run_opts, require=not print_env)
+    paths = replace(cfg.paths)
+    for key in (
+        "workspaces",
+        "scipipe_rootdir",
+        "scipipe_logdir",
+        "casarundata",
+        "obscaldir",
+    ):
+        value = getattr(run_opts, key, None)
+        if value is not None:
+            setattr(paths, key, value)
+    resolved_defaults = replace(
+        cfg.run,
+        **{
+            f.name: getattr(run_opts, f.name)
+            for f in fields(cfg.run)
+            if hasattr(run_opts, f.name)
+        },
+    )
+    cfg_effective = replace(cfg, paths=paths, run=resolved_defaults)
     env_spec = envconfig.resolve_env(
         cfg_effective,
         run_opts.env_name,
@@ -2329,6 +1884,9 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
         workspaces=run_opts.workspaces,
     )
     env = envconfig.build_environment(cfg_effective, env_spec, subdir=run_opts.subdir)
+    if isolate_root:
+        env.pop("SCIPIPE_ROOTDIR", None)
+        os.environ.pop("SCIPIPE_ROOTDIR", None)
 
     # Update os.environ in process so subprocesses inherit it
     for k, v in env.items():
@@ -2344,53 +1902,39 @@ def main(custom_argv: Sequence[str] | None = None) -> None:
     os.environ["KOKKOS_DISABLE_WARNINGS"] = "1"
 
     # Configure OpenMP and OpenBLAS threading
-    if run_opts.omp_num_threads is not None:
-        os.environ["OMP_NUM_THREADS"] = str(run_opts.omp_num_threads)
-    elif run_opts.nprocs > 1:
-        os.environ.setdefault("OMP_NUM_THREADS", "1")
-
-    if run_opts.openblas_num_threads is not None:
-        os.environ["OPENBLAS_NUM_THREADS"] = str(run_opts.openblas_num_threads)
-    elif run_opts.nprocs > 1:
-        os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    for key, value in (
+        ("OMP_NUM_THREADS", run_opts.omp_num_threads),
+        ("OPENBLAS_NUM_THREADS", run_opts.openblas_num_threads),
+    ):
+        if value is not None:
+            os.environ[key] = str(value)
+        elif run_opts.nprocs > 1:
+            os.environ.setdefault(key, "1")
 
     if env_spec.is_pixi:
         os.environ.setdefault("PIXI_FROZEN", "true")
         os.environ.setdefault("PIXI_NO_INSTALL", "true")
 
-    if opts.print_env:
+    if print_env:
         print(envconfig.format_shell_exports(env, export=False))
-        return
+        return 0
 
-    site_cfg = cfg.get("site", {})
+    site_cfg = envconfig.tool_settings(cfg_effective)
     casarun, casaroot = build_casarun_prefix(run_opts, env_spec, env, site_cfg)
 
     if run_opts.mous:
-        retcode = _run_mous(opts, run_opts, env_spec, env, casaroot, casarun, site_cfg)
-    elif run_opts.vis:
-        retcode = _run_recipe_reducer(
-            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
-        )
-    elif run_opts.ppr and not run_opts.mous:
-        retcode = _run_standalone_ppr(
-            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
-        )
-    elif run_opts.script:
-        retcode = _run_script(
-            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
-        )
-    elif run_opts.cmd:
-        retcode = _run_cmd(opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env)
-    elif run_opts.interactive:
-        retcode = _run_interactive(
-            opts, run_opts, env_spec, casaroot, casarun, site_cfg, env=env
-        )
-    else:
-        retcode = 0
-
-    if retcode != 0:
-        sys.exit(retcode)
+        return _run_mous(run_opts, env_spec, env, casaroot, casarun, site_cfg)
+    for selected, handler in (
+        (run_opts.vis, _run_recipe_reducer),
+        (run_opts.ppr, _run_standalone_ppr),
+        (run_opts.script, _run_script),
+        (run_opts.cmd, _run_cmd),
+        (run_opts.interactive, _run_interactive),
+    ):
+        if selected:
+            return handler(run_opts, env_spec, casaroot, casarun, site_cfg, env=env)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

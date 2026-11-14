@@ -45,7 +45,9 @@ calibpipe/
 │       ├── report.py
 │       ├── update_ref.py
 │       ├── pmr.py
-│       └── steps/
+│       ├── workspace.py
+│       ├── steps/
+│       └── templates/
 └── tests/
 ```
 
@@ -61,7 +63,9 @@ Key modules:
 - `src/calibpipe/report.py` summarizes JUnit XML test results and triggers coverage combining.
 - `src/calibpipe/update_ref.py` merges `*.NEW.results.txt` outputs into `pipeline-testdata` references.
 - `src/calibpipe/pmr.py` wraps ALMA MakeProcessingRequests for directory staging and data fetching.
+- `src/calibpipe/workspace.py` manages project convenience symlink shortcuts (`working`, `products`, `rawdata`, `weblog`).
 - `src/calibpipe/steps/` holds modular execution steps (such as input staging).
+- `src/calibpipe/templates/` stores Jinja/string templates for CASA runtime files and Slurm/HTCondor scripts.
 
 ---
 
@@ -88,7 +92,7 @@ uv run calibpipe config show --env=main
 uv run calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
 
 # Submit batch jobs to Slurm
-uv run calibpipe batch quick.run --env=main
+uv run calibpipe submit quick.run --env=main
 
 # Run tests
 uv run --extra dev pytest tests/
@@ -105,7 +109,7 @@ uv tool install --editable /path/to/calibpipe
 Because `--editable` is passed, the CLI stays synchronized with your checkout. You can then invoke commands directly from any working directory:
 
 ```bash
-calibpipe run --mous=uid://A001/X128a/Xb9 --env=main
+calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
 ```
 
 ### 3. Alternative Installation Methods
@@ -171,7 +175,7 @@ uv cache clean    # wipes the entire cache (forces fresh downloads on next use)
 >
 > `calibpipe` is an execution driver designed for ALMA Science Pipeline operations on observatory HPC clusters (e.g., NAASC cluster) and specialized pipeline workstations. Running `calibpipe` on a personal workstation requires access to valid ALMA pipeline installations, Slurm (for batch execution), and ALMA datapacker / `pipelineMakeRequest` (PMR) when running in MOUS mode.
 >
-> If you are working on an observatory cluster, refer to your site administrator or internal templates (e.g. `notes/config.internal.example.toml`).
+> If you are working on an observatory cluster, refer to your site administrator, `/etc/calibpipe/config.toml` / `config.site.toml`, or `config.example.toml`.
 
 ---
 
@@ -211,8 +215,8 @@ flowchart TD
 3. **Workspace Configuration (`./config.toml` or `./.calibpipe.toml`):**
    - Project- or directory-specific settings when running from a dedicated workspace.
 4. **Explicit CLI / Runtime Override (`--config=<path>` or `$CALIBPIPE_CONFIG`):**
-   - Highest-priority overlay for custom or ad hoc runs.
-   - Layers on top of the site configuration unless isolated mode is requested.
+   - Replaces the user (layer 2) and workspace (layer 3) configuration files with the explicit file.
+   - Still layers on top of the site configuration (layer 1) unless `--no-site-config` or `CALIBPIPE_NO_SITE_CONFIG=1` is set (on `calibpipe run`, pass `--config-only` to load only the `--config` file without merging any other layer).
 
 #### Deep-Merging Rules
 
@@ -227,7 +231,7 @@ For isolated test suites or benchmarking runs where site defaults should be igno
 ```bash
 # Via CLI flag
 calibpipe run --mous=uid://A001/X1/X1 --config=isolated.toml --no-site-config
-calibpipe batch myjob.txt --config=isolated.toml --no-site-config
+calibpipe submit myjob.txt --config=isolated.toml --no-site-config
 
 # Or via environment variable
 export CALIBPIPE_NO_SITE_CONFIG=1
@@ -237,40 +241,39 @@ export CALIBPIPE_NO_SITE_CONFIG=1
 
 ### 2. Cascading Parameter Resolution Order
 
-When `calibpipe run` or `calibpipe submit` prepares an execution or batch submission, configuration parameters are resolved across a strict 5-level precedence cascade:
+When `calibpipe run` or `calibpipe submit` prepares an execution or batch submission, configuration parameters are resolved across a strict precedence cascade:
 
 ```mermaid
 flowchart TD
-    CLI["1. CLI Flags (Highest Priority)<br/><code>--casa-root, -n/--nprocs, --partition, --recipe, --custom-rcdir, etc.</code>"]
-    Prof["2. Profile Overrides<br/><code>[profiles.&lt;name&gt;]</code> flat keys or nested subtables<br/>(<code>.paths</code>, <code>.run</code>, <code>.batch</code>, <code>.env</code>)"]
-    RunBatch["3. Run &amp; Batch Tables<br/><code>[run]</code> (driver options), <code>[batch]</code> (cluster defaults)"]
-    Site["4. Site Overrides &amp; Host Policies<br/><code>[site]</code> (submit_host, flux endpoints, fallback tool paths, fallback rcdir/telemetry)"]
-    Builtin["5. Built-in Defaults (Lowest Priority)<br/><code>SITE_DEFAULTS</code>, dataclass field initializers"]
+    CLI["1. CLI Flags (Highest Priority)<br/><code>--config, -p/--profile, --env, --workdir, --recipe, --mous/--vis/--script/--cmd/--ppr, -v, --dry-run</code>"]
+    Prof["2. Profile Overrides<br/>Flat keys under <code>[profiles.&lt;name&gt;]</code>"]
+    RunBatch["3. Section Tables<br/><code>[run]</code>, <code>[batch]</code>, <code>[paths]</code>, <code>[envs.&lt;name&gt;]</code>"]
+    Site["4. Site Config<br/><code>[site]</code> (submit_host, PMR/tool paths, flux URLs, strict_paths)"]
+    Builtin["5. Built-in Defaults (Lowest Priority)<br/>Typed dataclass defaults"]
     Resolved["Resolved Execution Options<br/>(<code>ResolvedRunOptions</code>, <code>ResolvedBatchOptions</code>, <code>EnvSpec</code>)"]
 
     CLI -->|Overrides Everything| Resolved
     Prof -->|Overrides Sections &amp; Site| Resolved
-    RunBatch -->|Overrides Site Defaults| Resolved
-    Site -->|Cluster/Facility Level| Resolved
+    RunBatch -->|Overrides Built-in Defaults| Resolved
+    Site -->|Cluster Tooling &amp; Policies| Resolved
     Builtin -->|Base Fallback| Resolved
 ```
 
-1. **CLI Flags (Highest Priority):** Explicit command-line arguments (e.g. `--casa-root`, `--heuristics-dir`, `-n 16`, `--partition=queue`, `--custom-rcdir`, `--logfile`) take precedence over all profile and file-based settings.
-2. **Profile Overrides:** Settings defined within the selected execution profile (`[profiles.<name>]`). Profiles override both `[run]` and `[site]` sections, supporting flat keys or modular subtables:
-   - `[profiles.<name>.env]` or flat `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, `branch`
-   - `[profiles.<name>.paths]` or flat `workspaces`, `casadata`, `scipipe_rootdir`, `scipipe_logdir`
-   - `[profiles.<name>.run]` or flat `recipe`, `nprocs`, `loglevel`, `verbose`, `log2term`, `use_custom_rcdir`, `casa_enable_telemetry`, `omp_num_threads`, `mem_frac`, etc.
-   - `[profiles.<name>.batch]` or flat `partition`, `cores`, `mem`, `mem_per_cpu`, `cpus_per_task`, etc.
-3. **Run & Batch Section Defaults:** Top-level execution defaults defined in `[run]` (for local/driver options) and `[batch]` (for Slurm/HTCondor submission options). For example, `[run].use_custom_rcdir = false` or `[run].casa_enable_telemetry = true` cleanly overrides site-level defaults for all runs.
-4. **Site & Cluster Overrides:** Facility-wide infrastructure settings and defaults from `[site]` (`submit_host`, `strict_paths`, fallback tool locations, `flux_service_url`, `flux_service_url_backup`). Tool paths configured in `[paths]` automatically mirror with `[site]` bidirectionally for backward compatibility.
-5. **Built-in System Defaults (Lowest Priority):** Built-in observatory fallbacks and typed dataclass field initializers (`SITE_DEFAULTS`).
+1. **CLI Flags (Highest Priority):** Explicit command-line arguments on `run`/`submit` (such as `-p/--profile`, `--env`, `--workdir`, `--recipe`, `--dry-run`, `-v/--verbose`, and run targets `--mous`, `--vis`, `--script`, `--cmd`, `--ppr`, `-i/--interactive`, `--config-only`) override profile and file-based settings. (Execution tuning and scheduler resource options live in TOML rather than CLI flags; see [Migrating to 0.2](migration-0.2.md).)
+2. **Profile Overrides:** Settings defined with **flat keys** directly inside `[profiles.<name>]`:
+   - Environment overrides: `env`, `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, `branch`
+   - Path overrides: `workspaces`, `casarundata`, `scipipe_rootdir`, `scipipe_logdir`, `pickle_dir`, `obscaldir`, `aUdir`, `validation_dir`, `datapath`, `rundata`, `workdir`
+   - Run & target options: `mous`, `vis`, `script`, `cmd`, `ppr`, `vla`, `interactive`, `recipe`, `nprocs`, `loglevel`, `useresume`, `symlink_shortcuts`, `log2term`, `verbose`, `use_custom_rcdir`, `casa_enable_telemetry`, `omp_num_threads`, `openblas_num_threads`, `omp_max_threads`, `mem_frac`, etc.
+   - Batch & test-array options: `partition`, `cores`, `mem`, `mem_per_cpu`, `cpus_per_task`, `scheduler`, `logdir`, `outfile`, `errfile`, `save_runfile`, `max_concurrent`, `collect`, `test_target`, `test_marker`, `test_filter`, `test_opts`, `with_report`, etc.
+3. **Section Table Defaults:** Top-level defaults defined in `[run]`, `[batch]`, `[paths]`, and `[envs.<name>]`. Note that `pixi_bin` belongs under `[paths]`, while `use_custom_rcdir`, `casa_enable_telemetry`, and `log2term` belong under `[run]` (or `[profiles.<name>]`).
+4. **Site Configuration:** Facility-wide tooling locations and policies from `[site]` (`submit_host`, `pmr_home`, `datapacker_home`, `acsdata`, `java_home`, `flux_service_url`, `flux_service_url_backup`, `strict_paths`).
+5. **Built-in System Defaults (Lowest Priority):** Dataclass field defaults on `PathsConfig`, `SiteConfig`, `BatchConfig`, and `RunConfig`.
 
-#### Subtable vs. Flat Key Equivalence
+#### Flat Profile Keys
 
-Profiles accept parameters in two equivalent formats. Both representations normalize to the same typed `ProfileConfig` fields:
+Profiles require flat keys directly under `[profiles.<name>]` (nested `.env`, `.paths`, `.run`, and `.batch` subtables and `[batches.<name>]` are rejected by validation):
 
 ```toml
-# Format A: Flat profile keys
 [profiles."vlass/7x3"]
 casa_root = "casa-6.7.7-15-py3.12.el8"
 heuristics_dir = "PROJ-101/pipeline"
@@ -280,36 +283,21 @@ cpus_per_task = 3
 use_custom_rcdir = true
 casa_enable_telemetry = false
 mem_per_cpu = "5G"
-
-# Format B: Modular subtables
-[profiles."vlass/7x3".env]
-casa_root = "casa-6.7.7-15-py3.12.el8"
-heuristics_dir = "PROJ-101/pipeline"
-
-[profiles."vlass/7x3".run]
-nprocs = 8
-
-[profiles."vlass/7x3".batch]
-partition = "queue"
-cores = 8
-cpus_per_task = 3
-mem_per_cpu = "5G"
 ```
 
 #### Environment Resolution (`resolve_env`) Cascading
 
 When resolving the runtime CASA or Pixi environment (`EnvSpec`):
-1. **Base Environment Selection:** Identified by `--env`, or `profile.env`, or `default_env` (e.g. `dev`).
-2. **Target Overrides:** If `casa_root` (or aliases `casa_ver`, `casa_dir`), `heuristics_dir` (or aliases `pl_ver`, `pipe_ver`, `pipe_dir`, `heuristics_root`), `pixi_dir`, `pixi_env`, or `branch` are defined in the profile or provided on the CLI, they override the values in the base `[envs.<name>]` table.
-3. **Standalone Checkouts:** This allows executing against custom CASA installations or pipeline git branches directly from a profile without adding a permanent entry under `[envs.*]`.
+1. **Base Environment Selection:** Identified by `--env`, `profile.env`, `default_env`, or (if `default_env` is omitted) `default_profile`'s environment.
+2. **Target Overrides:** `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, or `branch` defined in `[profiles.<name>]` (or passed to `collect` / `report` / `coverage` where supported) override the base `[envs.<name>]` table.
+3. **Standalone Checkouts:** Allows executing against custom CASA installations or pipeline git branches from a profile without adding a permanent `[envs.*]` entry.
 
 #### Dynamic Workspace Search Path Resolution
 
-Relative paths specified for datasets (`vis`), procedures (`procedure`), custom scripts (`script`), standalone PPRs (`ppr`), working directories (`workdir`), runtime roots (`casa_root`, `heuristics_dir`, `pixi_dir`, `casadata`), and ancillary files (`cont_dat`, `jyperk_csv`, `parameter_list`, `ancillary`) are dynamically resolved against the workspace search roots:
+Relative paths specified for datasets (`vis`), procedure XML recipes (`recipe`), custom scripts (`script`), standalone PPRs (`ppr`), working directories (`workdir`), runtime roots (`casa_root`, `heuristics_dir`, `pixi_dir`, `casarundata`), and ancillary files (`cont_dat`, `jyperk_csv`, `parameter_list`, `ancillary`) are resolved against workspace search roots:
 1. **Direct Path Check:** If a path is absolute or exists relative to the current working directory, it is returned immediately.
 2. **Workspace Root Search:** Searches directories listed in `profile.workspaces` (if specified) or `paths.workspaces` in order.
-3. **Sticky Root Affinity:** Once a file or dataset is matched in a specific workspace root $W_i$, subsequent relative files prefer $W_i$ before checking remaining roots.
-4. **Filesystem Performance Caching:** Directory checks are cached via `_cached_is_dir` to eliminate redundant `stat` calls across high-latency network filesystems (NFS, Lustre).
+3. **Filesystem Performance Caching:** Directory checks are cached via `_cached_is_dir` to reduce repeated `stat` calls across network filesystems (NFS, Lustre).
 
 ---
 
@@ -341,29 +329,20 @@ Configures directories where runs, logs, reference databases, and cluster tools 
   - `scipipe_rootdir`: Root directory where execution folders and data products are staged. Supports a single path string or candidate list (automatically picking the first existing path) and `{user}` interpolation.
   - `scipipe_logdir`: Root directory for driver and subprocess execution logs. Supports a single path string or candidate list (automatically picking the first existing path) and `{user}` interpolation.
   - `pickle_dir`: (Optional) Directory for post-run pickle logs. Supports `{user}` interpolation.
-  - `workspaces`: (Optional) Sequence of workspace root directories searched when resolving relative dataset paths (`vis`), scripts (`script`), procedures (`procedure`), runtime paths (`casa_root`, `pixi_dir`, `heuristics_dir`), standalone PPRs (`ppr`), working directories (`workdir`), and ancillary staging files (`cont_dat`, `jyperk_csv`, `parameter_list`, `ancillary`).
+  - `workspaces`: (Optional) Sequence of workspace root directories searched when resolving relative dataset paths (`vis`), scripts (`script`), procedure XML recipes (`recipe`), runtime paths (`casa_root`, `pixi_dir`, `heuristics_dir`), standalone PPRs (`ppr`), working directories (`workdir`), and ancillary staging files (`cont_dat`, `jyperk_csv`, `parameter_list`, `ancillary`).
 - **Measures & Datasets:**
-  - `casarundata`: (Optional) Explicit directory or candidate list containing CASA runtime measures data (`geodetic/`, `ephemerides/`). Automatically picks the first existing directory and populates `measurespath` and `rundata` in `.casa/config.py` as well as `CASADATA`/`CASARUNDATA` in the environment. Aliases: `casadata`, `rundata`.
-  - `casadata`: (Optional) Backward-compatible alias for `casarundata`.
-  - `rundata`: (Optional) Backward-compatible alias for `casarundata`. Can also be set to `"none"` or `[]` to explicitly disable runtime measures path configuration.
+  - `casarundata`: (Optional) Explicit directory or candidate list containing CASA runtime measures data (`geodetic/`, `ephemerides/`). Automatically picks the first existing directory and populates `measurespath` and `rundata` in `.casa/config.py` as well as `CASADATA`/`CASARUNDATA` in the environment.
+  - `rundata`: (Optional) Candidate measures directories for runs. Can also be set to `"none"` or `[]` to explicitly disable runtime measures path configuration.
   - `datapath`: (Optional) Sequence of directories configured for CASA's `datapath` in `.casa/config.py`.
-  - `obscaldir`: (Optional) Path to static offline calibrator database (passed to the pipeline via `--staticobscal`).
+  - `obscaldir`: (Optional) Path to static offline calibrator database (staged when `staticobscal = true` or `oldcont = true`).
   - `aUdir`: (Optional) Directory for auxiliary `analysisUtils` scripts.
   - `validation_dir`: (Optional) Directory containing baseline reference products.
   - `heuristics_root`: (Optional) Base directory for multi-branch pipeline checkouts (`{heuristics_root}/{branch}`).
-- **Cluster Tool Roots (Consolidated):**
-  - `pmr_home`: (Optional) Installation root for `pipelineMakeRequest` (default: `/opt/pipetools/latest`).
-  - `datapacker_home`: (Optional) ALMA datapacker installation root (default: `/opt/datapacker/current`).
-  - `acsdata`: (Optional) ACS data directory (default: `/opt/acsdata`).
-  - `java_home`: (Optional) JVM runtime path (default: `$JAVA_HOME` or `/usr/lib/jvm/default-java`).
   - `pixi_bin`: (Optional) Explicit path to the `pixi` executable (defaults to finding `pixi` on `$PATH`).
-
-> [!TIP]
-> Tool installation paths (`pmr_home`, `datapacker_home`, `acsdata`, `java_home`, `pixi_bin`) live cleanly under `[paths]` alongside storage directories. For backward compatibility with legacy site files, bidirectional inheritance automatically synchronizes them between `[paths]` and `[site]`.
 
 ##### Candidate Path List Resolution (3-Pass Algorithm)
 
-For storage roots (`scipipe_rootdir`, `scipipe_logdir`) and runtime measures (`casarundata`, `casadata`, `rundata`), configuration can specify a list of path candidates rather than a single fixed directory. This allows a single configuration file to work seamlessly across heterogeneous cluster filesystems (e.g. primary vs. secondary storage arrays):
+For storage roots (`scipipe_rootdir`, `scipipe_logdir`) and runtime measures (`casarundata`, `rundata`), configuration can specify a list of path candidates rather than a single fixed directory. This allows a single configuration file to work seamlessly across heterogeneous cluster filesystems (e.g. primary vs. secondary storage arrays):
 
 1. **Pass 1 (Direct Path Check):** The first candidate path that exists directly on disk is selected.
 2. **Pass 2 (Parent Directory Check):** If no candidate exists directly, the first candidate whose immediate parent directory exists on disk is selected (allowing the target directory to be created dynamically on reachable storage).
@@ -387,11 +366,9 @@ casarundata = [
     "/opt/casa/data",
     "/data/casa/data",
 ]
-pmr_home = "/opt/pipetools/latest"
-datapacker_home = "/opt/datapacker/current"
 ```
 
-When `casarundata` (or alias `casadata` / `rundata`) is resolved, `calibpipe` automatically sets `measurespath` and `rundata` in `.casa/config.py` and exports both `CASADATA` and `CASARUNDATA` in the runtime environment. Setting `rundata = "none"` or `rundata = []` explicitly disables measures path population.
+When `casarundata` (or `rundata`) is resolved, `calibpipe` automatically sets `measurespath` and `rundata` in `.casa/config.py` and exports both `CASADATA` and `CASARUNDATA` in the runtime environment. Setting `rundata = "none"` or `rundata = []` explicitly disables measures path population.
 
 #### Core 2: Runtime Targets (`[envs.<name>]`)
 
@@ -404,12 +381,12 @@ Each `[envs.<name>]` table represents a selectable runtime target (e.g. `[envs.m
   - `pixi_env`: (Optional) Target Pixi environment name (default: `"default"`). In MPI mode, `calibpipe` sets `CASA_NPROCS` to the requested core count.
 - **Common Options:**
   - `branch`: (Optional) Pipeline branch identifier (defaults to `<name>`).
-  - `heuristics_dir`: (Optional) Path to pipeline heuristics checkout (resolved against `paths.workspaces` if relative). Supports template substitutions `{casa_root}`, `{pixi_dir}`, and `{branch}` (e.g. `{pixi_dir}/pipeline`). If omitted, defaults to `{heuristics_root}/{branch}` (or `{pixi_dir}` in Pixi mode).
-  - *Arbitrary extra keys:* Any additional key-value pairs in this table are exported as environment variables for that specific target.
+  - `heuristics_dir`: (Optional) Path to pipeline heuristics checkout (resolved against `paths.workspaces` if relative). Supports template substitutions `{casa_root}`, `{pixi_dir}`, and `{branch}`. If omitted, defaults to `{heuristics_root}/{branch}` when `[paths].heuristics_root` is set, or `{pixi_dir}` in Pixi mode (package root otherwise).
+  - `extra_vars`: (Optional) Table of custom string environment variables exported for that target (`[envs.<name>.extra_vars]`).
 
 #### Core 3: Batch Scheduler Defaults (`[batch]`)
 
-Configures baseline defaults for `calibpipe submit` (or `calibpipe batch`) when CLI flags are not provided.
+Configures baseline defaults for `calibpipe submit` when profile overrides are not provided.
 
 ##### Direct Scheduler Key Mapping
 
@@ -417,17 +394,22 @@ Configures baseline defaults for `calibpipe submit` (or `calibpipe batch`) when 
 
 | Configuration Key | Supported Scheduler | Slurm Directive (`#SBATCH`) | HTCondor Attribute | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `cores` | **Both** | `--ntasks=<n>` | `request_cpus = <n>` | Cluster CPU / task allocation (alias: `ntasks`; default: `8`). |
-| `cpus_per_task` | **Slurm only** | `--cpus-per-task=<c>` | *(N/A)* | Logical CPUs / threads per task for OpenMP (alias: `threads`; default: `1`). |
-| `partition` | **Both** | `--partition=<p>` | `+partition = "<p>"` | Partition or queue name (alias: `queue`; default: `plwg`). |
+| `cores` | **Both** | `--ntasks=<n>` | `request_cpus = <n>` | Cluster CPU / task allocation (default: `8`). |
+| `cpus_per_task` | **Slurm only** | `--cpus-per-task=<c>` | *(Used only as OpenMP fallback)* | Logical CPUs / threads per task for OpenMP (optional; omitted by default). |
+| `partition` | **Both** | `--partition=<p>` | `+partition = "<p>"` | Partition or queue name (default: `plwg`). |
 | `mem` | **Both** | `--mem=<m>G` | `request_memory = <m>G` | Total memory in GB (default: `248`; mutually exclusive with `mem_per_cpu`). |
 | `mem_per_cpu` | **Both** | `--mem-per-cpu=<m>` | `request_memory = cores × mem_per_cpu` | Memory per CPU (e.g. `"5G"`; scaled to total RAM in HTCondor). |
 | `mail_type` | **Both** | `--mail-type=<t>` | `notification = <keyword>` | Notification event policy (default: `ALL`). |
 | `chdir` | **Both** | `--chdir=<dir>` | `initialdir = <dir>` | Initial working directory on execution node (defaults to project root derived from `profile.workdir` if omitted). |
 | `nodelist` | **Both** | `--nodelist=<host>` | `TARGET.Machine == "<host>"` | Pin execution to a specific host machine. |
+| `request_gpus` | **Both** | `--gpus=<n>` | `request_gpus = <n>` | GPU count requested per job (default: `0`; omitted when `0` on Slurm). |
 | `scheduler` | **Both** | *(Driver selector)* | *(Driver selector)* | Batch backend: `"slurm"` (default) or `"htcondor"`. |
 | `dry_run` | **Both** | *(Driver mode)* | *(Driver mode)* | Preview submit scripts without submitting (default: `false`). |
-| `logdir` | **Both** | *(Output path)* | *(Output path)* | Output directory for script records and scheduler logs. |
+| `logdir` | **Both** | *(Output path)* | *(Output path)* | Output directory for `batch.<ts>.toml`, script records, and scheduler logs. |
+| `outfile`, `errfile` | **Both** | `--output`, `--error` | `output`, `error` | Custom scheduler stdout/stderr filename or path (default: `batch.<job>.out`/`.err`). |
+| `save_runfile` | **Both** | *(Driver output)* | *(Driver output)* | Optional path to write collected test node IDs when `collect = true`. |
+| `omp_num_threads`, `openblas_num_threads` | **Both** | *(Wrapper exports)* | *(Wrapper exports)* | Optional `OMP_NUM_THREADS` / `OPENBLAS_NUM_THREADS` exports in wrapper scripts. |
+| `max_concurrent` | **Slurm only** | `--dependency=afterany:...` | *(Not supported)* | Chained Slurm dependency slot throttle for multi-job arrays. |
 | `node` | **Slurm only** | `--nodes=<n>` | *(N/A)* | Slurm node count string (default: `"1"`). |
 | `walltime` | **Slurm only** | `--time=<t>` | *(N/A)* | Slurm walltime limit (e.g. `"24:00:00"`; omitted if unset). |
 | `ntasks_per_core` | **Slurm only** | `--ntasks-per-core=<c>` | *(N/A)* | Tasks per physical core (`1` prevents hyperthread sharing). |
@@ -435,12 +417,14 @@ Configures baseline defaults for `calibpipe submit` (or `calibpipe batch`) when 
 | `distribution` | **Slurm only** | `--distribution=<d>` | *(N/A)* | Task distribution policy (e.g. `"cyclic:cyclic"`). |
 | `no_requeue` | **Slurm only** | `--no-requeue` | *(N/A)* | Prevent job requeuing on node failure (default: `true`). |
 | `requirements` | **HTCondor only** | *(N/A)* | `requirements = ( <expr> )` | Custom ClassAd requirements override (`"none"`, `"default"`, or expression). |
+| `pool`, `schedd`, `spool` | **HTCondor only** | *(N/A)* | `condor_submit` flags | Central manager (`-pool`), schedd daemon (`-name`), and file spooling (`-spool`). |
+| `should_transfer_files`, `when_to_transfer_output` | **HTCondor only** | *(N/A)* | File transfer attributes | Sandbox file transfer policy (`YES`/`IF_NEEDED`/`NO`, `ON_EXIT`/`ON_EXIT_OR_EVICT`). |
 
 > [!NOTE]
 > **Cluster Allocation (`cores`) vs. MPI Process Count (`nprocs`)**:
 > - **Cluster Resource Allocation (`[batch].cores`)**: Configures the hardware slots allocated by the workload manager (`#SBATCH --ntasks` in Slurm, or `request_cpus` in HTCondor).
 > - **MPI Process Count (`[run].nprocs`)**: Configures the number of MPI worker processes launched inside CASA via `mpicasa -n <nprocs>`.
-> - **Total Allocated CPUs in Slurm**: Slurm computes the total logical CPUs allocated as `cores × cpus_per_task`. For example, setting `cores = 7` and `cpus_per_task = 3` requests $7 \times 3 = 21$ logical CPUs, which is the number reported in `squeue` under `CP` or `CPUS`.
+> - **Total Allocated CPUs in Slurm**: Slurm computes the total logical CPUs allocated as `cores × cpus_per_task`. For example, setting `cores = 7` and `cpus_per_task = 3` requests 7 × 3 = 21 logical CPUs, which is the number reported in `squeue` under `CP` or `CPUS`.
 >
 > **Working Directory Resolution (`chdir`)**:
 > - When `chdir` is omitted but `workdir` is defined in a profile, `calibpipe` automatically derives `chdir` as the project root (the parent directory if `workdir` ends in `working/`, preventing locks on `working/` when directory rotation `backup = true` is enabled).
@@ -452,25 +436,25 @@ Configures baseline defaults for `calibpipe submit` (or `calibpipe batch`) when 
 Configures single-run driver execution defaults for `calibpipe run`:
 
 - `recipe`: Default pipeline reduction recipe (default: `calimage`).
-- `nprocs`: Default worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS` (default: `8`; backward-compatible alias: `ncores`).
+- `nprocs`: Default worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS` (default: `8`).
 - `loglevel`: Default pipeline log level (default: `debug`).
 - `useresume`: Use breakpoint / resume execution instead of two sequential CASA contexts (default: `false`).
-- `symlink_shortcuts`: Automatically create convenience symlinks (`working`, `products`, `rawdata`) in the project run root (default: `true`; override via `--symlink-shortcuts` / `--no-symlink-shortcuts`).
-- `log2term`: Mirror CASA log messages to stdout / terminal in real time (default: `false`; override via `--log2term` / `--no-log2term`).
-- `verbose`: Stream full subprocess output line-by-line to terminal and execution logs (default: `false`; override via `-v` / `--verbose` / `--no-verbose`).
+- `symlink_shortcuts`: Automatically create convenience symlinks (`working`, `products`, `rawdata`, and `weblog` when pipeline HTML exists) in the project run root (default: `true`).
+- `log2term`: Mirror CASA log messages to stdout / terminal in real time (default: `false`).
+- `verbose`: Stream full subprocess output line-by-line to terminal and execution logs (default: `false`; override via `-v` / `--verbose`).
 - `omp_num_threads`: `OMP_NUM_THREADS` environment variable override (default: `1` when `nprocs > 1`).
 - `openblas_num_threads`: `OPENBLAS_NUM_THREADS` environment variable override (default: `1` when `nprocs > 1`).
 - `omp_max_threads`: Restrict maximum OpenMP thread count via `casalog.ompSetNumThreads`.
 - `mem_frac`: CASA memory fraction limit via `casalog.setMemoryFraction` (e.g. `0.8`).
-- `oversubscribe`: OpenMPI `--oversubscribe` flag for `mpicasa` (default: `false`).
+- `oversubscribe`: OpenMPI `--oversubscribe` flag for `mpicasa` (default: `true`).
 - `bind_to`: OpenMPI process binding policy `--bind-to` (e.g. `"core"`, `"socket"`, `"none"`).
 - `map_by`: OpenMPI process mapping policy `--map-by` (e.g. `"core"`, `"socket"`, `"node"`).
 - `psrecord`: System resource consumption profiling via `psrecord` CLI (default: `false`).
 - `memstats`: Pipeline memory statistics tracking via `pipeline.infrastructure.utils.enable_memstats()` (default: `false`).
 - `pl_psrecord`: Pipeline internal telemetry tracking via `pipeline.infrastructure.utils.enable_psrecord()` (default: `false`).
 - `backup`: Rotate existing non-empty working directories to timestamped `_backup_<timestamp>` directories before execution (default: `false`).
-- `staticobscal`: Stage prior `flux.csv`, `antennapos.csv`, and `*flag*template.txt` files for the MOUS/EBs from `[paths].obscaldir` (default: `false`; override via `--staticobscal` / `--no-staticobscal`).
-- `oldcont`: Stage prior `cont.dat` for the MOUS from `[paths].obscaldir` (default: `false`; override via `--oldcont` / `--no-oldcont`).
+- `staticobscal`: Stage prior `flux.csv`, `antennapos.csv`, and `*flag*template.txt` files for the MOUS/EBs from `[paths].obscaldir` (default: `false`).
+- `oldcont`: Stage prior `cont.dat` for the MOUS from `[paths].obscaldir` (default: `false`).
 - `cont_dat`: File path to `cont.dat` staged into the working execution directory.
 - `jyperk_csv`: File path to `jyperk.csv` staged into the working execution directory.
 - `parameter_list`: File path to parameter list override staged into the working execution directory (automatically prefixed with `SEIP_` or `QLIP_` for matching recipes).
@@ -478,11 +462,12 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `datapath`: Default list of directories populated in CASA's `datapath`.
 - `rundata`: Default list of candidate measures directories for runs.
 - `dry_run`: If `true`, formats and displays generated execution scripts, resolved working directories, and exact commands without launching CASA / MPI subprocesses (default: `false`; override via `--dry-run`).
-- `autoreload`: For interactive CASA sessions (`--interactive`), whether to configure IPython with `%load_ext autoreload` and `%autoreload 2` (default: `true`; override via `--autoreload` / `--no-autoreload`).
-- `nologger`: Disable the CASA GUI logger window (`casaconfig` `--nologger` flag; default: `false`; override via `--nologger` / `--no-nologger`).
-- `logfile`: Custom logfile path or filename passed to CASA (`casaconfig` `--logfile` flag; default: auto timestamped `casa-<timestamp>.log`; override via `--logfile <path>`).
-- `use_custom_rcdir`: Generate an isolated CASA runtime environment (`.casa/` with `config.py`, `startup.py`, and `ipython/profile_default/ipython_config.py`) in the run tree (default: `true`; override via `--custom-rcdir` / `--no-custom-rcdir`). Can also be configured in `[profiles.<name>]` or fallback to `[site]`.
-- `casa_enable_telemetry`: Control CASA telemetry collection (default: `false`). Can also be configured in `[profiles.<name>]` or fallback to `[site]`.
+- `autoreload`: For interactive CASA sessions (`--interactive`), whether to configure IPython with `%load_ext autoreload` and `%autoreload 2` (default: `true`).
+- `nologger`: Disable the CASA GUI logger window (`casaconfig` `--nologger` flag; default: `false`).
+- `logfile`: Custom logfile path or filename passed to CASA (`casaconfig` `--logfile` flag; default: auto timestamped `casa-<timestamp>.log`).
+- `use_custom_rcdir`: Generate an isolated CASA runtime environment (`.casa/` with `config.py`, `startup.py`, and `ipython/profile_default/ipython_config.py`) in the run tree (default: `true`). Can also be configured in `[profiles.<name>]`.
+- `casa_enable_telemetry`: Control CASA telemetry collection (default: `false`). Can also be configured in `[profiles.<name>]`.
+- `workdir`, `rawdata`, `ppr`, `vla`, `flag_dir`, `subdir`, `onlysemipass`: Execution directory, rawdata symlink root, PPR override, VLA mode toggle (`executevlappr`), prior flag/WVR directory, `SCIPIPE_ROOTDIR` subdirectory, and comma-separated semipass ASDM list for PMR (all optional; also configurable per profile).
 
 #### Presets: Unified Named Profiles (`[profiles.<name>]`)
 
@@ -513,10 +498,6 @@ cpus_per_task = 2
 mem = 500
 ```
 
-> [!NOTE]
-> **Legacy `[batches.<name>]` Compatibility:**
-> Older configurations defining presets under `[batches.<name>]` remain fully supported. `calibpipe` automatically mirrors any `[batches.<name>]` entries into `cfg.profiles`, allowing seamless resolution under `-p <name>`.
-
 ##### 2. Self-Contained Execution Targets
 
 Profiles can encapsulate execution targets directly, enabling single-command regression runs or benchmark sessions:
@@ -526,7 +507,7 @@ Profiles can encapsulate execution targets directly, enabling single-command reg
 desc = "Fast interferometry calibration regression test"
 env = "dev"
 vis = "regression/fast_vis.ms"
-procedure = "procedure_hifa_calimage.xml"
+recipe = "procedure_hifa_calimage.xml"
 datapath = ["casa-data", "pipeline-testdata"]
 rundata = ["casa-data"]
 nprocs = 8
@@ -549,100 +530,107 @@ nprocs = 4
 
 Profiles support all execution target, driver tuning, cluster submission, environment, and path override fields:
 
-| Category | Parameter | Aliases | Description |
-| :--- | :--- | :--- | :--- |
-| **Execution Targets** | `mous` | | ALMA MOUS UID string (e.g. `uid://A001/X1/X1`). |
-| | `vis` | | MeasurementSet path string or list of paths. |
-| | `procedure` | | Pipeline procedure XML filename or path. |
-| | `script` | | Custom Python script path. |
-| | `cmd` | | Inline Python snippet executed via CASA `-c`. |
-| | `ppr` | | Standalone PPR XML path. |
-| | `interactive` | | Launch interactive CASA session (`true`/`false`). |
-| | `vla` | | Flag indicating VLA pipeline execution (`true`/`false`). |
-| **Environment Overrides** | `env` | | Base environment name from `[envs.*]` (defaults to `default_env`). |
-| | `casa_root` | `casa_ver`, `casa_dir` | Monolithic CASA installation directory. |
-| | `heuristics_dir` | `pl_ver`, `pipe_ver`, `pipe_dir`, `heuristics_root` | Pipeline heuristics checkout directory. |
-| | `pixi_dir` | | Pixi project directory for modular CASA environments. |
-| | `pixi_env` | | Target Pixi environment name (default: `"default"`). |
-| | `branch` | | Pipeline branch identifier. |
-| **Path Overrides** | `workspaces` | | Search roots for relative datasets, scripts, and runtime trees. |
-| | `casadata` | | CASA runtime measures directory (`geodetic/`). |
-| | `scipipe_rootdir` | | Root directory where execution folders are staged. |
-| | `scipipe_logdir` | | Output directory for scheduler and execution logs. |
-| | `datapath` | | Sequence of directories populated for CASA `datapath`. |
-| | `rundata` | | Candidate measures directories (or `"none"`). |
-| | `workdir` | `work_path` | Working execution directory override. |
-| **Run & Telemetry** | `recipe` | | Pipeline reduction recipe (`calimage`, `procedure_vlassCCIP.xml`, etc.). |
-| | `nprocs` | `ncores` | MPI process count passed to `mpicasa -n` (default: `8`). |
-| | `loglevel` | | Pipeline log level (`debug`, `info`). |
-| | `useresume` | | Use breakpoint / resume execution (`true`/`false`). |
-| | `symlink_shortcuts` | | Create convenience symlinks in project root (`true`/`false`). |
-| | `log2term` | | Mirror CASA log messages to stdout / terminal in real time. |
-| | `verbose` | | Stream full subprocess output to terminal and execution logs. |
-| | `omp_num_threads` | | Sets `OMP_NUM_THREADS` in subprocess environment. |
-| | `openblas_num_threads` | | Sets `OPENBLAS_NUM_THREADS` in subprocess environment. |
-| | `omp_max_threads` | | Upper bound for `casalog.ompSetNumThreads`. |
-| | `mem_frac` | | CASA memory fraction limit via `casalog.setMemoryFraction`. |
-| | `oversubscribe` | | OpenMPI `--oversubscribe` flag. |
-| | `bind_to` | | OpenMPI process binding policy (e.g. `core`, `socket`). |
-| | `map_by` | | OpenMPI process mapping policy (e.g. `core`, `node`). |
-| | `psrecord` | | Profile CPU/memory with `psrecord` CLI (`true`/`false`). |
-| | `memstats` | | Enable pipeline memory statistics tracking. |
-| | `pl_psrecord` | | Enable pipeline internal telemetry tracking. |
-| | `backup` | | Rotate existing run directory to timestamped `_backup_<timestamp>`. |
-| | `staticobscal` | | Stage prior `flux.csv`, `antennapos.csv`, and flag templates from `obscaldir` (`true`/`false`). |
-| | `oldcont` | | Stage prior `cont.dat` from `obscaldir` (`true`/`false`). |
-| | `cont_dat` | | File path to `cont.dat` staged into working directory. |
-| | `jyperk_csv` | | File path to `jyperk.csv` staged into working directory. |
-| | `parameter_list` | | Parameter list override staged into working directory. |
-| | `ancillary` | | Additional files or `[source, target]` pairs to stage. |
-| | `dry_run` | | Preview execution without subprocess calls (`true`/`false`). |
-| | `autoreload` | | Configure IPython autoreload extensions in interactive mode. |
-| | `nologger` | `noglogger` | Disable CASA GUI logger window (`--nologger`). |
-| | `logfile` | | Custom logfile path or name (`--logfile`). |
-| | `use_custom_rcdir` | `custom_rcdir` | Isolated `.casa/` runtime generation in run tree (`true`/`false`). |
-| | `casa_enable_telemetry` | `telemetry` | CASA telemetry reporting (`true`/`false`). |
-| **Test Array & Discovery** | `collect` | | Submit an array of individual test jobs collected from `test_target` (`true`/`false`). |
-| | `test_target` | `test_dir` | Pytest test directory or file to collect from (e.g. `tests/regression/fast`). |
-| | `test_marker` | `marker` | Pytest marker expression filter for test collection (e.g. `"regression"`). |
-| | `test_filter` | `filter` | Pytest keyword expression filter for test collection (e.g. `"uid___A002"`). |
-| | `test_opts` | `test_options`, `pytest_opts` | Extra pytest CLI options appended to test execution (e.g. `"--cov=pipeline --cov-branch --cov-report="`). |
-| | `with_report` | `report` | Automatically submit a dependent Slurm wrap-up job to combine coverage and synthesize test results (`true`/`false`). |
-| **Batch Directives** | `max_concurrent` | `throttle` | Maximum concurrent batch jobs running simultaneously via chained Slurm dependency slots (`#SBATCH --dependency=afterany:<job_{i-K}>`). |
-| | `cores` | `ntasks` | Allocated CPU / task count (Slurm `--ntasks` / HTCondor `request_cpus`). |
-| | `cpus_per_task` | `threads` | Logical CPUs / threads per task for OpenMP multithreading. |
-| | `partition` | `queue` | Slurm partition / HTCondor queue name. |
-| | `mem` | | Total memory in GB (mutually exclusive with `mem_per_cpu`). |
-| | `mem_per_cpu` | | Memory per CPU (e.g. `"5G"`). |
-| | `node` | | Slurm node count string (default: `"1"`). |
-| | `walltime` | | Slurm walltime limit (e.g. `"14-00:00:00"`). |
-| | `nodelist` | | Pin execution to a specific host machine. |
-| | `chdir` | | Initial working directory on execution node (defaults to project root derived from `workdir`). |
-| | `ntasks_per_core` | | Tasks per physical core (`1` prevents SMT sharing). |
-| | `hint` | | Slurm placement hint (e.g. `"nomultithread"`). |
-| | `distribution` | | Slurm task distribution policy across nodes/sockets. |
-| | `no_requeue` | | Prevent job requeuing on node failure. |
-| | `scheduler` | | Batch backend (`"slurm"` or `"htcondor"`). |
-| | `requirements` | | Custom HTCondor ClassAd expression. |
-| | `logdir` | | Output directory for script records and scheduler logs. |
-| | `mail_type` | | Slurm / HTCondor notification policy. |
+| Category | Parameter | Description |
+| :--- | :--- | :--- |
+| **Execution Targets** | `mous` | ALMA MOUS UID string (e.g. `uid://A001/X1/X1`). |
+| | `vis` | MeasurementSet path string or list of paths. |
+| | `recipe` | Pipeline recipe shorthand (`calimage`, `cal`, `image`, etc.) or procedure XML filename/path. |
+| | `script` | Custom Python script path. |
+| | `cmd` | Inline Python snippet executed via CASA `-c`. |
+| | `ppr` | Standalone PPR XML path. |
+| | `interactive` | Launch interactive CASA session (`true`/`false`). |
+| | `vla` | Flag indicating VLA pipeline execution (`true`/`false`). |
+| **Environment Overrides** | `env` | Base environment name from `[envs.*]` (defaults to `default_env`). |
+| | `casa_root` | Monolithic CASA installation directory. |
+| | `heuristics_dir` | Pipeline heuristics checkout directory. |
+| | `pixi_dir` | Pixi project directory for modular CASA environments. |
+| | `pixi_env` | Target Pixi environment name (default: `"default"`). |
+| | `branch` | Pipeline branch identifier. |
+| **Path Overrides** | `workspaces` | Search roots for relative datasets, scripts, and runtime trees. |
+| | `casarundata` | CASA runtime measures directory (`geodetic/`). |
+| | `scipipe_rootdir` | Root directory where execution folders are staged. |
+| | `scipipe_logdir` | Output directory for scheduler and execution logs. |
+| | `pickle_dir`, `obscaldir`, `aUdir`, `validation_dir` | Overrides for `[paths]` support directories. |
+| | `datapath` | Sequence of directories populated for CASA `datapath`. |
+| | `rundata` | Candidate measures directories (or `"none"`). |
+| | `workdir`, `rawdata` | Working execution directory and rawdata ASDM root override. |
+| **Run & Telemetry** | `recipe` | Pipeline reduction recipe (`calimage`, `procedure_vlassCCIP.xml`, etc.). |
+| | `nprocs` | MPI process count passed to `mpicasa -n` (default: `8`). |
+| | `loglevel` | Pipeline log level (`debug`, `info`). |
+| | `useresume` | Use breakpoint / resume execution (`true`/`false`). |
+| | `symlink_shortcuts` | Create convenience symlinks in project root (`true`/`false`). |
+| | `log2term` | Mirror CASA log messages to stdout / terminal in real time. |
+| | `verbose` | Stream full subprocess output to terminal and execution logs. |
+| | `omp_num_threads` | Sets `OMP_NUM_THREADS` in subprocess environment. |
+| | `openblas_num_threads` | Sets `OPENBLAS_NUM_THREADS` in subprocess environment. |
+| | `omp_max_threads` | Upper bound for `casalog.ompSetNumThreads`. |
+| | `mem_frac` | CASA memory fraction limit via `casalog.setMemoryFraction`. |
+| | `oversubscribe` | OpenMPI `--oversubscribe` flag. |
+| | `bind_to` | OpenMPI process binding policy (e.g. `core`, `socket`). |
+| | `map_by` | OpenMPI process mapping policy (e.g. `core`, `node`). |
+| | `psrecord` | Profile CPU/memory with `psrecord` CLI (`true`/`false`). |
+| | `memstats` | Enable pipeline memory statistics tracking. |
+| | `pl_psrecord` | Enable pipeline internal telemetry tracking. |
+| | `backup` | Rotate existing run directory to timestamped `_backup_<timestamp>`. |
+| | `staticobscal` | Stage prior `flux.csv`, `antennapos.csv`, and flag templates from `obscaldir` (`true`/`false`). |
+| | `oldcont` | Stage prior `cont.dat` from `obscaldir` (`true`/`false`). |
+| | `cont_dat` | File path to `cont.dat` staged into working directory. |
+| | `jyperk_csv` | File path to `jyperk.csv` staged into working directory. |
+| | `parameter_list` | Parameter list override staged into working directory. |
+| | `ancillary` | Additional files or `[source, target]` pairs to stage. |
+| | `flag_dir`, `subdir`, `onlysemipass` | Prior flag/WVR directory, `SCIPIPE_ROOTDIR` subdirectory, and semipass ASDM list for PMR. |
+| | `dry_run` | Preview execution without subprocess calls (`true`/`false`). |
+| | `autoreload` | Configure IPython autoreload extensions in interactive mode. |
+| | `nologger` | Disable CASA GUI logger window (`--nologger`). |
+| | `logfile` | Custom logfile path or name (`--logfile`). |
+| | `use_custom_rcdir` | Isolated `.casa/` runtime generation in run tree (`true`/`false`). |
+| | `casa_enable_telemetry` | CASA telemetry reporting (`true`/`false`). |
+| **Test Array & Discovery** | `collect` | Submit an array of individual test jobs collected from `test_target` (`true`/`false`). |
+| | `test_target` | Pytest test directory or file to collect from (e.g. `tests/regression/fast`). |
+| | `test_marker` | Pytest marker expression filter for test collection (e.g. `"regression"`). |
+| | `test_filter` | Pytest keyword expression filter for test collection (e.g. `"uid___A002"`). |
+| | `test_opts` | Extra pytest CLI options appended to test execution (e.g. `"--cov=pipeline --cov-branch --cov-report="`). |
+| | `with_report` | Automatically submit a dependent Slurm wrap-up job to combine coverage and synthesize test results (`true`/`false`). |
+| | `save_runfile` | Persist collected test node IDs to a runfile during `calibpipe submit`. |
+| **Batch Directives** | `max_concurrent` | Maximum concurrent batch jobs running simultaneously via chained Slurm dependency slots (`#SBATCH --dependency=afterany:<job_{i-K}>`). |
+| | `cores` | Allocated CPU / task count (Slurm `--ntasks` / HTCondor `request_cpus`). |
+| | `cpus_per_task` | Logical CPUs / threads per task for OpenMP multithreading. |
+| | `partition` | Slurm partition / HTCondor queue name. |
+| | `mem` | Total memory in GB (mutually exclusive with `mem_per_cpu`). |
+| | `mem_per_cpu` | Memory per CPU (e.g. `"5G"`). |
+| | `node` | Slurm node count string (default: `"1"`). |
+| | `walltime` | Slurm walltime limit (e.g. `"14-00:00:00"`). |
+| | `nodelist` | Pin execution to a specific host machine. |
+| | `chdir` | Initial working directory on execution node (defaults to project root derived from `workdir`). |
+| | `ntasks_per_core` | Tasks per physical core (`1` prevents SMT sharing). |
+| | `hint` | Slurm placement hint (e.g. `"nomultithread"`). |
+| | `distribution` | Slurm task distribution policy across nodes/sockets. |
+| | `no_requeue` | Prevent job requeuing on node failure. |
+| | `request_gpus` | Requested GPU count (`--gpus` on Slurm, `request_gpus` on HTCondor). |
+| | `scheduler` | Batch backend (`"slurm"` or `"htcondor"`). |
+| | `requirements` | Custom HTCondor ClassAd expression. |
+| | `pool`, `schedd`, `spool` | HTCondor `condor_submit` routing (`-pool`, `-name`, `-spool`). |
+| | `should_transfer_files`, `when_to_transfer_output` | HTCondor sandbox file transfer directives. |
+| | `logdir`, `outfile`, `errfile` | Batch log directory and custom scheduler stdout/stderr paths. |
+| | `mail_type` | Slurm / HTCondor notification policy. |
 
 Precedence order when resolving parameters is strictly hierarchical:
-`CLI flag > -p / --profile=<name> > [run] / [batch] / [paths] base config > [site] cluster policy > built-in defaults`.
+`CLI flag > -p / --profile=<name> > [run] / [batch] / [paths] / [site] > built-in defaults`.
 
 When a CLI target (such as `--mous` or `--vis`) is provided alongside `-p <name>`, the CLI target takes precedence and overrides the profile's embedded target.
 
-#### Policies: Site & Cluster Policies (`[site]`) (Optional)
+#### Policies: Site, Cluster & PMR Tooling (`[site]`) (Optional)
 
-`[site]` defines operational constraints, runtime environment policies, and remote service endpoints across an observatory cluster. Execution flags defined in `[site]` (`use_custom_rcdir`, `log2term`, `casa_enable_telemetry`) act as baseline facility fallbacks that can be overridden by personal `[run]` settings, `[profiles]`, or CLI flags:
+`[site]` defines operational constraints, ALMA archive/PMR tooling installation paths, and remote service endpoints across an observatory cluster:
 
-- `submit_host`: If set, `calibpipe submit` (and `calibpipe batch`) strictly refuses to dispatch batch jobs unless invoked on this specific submit host.
-- `strict_paths`: If set to `true`, path reachability validation aborts execution immediately with an error rather than issuing non-fatal warnings.
-- `use_custom_rcdir`: Facility default for isolated CASA runtime environment (`.casa/` with `config.py`, `startup.py`, and `ipython/profile_default/ipython_config.py`) inside the run tree (default: `true`). Can be overridden in `[run]`, `[profiles.<name>]`, or via `--custom-rcdir` / `--no-custom-rcdir`.
-- `log2term`: Facility default for mirroring CASA log output to terminal in real time (default: `false`). Can be overridden in `[run]`, `[profiles.<name>]`, or via `--log2term` / `--no-log2term`.
+- `submit_host`: If set, `calibpipe submit` strictly refuses to dispatch batch jobs unless invoked on this specific submit host.
+- `pmr_home`: Installation root for `pipelineMakeRequest` (default: `/opt/pipetools/latest`).
+- `datapacker_home`: ALMA datapacker installation root (default: `/opt/datapacker/current`).
+- `acsdata`: ACS data directory (default: `/opt/acsdata`).
+- `java_home`: JVM runtime path for PMR and datapacker (default: `$JAVA_HOME` or `/usr/lib/jvm/default-java`).
 - `flux_service_url`: Primary ALMA flux service URL.
 - `flux_service_url_backup`: Secondary ALMA flux service backup URL.
-- `casa_enable_telemetry`: Facility default for CASA telemetry reporting (default: `false`). Can be overridden in `[run]` or `[profiles.<name>]`.
+- `strict_paths`: If set to `true`, path reachability validation aborts execution immediately with an error rather than issuing non-fatal warnings.
 
 
 ---
@@ -653,18 +641,17 @@ When `build_environment()` runs, environment variables are assembled and overlai
 
 ```mermaid
 flowchart TD
-    A["1. Host Shell Environment (os.environ: USER, HOME, PATH)"] --> B["2. Built-in Defaults (SITE_DEFAULTS)"]
-    B --> C["3. [site] Overrides from config.toml"]
-    D --> E["5. Target [envs.<name>] (CASA_ROOT / PIXI_DIR, heuristics, PATH prepends)"]
-    C --> D["4. [paths] Directories (interpolating {user})"]
-    E --> F["6. Path Reachability Validation (check_paths)"]
+    A["1. Host Shell Environment (os.environ: USER, HOME, PATH)"] --> B["2. Built-in &amp; [site] Settings (JAVA_HOME, ACSDATA, PMR/tool paths, FLUX_SERVICE_URL*)"]
+    B --> C["3. [paths] &amp; [run] Settings (SCIPIPE_ROOTDIR, SCIPIPE_LOGDIR, CASADATA, CASA_ENABLE_TELEMETRY)"]
+    C --> D["4. [envs.&lt;name&gt;] (CASA_ROOT / PIXI_DIR, heuristics, PATH prepends, extra_vars)"]
+    D --> E["5. Path Reachability Validation (check_paths)"]
 ```
 
 1. **Host Environment:** Reads baseline `os.environ` (inherits `USER`, `HOME`, base `PATH`).
-2. **Site Defaults & Overrides:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`, and `CASA_ENABLE_TELEMETRY`.
-3. **Paths Resolution:** Resolves and creates `SCIPIPE_ROOTDIR` and `SCIPIPE_LOGDIR` (interpolating `{user}` and optional `--subdir`). Other path settings (such as `obscaldir` and `aUdir`) are passed to driver options and CLI flags.
-4. **Environment Target Resolution:** Sets `CASA_ROOT` (or `PIXI_DIR`), prepends executable paths and `PMR/bin` to `PATH`, and sets `SCIPIPE_HEURISTICS`.
-5. **Path Validation:** `check_paths()` checks disk accessibility for `CASA_ROOT` (or `pixi_dir`), `pmr_home`, `datapacker_home`, `acsdata`, and `java_home`. If any path is missing, actionable guidance is printed to `sys.stderr`.
+2. **Site Tooling & Endpoints:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`, and `FLUX_SERVICE_URL_BACKUP`.
+3. **Paths & Run Behavior:** Resolves and creates `SCIPIPE_ROOTDIR` and `SCIPIPE_LOGDIR` (interpolating `{user}` and optional `subdir`), resolves `CASADATA`/`CASARUNDATA`, and sets `CASA_ENABLE_TELEMETRY` from `[run]`/`[profiles.<name>]`.
+4. **Environment Target Resolution:** Sets `CASA_ROOT` (or `PIXI_DIR`), prepends `pmr_home/bin` and `casa_root/bin` (or `[paths].pixi_bin` parent dir) to `PATH`, sets `SCIPIPE_HEURISTICS`/`SCIPIPE_SCRIPTDIR`, sets `MATPLOTLIBRC`, and overlays `[envs.<name>.extra_vars]`.
+5. **Path Validation:** `check_paths()` verifies `CASA_ROOT` (or `pixi_dir` and `pixi_bin`), plus `pmr_home`, `datapacker_home`, `acsdata`, and `java_home` when running MOUS/PMR workflows. Missing paths print actionable warnings to `sys.stderr` (or raise `ConfigError` when `strict_paths = true`).
 
 ---
 
@@ -711,10 +698,10 @@ The legacy script wrapper also remains supported:
 Run pipeline recipes directly against local MeasurementSets or ASDMs without querying external metadata services or PMR:
 
 ```bash
-calibpipe run --vis /data/test.ms --procedure procedure_hifa_calimage.xml --env=main
+calibpipe run --vis /data/test.ms --env=main
 ```
 
-Invokes `pipeline.recipereducer.reduce(vis=[...], procedure=...)` directly inside the specified `--workdir` (or current directory).
+Invokes `pipeline.recipereducer.reduce(vis=[...], procedure=...)` directly inside the specified `--workdir` (or current directory), using `recipe` configured in `[run]` or `-p <profile>` (accepting either a shorthand like `calimage` or a procedure XML filename/path).
 
 #### C. Standalone PPR Execution (ALMA or VLA)
 
@@ -722,10 +709,10 @@ Execute pre-generated pipeline processing requests directly:
 
 ```bash
 # ALMA PPR
-calibpipe run --PPR /data/PPR.xml --env=main
+calibpipe run --ppr /data/PPR.xml --env=main
 
-# VLA PPR
-calibpipe run --PPR /data/PPR.xml --vla --env=main
+# VLA PPR (with vla = true configured in profile)
+calibpipe run --ppr /data/PPR.xml -p vla_ppr --env=main
 ```
 
 Invokes `executeppr` (ALMA) or `executevlappr` (VLA) directly without requiring the full PMR directory layout.
@@ -758,69 +745,83 @@ calibpipe run -i --env=main
 When launching interactive sessions with `-i` / `--interactive`, `calibpipe` generates an isolated IPython profile configuration (`.casa/ipython/profile_default/ipython_config.py`) that loads IPython's autoreload extension:
 - `c.InteractiveShellApp.exec_lines = ['%load_ext autoreload', '%autoreload 2']`
 
-This enables automatic live reloading of modified pipeline Python modules without restarting CASA. Autoreload is active by default and can be toggled using `--autoreload` / `--no-autoreload` (or configured via `[run].autoreload = true / false`).
+This enables automatic live reloading of modified pipeline Python modules without restarting CASA. Autoreload is active by default and can be configured via `[run].autoreload = true / false` (or in a profile).
 
 #### G. Hardware Tuning & Telemetry Profiling
 
-Fine-tune CPU threading, OpenMPI bindings, memory caps, and resource profiling across any execution mode:
+Fine-tune CPU threading, OpenMPI bindings, memory caps, and resource profiling in `[run]` or `[profiles.<name>]`:
 
-```bash
-# Restrict OpenMP/OpenBLAS threads and cap CASA memory fraction
-calibpipe run --vis /data/test.ms --omp-num-threads=4 --openblas-num-threads=2 --mem-frac=0.8 --env=main
-
-# MPI process placement and oversubscription
-calibpipe run --vis /data/test.ms --nprocs=16 --oversubscribe --bind-to=core --map-by=socket --env=main
-
-# Resource telemetry sampling with psrecord and pipeline memory statistics
-calibpipe run --vis /data/test.ms --psrecord --memstats --pl-psrecord --env=main
+```toml
+[profiles.tuned_mpi]
+nprocs = 16
+omp_num_threads = 4
+openblas_num_threads = 2
+mem_frac = 0.8
+oversubscribe = true
+bind_to = "core"
+map_by = "socket"
+psrecord = true
+memstats = true
+pl_psrecord = true
 ```
 
-- `-n <int>`, `--nprocs <int>`: Worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS` (backward-compatible alias: `--ncores`).
-- `--casa-root <path>`: Override CASA installation root directory (aliases: `--casa-dir`, `--casa-ver`).
-- `--heuristics-dir <path>`: Override pipeline heuristics checkout directory (aliases: `--heuristics-root`, `--pipe-dir`, `--pipe-ver`, `--pl-ver`).
-- `--pixi-dir <path>`: Override Pixi workspace directory for modular CASA environments.
-- `--pixi-env <name>`: Override Pixi environment name (default: `default`).
-- `--branch <name>`: Override pipeline branch / checkout identifier.
-- `--casadata <path>`: Override CASA runtime measures directory (`geodetic/`).
-- `--omp-num-threads <int>`: Sets `OMP_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
-- `--openblas-num-threads <int>`: Sets `OPENBLAS_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
-- `--omp-max-threads <int>`: Calls `casalog.ompSetNumThreads(...)` if current thread count exceeds the limit.
-- `--mem-frac <float>`: Calls `casalog.setMemoryFraction(...)` to set CASA memory fraction (e.g. `0.8`).
-- `--oversubscribe`: Passes `--oversubscribe` to OpenMPI `mpicasa` execution.
-- `--bind-to <type>`: Passes `--bind-to <type>` to OpenMPI `mpicasa` (e.g. `core`, `socket`, `none`).
-- `--map-by <type>`: Passes `--map-by <type>` to OpenMPI `mpicasa` (e.g. `core`, `socket`, `node`).
-- `--psrecord`: Wraps session with `psrecord` CLI, generating `.rec` and `.rec.png` time-series telemetry plots.
-- `--memstats`: Injects `pipeline.infrastructure.utils.enable_memstats()` into the execution preamble.
-- `--pl-psrecord`: Injects `pipeline.infrastructure.utils.enable_psrecord()` into the execution preamble.
+```bash
+calibpipe run --vis /data/test.ms -p tuned_mpi --env=main
+```
+
+- `nprocs`: Worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS`.
+- `casa_root`: Override CASA installation root directory.
+- `heuristics_dir`: Override pipeline heuristics checkout directory.
+- `pixi_dir`: Override Pixi workspace directory for modular CASA environments.
+- `pixi_env`: Override Pixi environment name (default: `default`).
+- `branch`: Override pipeline branch / checkout identifier.
+- `casarundata`: Override CASA runtime measures directory (`geodetic/`).
+- `omp_num_threads`: Sets `OMP_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
+- `openblas_num_threads`: Sets `OPENBLAS_NUM_THREADS` in subprocess environment (defaults to `1` when `nprocs > 1`).
+- `omp_max_threads`: Calls `casalog.ompSetNumThreads(...)` if current thread count exceeds the limit.
+- `mem_frac`: Calls `casalog.setMemoryFraction(...)` to set CASA memory fraction (e.g. `0.8`).
+- `oversubscribe`: Passes `--oversubscribe` to OpenMPI `mpicasa` execution.
+- `bind_to`: Passes `--bind-to <type>` to OpenMPI `mpicasa` (e.g. `core`, `socket`, `none`).
+- `map_by`: Passes `--map-by <type>` to OpenMPI `mpicasa` (e.g. `core`, `socket`, `node`).
+- `psrecord`: Wraps session with `psrecord` CLI, generating `.rec` and `.rec.png` time-series telemetry plots.
+- `memstats`: Injects `pipeline.infrastructure.utils.enable_memstats()` into the execution preamble.
+- `pl_psrecord`: Injects `pipeline.infrastructure.utils.enable_psrecord()` into the execution preamble.
 
 > [!NOTE] OpenMPI Diagnostics
 > For all multi-process executions (`nprocs > 1`), `calibpipe` automatically injects `--display-allocation` and `--display-map` into the `mpicasa` invocation. This logs compute node slot bindings, socket layout, and rank placement directly in the driver output and log files for transparency.
 
 #### H. Ancillary File Staging & Safe Backup Rotation
 
-Stage required input files or parameter overrides and preserve prior run outputs across all execution modes:
+Stage required input files or parameter overrides and preserve prior run outputs across all execution modes via `[run]` or `[profiles.<name>]`:
 
-```bash
-# Safe rerun: rotate prior run directory to timestamped backup and stage continuum list
-calibpipe run --vis /data/test.ms --backup --cont-dat=/data/cont.dat --workdir=./run1 --env=main
+```toml
+[profiles.safe_rerun]
+backup = true
+cont_dat = "/data/cont.dat"
 
-# Single-Dish run with Jy/K factors and additional ancillary calibrations
-calibpipe run --vis /data/sd.ms --jyperk-csv=/data/jyperk.csv --ancillary /data/caltable1 /data/caltable2 --env=main
+[profiles.sd_run]
+jyperk_csv = "/data/jyperk.csv"
+ancillary = ["/data/caltable1", "/data/caltable2"]
 
-# VLASS imaging with parameter list override (automatically prefixed with SEIP_ or QLIP_)
-calibpipe run --vis /data/vlass.ms --procedure=procedure_hifv_vlassSEIP.xml --parameter-list=vlass.param --env=main
+[profiles.vlass_seip]
+recipe = "procedure_hifv_vlassSEIP.xml"
+parameter_list = "vlass.param"
 ```
 
-- `--backup`: Non-destructively rotates existing non-empty working directories to `<workdir>_backup_<YYYYMMDD_HHMMSS>` (with collision suffix `_1`, `_2` if needed).
-- `--staticobscal` / `--no-staticobscal`: Stages prior `flux.csv`, `antennapos.csv`, and EB `*flag*template.txt` files from `obscaldir` in `--mous` and `--PPR` modes (overridden by `--flag` or explicit `--ancillary`; also forwarded by `calibpipe batch`).
-- `--oldcont` / `--no-oldcont`: Stages prior `cont.dat` from `obscaldir` in `--mous` and `--PPR` modes (overridden by `--cont-dat`, `--ancillary`, or `--flag`; also forwarded by `calibpipe batch`).
-- `--obscaldir <path>`: Overrides `[paths].obscaldir` for static calibrator and continuum lookup (supported by both `calibpipe run` and `calibpipe batch`).
-- `--cont-dat <path>`: Copies continuum frequency selection file to `cont.dat` in the execution directory.
-- `--jyperk-csv <path>`: Copies Single-Dish Kelvin-to-Jansky conversion factors to `jyperk.csv`.
-- `--parameter-list <path>`: Copies parameter override file to `parameter.list` (or `SEIP_parameter.list` / `QLIP_parameter.list` when matching VLASS recipe names).
-- `--ancillary <path...>`: Copies additional files or directory trees directly into the target execution directory (supports `source:dest` syntax for destination renaming).
-- `--datapath <dir...>`: Sets explicit search directories for CASA `datapath` in `.casa/config.py`.
-- `--rundata <dir...>`: Sets candidate measures directories for `rundata` / `measurespath` in `.casa/config.py` (or `--rundata none` to disable).
+```bash
+calibpipe run --vis /data/test.ms -p safe_rerun --workdir=./run1 --env=main
+```
+
+- `backup`: Non-destructively rotates existing non-empty working directories to `<workdir>_backup_<YYYYMMDD_HHMMSS>` (with collision suffix `_1`, `_2` if needed).
+- `staticobscal`: Stages prior `flux.csv`, `antennapos.csv`, and EB `*flag*template.txt` files from `obscaldir` in `--mous` and `--ppr` modes (overridden by `flag_dir` or explicit `ancillary`).
+- `oldcont`: Stages prior `cont.dat` from `obscaldir` in `--mous` and `--ppr` modes (overridden by `cont_dat`, `ancillary`, or `flag_dir`).
+- `obscaldir`: Configured in `[paths].obscaldir` for static calibrator and continuum lookup.
+- `cont_dat`: Copies continuum frequency selection file to `cont.dat` in the execution directory.
+- `jyperk_csv`: Copies Single-Dish Kelvin-to-Jansky conversion factors to `jyperk.csv`.
+- `parameter_list`: Copies parameter override file to `parameter.list` (or `SEIP_parameter.list` / `QLIP_parameter.list` when matching VLASS recipe names).
+- `ancillary`: Copies additional files or directory trees directly into the target execution directory (supports `[source, dest]` pairs or `source:dest` syntax for destination renaming).
+- `datapath`: Sets explicit search directories for CASA `datapath` in `.casa/config.py`.
+- `rundata`: Sets candidate measures directories for `rundata` / `measurespath` in `.casa/config.py` (or `rundata = "none"` to disable).
 
 #### I. Named Execution Profiles (`-p` / `--profile`)
 
@@ -830,11 +831,11 @@ Apply pre-configured hardware tuning, recipes, threading, or telemetry settings 
 # Execute with profile settings cascaded over base configuration
 calibpipe run --vis /data/test.ms -p fast_turnaround
 
-# Execute a self-contained profile with zero CLI flags needed
+# Execute a self-contained profile with zero CLI target flags needed
 calibpipe run -p regression/pipeline_fast
 
-# CLI options override any settings defined in the profile
-calibpipe run -p regression/pipeline_fast --nprocs=16 --vis=/data/custom.ms
+# CLI target and workdir options override settings defined in the profile
+calibpipe run -p regression/pipeline_fast --vis=/data/custom.ms --workdir=./custom_run
 ```
 
 When a profile specifies relative dataset paths or scripts, `calibpipe` resolves them against the search directories defined in `[paths].workspaces`.
@@ -852,26 +853,24 @@ Outputs the generated execution wrapper (e.g. `casa_piperun.py`), target working
 
 ### 2. Submit a Batch (Slurm & HTCondor)
 
-`calibpipe submit` (or `calibpipe batch`) submits one or more pipeline jobs to a cluster workload manager (Slurm or HTCondor). The submission workflow resolves configuration layers, evaluates named batch profiles, validates submit host policies, and renders scheduler-specific submit scripts:
+`calibpipe submit` submits one or more pipeline jobs to a cluster workload manager (Slurm or HTCondor). The submission workflow resolves configuration layers, evaluates named profiles, validates submit host policies, and renders scheduler-specific submit scripts:
 
 ```mermaid
 flowchart TD
-    CLI["calibpipe submit | batch"] --> Router["cli.py (Routing & Subparsers)"]
-    Router --> BatchParser["batch.py (build_parser)"]
-    BatchParser --> CfgLoad["config.load_config (Cascading TOML Layers)"]
+    CLI["calibpipe submit"] --> Router["cli.py (Routing & Subparsers)"]
+    Router --> BatchSubmit["batch.submit_request (SubmitRequest)"]
+    BatchSubmit --> CfgLoad["config.load_merged_config (Cascading TOML Layers)"]
     CfgLoad --> Resolve["config.resolve_batch_options"]
     Resolve --> CheckProfiles{"Profile in [profiles]?"}
     CheckProfiles -- Yes --> ActiveProf["active_batch = cfg.batch + profile"]
-    CheckProfiles -- No --> CheckBatches{"Legacy profile in [batches]?"}
-    CheckBatches -- Yes --> ActiveBatch["active_batch = cfg.batches[name]"]
-    CheckBatches -- No --> Err["ConfigError (Available profiles list)"]
-    ActiveProf --> Override["Apply CLI Overrides (--partition, -c, -m, etc.)"]
-    ActiveBatch --> Override
+    CheckProfiles -- No --> Err["ConfigError (Available profiles list)"]
+    ActiveProf --> Override["Apply CLI Overrides (-p, --workdir, --env, --dry-run)"]
     Override --> BatchOpts["ResolvedBatchOptions"]
     BatchOpts --> SubmitHostCheck["check_submit_host"]
-    SubmitHostCheck --> SchedulerDispatch{"Scheduler?"}
-    SchedulerDispatch -- Slurm --> SbatchGen["sbatch script & submission"]
-    SchedulerDispatch -- HTCondor --> HTCGen["HTC submit & wrapper submission"]
+    SubmitHostCheck --> Snapshot["build_batch_snapshot → batch.&lt;ts&gt;.toml"]
+    Snapshot --> SchedulerDispatch{"Scheduler?"}
+    SchedulerDispatch -- Slurm --> SbatchGen["sbatch script (calibpipe run --config=&lt;snapshot&gt; --config-only ...)"]
+    SchedulerDispatch -- HTCondor --> HTCGen["HTC submit &amp; .sh wrapper (calibpipe run --config=&lt;snapshot&gt; --config-only ...)"]
 ```
 
 #### A. Submission Modes: Single-Job vs. Multi-Job Pipefile
@@ -894,8 +893,8 @@ recipe = "calimage"                 # choices: cal, image, calimage, etc.
 
 # Runtime environment (optional overrides):
 env = "dev"
-casa_ver = "casa-6.7.7-7-py3.12.el8"
-pipe_ver = "PROJ-101/pipeline"
+casa_root = "casa-6.7.7-7-py3.12.el8"
+heuristics_dir = "PROJ-101/pipeline"
 
 # Scheduler directives (Slurm / HTCondor):
 partition = "batch2"
@@ -907,15 +906,15 @@ backup = true
 
 ###### Option 1B: Direct Recipe Reduction on Local MeasurementSets (`recipe_reducer`)
 
-For offline data processing without PMR archive queries, specify `vis` and `recipe` (or `procedure`):
+For offline data processing without PMR archive queries, specify `vis` and `recipe`:
 
 ```toml
 [profiles."vlass_ccip_run"]
 desc = "Direct procedure_vlassCCIP execution on split MeasurementSet"
 
-# Visibilities and recipe/procedure:
+# Visibilities and recipe (shorthand or XML filename/path):
 vis = ["vlass/J232327+502432/rawdata/split.ms"]
-procedure = "procedure_vlassCCIP.xml"  # or recipe = "procedure_vlassCCIP.xml"
+recipe = "procedure_vlassCCIP.xml"
 
 # Scheduler directives:
 partition = "batch2"
@@ -925,7 +924,7 @@ mem = 248
 
 ###### Submitting Method 1:
 
-Submit directly to Slurm using `calibpipe submit` (or alias `calibpipe batch`):
+Submit directly to Slurm using `calibpipe submit`:
 
 ```bash
 # Submit single-job profile directly to Slurm:
@@ -937,8 +936,9 @@ calibpipe submit -p e2e_mous_calimage --dry-run
 
 **What `calibpipe submit` does under the hood:**
 1. Evaluates `#SBATCH` directives (`partition`, `cores`, `mem`, `walltime`, etc.) from the profile.
-2. Writes the persistent submission script to `scipipe_logdir` (e.g. `batch.e2e_mous_calimage_<timestamp>.sbatch`).
-3. Dispatches `calibpipe run -p=e2e_mous_calimage` inside the allocated job allocation.
+2. Resolves paths, environment settings, and profile overrides up front into one shared frozen snapshot (`batch.<timestamp>.toml`).
+3. Writes the persistent submission script to `scipipe_logdir` (e.g. `batch.e2e_mous_calimage_<timestamp>.sbatch`).
+4. Dispatches `calibpipe run --config=<snapshot> --config-only -p=e2e_mous_calimage` inside the allocated job allocation.
 
 ---
 
@@ -956,8 +956,8 @@ When you need to process a queue of multiple MOUSes using a shared cluster and e
    cores = 8
    mem = 64
    walltime = "12:00:00"
-   casa_ver = "casa-6.7.7-7-py3.12.el8"
-   pipe_ver = "PROJ-101/pipeline"
+   casa_root = "casa-6.7.7-7-py3.12.el8"
+   heuristics_dir = "PROJ-101/pipeline"
    ```
 
 2. **Create a `pipefile.txt`:**
@@ -978,14 +978,15 @@ When you need to process a queue of multiple MOUSes using a shared cluster and e
 
 **What `calibpipe submit` does under the hood:**
 1. Parses each line of `pipefile.txt` (ignoring blank lines and `#` comments).
-2. Generates an independent batch script for each entry, injecting:
-   `calibpipe --staticobscal --mous=<mous_uid> --recipe=<recipe> --profile=alma_batch_template`
-3. Submits each job sequentially with a 1-second delay between submissions to guarantee unique timestamped logs (`batch.<target>_<timestamp>.sbatch`) and avoid scheduler bursts.
-4. Queries and prints active queue status via `squeue` (or `condor_q`).
+2. Writes one shared frozen config snapshot (`batch.<timestamp>.toml`) in the batch log directory so later edits to `config.toml` cannot affect queued jobs.
+3. Generates an independent batch script for each entry, injecting:
+   `calibpipe run --config=<snapshot> --config-only -p=alma_batch_template --mous=<mous_uid>`
+4. Submits each job sequentially with a 1-second delay between submissions to guarantee unique timestamped logs (`batch.<target>_<timestamp>.sbatch`) and avoid scheduler bursts.
+5. Queries and prints active queue status via `squeue` (or `condor_q`).
 
 ---
 
-##### Method 3: Regression Test Array Submission (Test Runfile & `--collect`)
+##### Method 3: Regression Test Array Submission (Test Runfile & `collect = true`)
 
 `calibpipe` natively supports executing regression test matrices as parallel Slurm or HTCondor job arrays. Each test executes as an independent batch job inside its own dedicated sub-working directory (`<base_workdir>/<test_name>`), complete with its own isolated `.casa/` runtime, logs, and JUnit XML report.
 
@@ -1001,100 +1002,103 @@ calibpipe submit quick.run -p regression_fast
 calibpipe submit quick.run -p regression_fast --dry-run
 ```
 
-###### Option B: Discover & Submit in One Shot (`--collect`)
+###### Option B: Discover & Submit in One Shot (`collect = true`)
 
-To discover test nodes and immediately dispatch them to the scheduler without generating an intermediate file:
+To discover test nodes from the profile's `test_target` (with optional `test_filter` and `test_marker`) and immediately dispatch them to the scheduler without generating an intermediate file, set `collect = true` in `[profiles.<name>]`:
+
+```toml
+[profiles.regression_fast]
+collect = true
+test_target = "tests/regression/fast"
+test_marker = "regression"
+test_filter = "uid___A002"
+```
 
 ```bash
 # Collect tests from the profile's test_target and submit each as a Slurm batch job
-calibpipe submit -p regression_fast --collect
-
-# Filter tests dynamically on the command line
-calibpipe submit -p regression_fast --collect -k "uid___A002" --marker="regression"
-
-# Optionally save the collected list to a runfile while submitting
-calibpipe submit -p regression_fast --collect --save-runfile=quick.run
+calibpipe submit -p regression_fast
 ```
 
-###### Option C: Automated Post-Run Synthesis (`--with-report`)
+###### Option C: Automated Post-Run Synthesis (`with_report = true`)
 
-To automatically schedule a lightweight wrap-up Slurm job that waits for all individual test jobs to finish and synthesizes test results and code coverage:
+To automatically schedule a lightweight wrap-up Slurm job that waits for all individual test jobs to finish and synthesizes test results and code coverage, set `with_report = true` in the profile:
+
+```toml
+[profiles.regression_fast]
+collect = true
+test_target = "tests/regression/fast"
+with_report = true
+```
 
 ```bash
 # Submit test array and automatically schedule a dependent finalize job
-calibpipe submit quick.run -p regression_fast --with-report
-
-# Also works with on-the-fly collection
-calibpipe submit -p regression_fast --collect --with-report
+calibpipe submit -p regression_fast
 ```
 
 The wrap-up job runs with `#SBATCH --dependency=afterany:<job1>:<job2>:...`, ensuring it executes immediately after all tests finish (regardless of pass/fail status). When triggered, it invokes `calibpipe report <base_workdir>`, aggregating all JUnit XML files, combining distributed `.coverage.*` datasets, and generating the consolidated HTML report.
 
-###### Option D: Batch Concurrency Throttling (`--max-concurrent` / `--throttle`)
+###### Option D: Batch Concurrency Throttling (`max_concurrent`)
 
 When dispatching large regression suites (e.g., 50–100 individual tests), submitting all jobs concurrently can saturate cluster queues, exhaust available node memory, or trigger Lustre filesystem IOPS bottlenecks.
 
-`calibpipe` provides an optional native concurrency throttle using **chained Slurm dependency slots**:
-
-```bash
-# Throttle batch submission to at most 8 concurrently running jobs:
-calibpipe submit quick.run -p regression_fast --max-concurrent 8
-
-# Combine throttling with on-the-fly collection and automated reporting:
-calibpipe submit -p regression_fast --collect --max-concurrent 8 --with-report
-```
-
-You can also set the throttle limit persistently in `config.toml`:
+`calibpipe` provides an optional native concurrency throttle using **chained Slurm dependency slots** via `max_concurrent` in `config.toml`:
 
 ```toml
 [profiles."regression/casa674_array_fast"]
+collect = true
 test_target = "tests/regression/fast"
-max_concurrent = 8     # Or alias: throttle = 8
+max_concurrent = 8
 with_report = true
+```
+
+```bash
+calibpipe submit -p regression/casa674_array_fast
 ```
 
 **How Native Slot Throttling Works:**
 
-- For the first $K$ jobs ($i < K$), jobs are submitted without prerequisites and begin running as cluster resources allow.
-- For each subsequent job ($i \ge K$), `calibpipe` injects a Slurm dependency linking job $i$ to job $i - K$:
+- For the first `K` jobs (`i < K`), jobs are submitted without prerequisites and begin running as cluster resources allow.
+- For each subsequent job (`i ≥ K`), `calibpipe` injects a Slurm dependency linking job `i` to job `i - K`:
   ```text
   #SBATCH --dependency=afterany:<Job_{i-K}_ID>
   ```
-- **Zero Daemon Overhead**: Unlike queue managers that require a running python daemon or SSH process on the login node to poll and submit jobs, this throttling mechanism is delegated entirely to the native Slurm scheduler. Even if your terminal closes or the login node reboots, Slurm cleanly releases slot $i$ the instant slot $i-K$ terminates (whether it succeeds, fails, or is cancelled).
+- **Zero Daemon Overhead**: Unlike queue managers that require a running python daemon or SSH process on the login node to poll and submit jobs, this throttling mechanism is delegated entirely to the native Slurm scheduler. Even if your terminal closes or the login node reboots, Slurm cleanly releases slot `i` the instant slot `i - K` terminates (whether it succeeds, fails, or is cancelled).
 - **Superior to Standard Job Arrays**: Unlike Slurm `#SBATCH --array=1-N%K` (which collapses all tasks into a single opaque job ID where individual task names are obscured in `squeue`), `calibpipe` gives every single test a descriptive job name (`{profile}/{test_name}_{timestamp}`) and separate `.sbatch` logs while enforcing the exact same concurrency ceiling.
 
 **What `calibpipe submit` does for test arrays:**
 1. **Target Identification:** Detects pytest node IDs (containing `::`) in runfiles or collects them on the fly via `calibpipe.collect`.
 2. **Sub-Workdir Segregation:** Assigns each test an independent working directory: `<base_workdir>/<test_name>`.
 3. **Directory Rotation Safeguard:** Sets scheduler `--chdir` to `<base_workdir>` (the parent directory) rather than `<test_workdir>`, allowing `backup=true` to rotate and re-create `<test_workdir>` safely without violating the current working directory boundary.
-4. **Environment & Command Generation:** Assembles an isolated execution command:
+4. **Environment & Command Generation:** Assembles an isolated execution command referencing the frozen batch snapshot:
    ```bash
-   calibpipe run -p=<profile> --workdir=<base_workdir>/<test_name> \
-     --cmd="import os, pytest; os.environ.pop('SCIPIPE_ROOTDIR', None); pytest.main(['-vvs', '--junitxml=regression-results-<test_name>.xml', '<node_id>'])"
+   calibpipe run --config=<snapshot> --config-only -p <profile> \
+     --workdir=<base_workdir>/<test_name> \
+     --cmd="import os, sys, pytest; ..." --isolate-root
    ```
+   (where the inline `--cmd` pops `SCIPIPE_ROOTDIR`, prepends `<SCIPIPE_HEURISTICS>/tests` to `sys.path`, and invokes `pytest.main(['-vvs', '--junitxml=regression-results-<test_name>.xml', node])`).
 5. **Scheduler Tagging:** Names each batch job after `{profilename}/{test_name}_{timestamp}`, making individual tests easily trackable in `squeue`.
-6. **Concurrency Throttling (Optional):** When `--max-concurrent=K` (or `max_concurrent = K` / `throttle = K`) is configured, injects `#SBATCH --dependency=afterany:<Job_{i-K}>` into Job $i$, guaranteeing at most $K$ test jobs run concurrently without requiring a daemon process on the login node.
-7. **Automated Finalize Wrap-up (Optional):** When `--with-report` is set (or configured via `with_report = true` in the profile), submits a dependent wrap-up Slurm job (`#SBATCH --dependency=afterany:...`) that triggers `calibpipe report` across the run directory.
+6. **Concurrency Throttling (Optional):** When `max_concurrent = K` is configured, injects `#SBATCH --dependency=afterany:<Job_{i-K}>` into Job `i`, guaranteeing at most `K` test jobs run concurrently without requiring a daemon process on the login node.
+7. **Automated Finalize Wrap-up (Optional):** When `with_report = true` is configured in the profile, submits a dependent wrap-up Slurm job (`#SBATCH --dependency=afterany:...`) that triggers `calibpipe report` across the run directory.
 
 ---
 
-##### Method 4: Dynamic Ad-Hoc Overrides on Submission
+##### Method 4: Dynamic Target, Recipe & Environment Overrides on Submission
 
-Any setting defined in a profile can be overridden on the fly during submission via CLI flags:
+Targets, recipes, environments, and working directories can be overridden on the fly during submission via CLI flags:
 
 ```bash
 # Override recipe dynamically:
 calibpipe submit -p e2e_mous_calimage --recipe=cal
 
-# Override scheduler partition and core count:
-calibpipe submit -p e2e_mous_calimage --partition=plwg --cores=16
+# Override MOUS target dynamically:
+calibpipe submit -p e2e_mous_calimage --mous=uid://A001/X123/X789
 
-# Submit using HTCondor scheduler instead of Slurm:
-calibpipe submit -p e2e_mous_calimage --scheduler=htcondor
+# Override runtime environment and working directory:
+calibpipe submit -p e2e_mous_calimage --env=dev --workdir=/lustre/runs/custom_mous
 ```
 
 > [!TIP]
-> `calibpipe submit` and `calibpipe batch` are interchangeable. `submit` is the canonical subcommand, and `batch` is preserved as a permanent alias for backward compatibility. Legacy wrappers (`./scripts/runbatch.py quick.run ...`) also remain functional.
+> `calibpipe submit` is the canonical batch submission subcommand, and `./scripts/runbatch.py` forwards directly to `calibpipe submit`.
 
 #### B. Profile Execution Target Matrix
 
@@ -1103,7 +1107,7 @@ Profiles defined under `[profiles.<name>]` can encapsulate any of the five execu
 | Target Type | Profile TOML Definition | Execution Mechanism |
 | :--- | :--- | :--- |
 | **MOUS (ALMA PMR)** | `mous = "uid://A001/X1/X1"`<br/>`recipe = "calimage"` | Queries metadata via `pipelineMakeRequest`, creates OUS directory tree, stages inputs, and runs `executeppr`. |
-| **Direct Recipe** | `vis = "data/target.ms"`<br/>`procedure = "procedure_hifa_calimage.xml"` | Executes `pipeline.recipereducer.reduce(vis=[...], procedure=...)` directly in `<workdir>`. |
+| **Direct Recipe** | `vis = "data/target.ms"`<br/>`recipe = "procedure_hifa_calimage.xml"` | Executes `pipeline.recipereducer.reduce(vis=[...], procedure=...)` directly in `<workdir>`. |
 | **Standalone PPR** | `ppr = "data/PPR.xml"`<br/>`vla = false` (or `true`) | Executes `executeppr` (ALMA) or `executevlappr` (VLA) on the pre-existing request file. |
 | **Custom Script** | `script = "scripts/benchmark.py"` | Executes custom Python/CASA script within isolated `.casa/` runtime. |
 | **Inline Command** | `cmd = "import pytest; pytest.main()"` | Executes inline Python snippet directly within the CASA interpreter. |
@@ -1118,8 +1122,8 @@ Profiles defined under `[profiles.<name>]` can encapsulate any of the five execu
 - Queue inspection: `squeue -u $USER`
 
 ##### HTCondor Submission
-- Select via `--scheduler=htcondor` or `[batch].scheduler = "htcondor"`.
-- Generates both wrapper `batch.<job>.sh` (`ulimit`, `umask`, `calibpipe run`) and submit description `batch.<job>.htc` (`request_cpus`, `request_memory`, `initialdir`, `notification`, ClassAd requirements).
+- Select via `[batch].scheduler = "htcondor"` or `scheduler = "htcondor"` in `[profiles.<name>]`.
+- Generates both wrapper `batch.<job>.sh` (`ulimit`, `umask`, `calibpipe run --config=<snapshot> --config-only ...`) and submit description `batch.<job>.htc` (`request_cpus`, `request_memory`, `initialdir`, `notification`, ClassAd requirements).
 - Submission command: `condor_submit batch.<job>.htc`
 - Queue inspection: `condor_q $USER`
 
@@ -1131,8 +1135,8 @@ Preview batch submission scripts and planned execution without submitting jobs t
 # Preview Slurm batch submission
 calibpipe submit quick.run -p debug --dry-run
 
-# Preview HTCondor batch submission
-calibpipe submit quick.run --scheduler=htcondor -c 8 -m 64 --dry-run
+# Preview HTCondor batch submission (with scheduler = "htcondor" in profile)
+calibpipe submit quick.run -p condor_debug --dry-run
 ```
 
 When `--dry-run` is supplied, `calibpipe submit`:
@@ -1142,8 +1146,7 @@ When `--dry-run` is supplied, `calibpipe submit`:
 
 #### Multi-Job Concurrency and HPC Safety
 
-When running large batches across Slurm nodes (`calibpipe submit ...` or `calibpipe batch ...`), `calibpipe` implements several
-safeguards to guarantee conflict-free concurrent execution:
+When running large batches across cluster nodes (`calibpipe submit ...`), `calibpipe` implements several safeguards to guarantee conflict-free concurrent execution:
 
 ##### 1. Pixi Lockfile & Environment Concurrency (`--frozen`)
 
@@ -1189,7 +1192,7 @@ initialize concurrently, leading to 32-second file lock timeouts or `sqlite3.Ope
 
 - **Unique Job Records:** Each job in a batch receives a unique timestamped name (`batch.<mous>_<timestr>`) with
   dedicated `.out`, `.err`, and `.sbatch` files.
-- **Submission Staggering:** `calibpipe batch` pauses for 1 second between consecutive submissions to ensure unique
+- **Submission Staggering:** `calibpipe submit` pauses for 1 second between consecutive submissions to ensure unique
   timestamp resolution and prevent submission bursts.
 - **Isolated Working Directories:** Each MOUS executes exclusively within its own
   `<rootdir>/<project_run>/SOUS_.../GOUS_.../MOUS_.../working/` hierarchy.
@@ -1218,17 +1221,17 @@ Inspect active settings, paths, and environment defaults resolved across configu
 calibpipe config show --env=main
 ```
 
-When multiple configuration files are detected, `calibpipe` displays the loaded hierarchy in order:
+When multiple configuration files are detected, `calibpipe` displays the loaded hierarchy and per-key sources in order:
 
 ```text
-================================================================================
 calibpipe Configuration Overview
-================================================================================
 Configuration Layers (lowest to highest priority):
-  [1] /etc/calibpipe/config.toml
-  [2] /home/user/.config/calibpipe/config.toml
-Default Env:      main
-Selected Env:     main
+  /etc/calibpipe/config.toml
+  /home/user/.config/calibpipe/config.toml
+Default Env: main
+Default Profile: (none)
+Selected Env: main
+Selected Profile: (none)
 ...
 ```
 
@@ -1241,7 +1244,7 @@ calibpipe config show --config=/path/to/custom_config.toml --no-site-config
 
 ### 5. Profile Management CLI (`calibpipe profile`)
 
-Inspect and query all defined execution and batch profiles from the CLI without needing to manually inspect configuration files:
+Inspect and query all defined profiles from the CLI without manually reading configuration files:
 
 #### A. List Profiles (`calibpipe profile list`)
 
@@ -1251,22 +1254,15 @@ calibpipe profile list
 calibpipe profile
 ```
 
-Displays all defined execution targets (`[profiles.<name>]`) and scheduler profiles (`[batches.<name>]`):
+Displays all defined `[profiles.<name>]` entries:
 
 ```text
-================================================================================
-calibpipe Profiles
-================================================================================
-
-Execution Profiles ([profiles.<name>]):
-  regression/pipeline_fast       [vis(1 MS)]     (cores=8)
-  unit_tests                     [cmd]           (cores=1)
-  interactive_dev                [interactive]   (cores=4)
-
-Batch Profiles ([batches.<name>]):
-  debug                          [slurm]         (partition=debug, cores=4, mem=32 GB, scheduler=slurm)
-  heavy                          [slurm]         (partition=batch2, cores=16, mem=500 GB, scheduler=slurm)
-================================================================================
+Available profiles:
+  debug
+  heavy
+  interactive_dev
+  regression/pipeline_fast
+  unit_tests
 ```
 
 #### B. Show Profile Details (`calibpipe profile show <name>`)
@@ -1275,21 +1271,17 @@ Batch Profiles ([batches.<name>]):
 calibpipe profile show regression/pipeline_fast
 ```
 
-Displays full profile configuration, targets, and parameters:
+Displays configured fields for the selected profile:
 
 ```text
-================================================================================
 Profile: regression/pipeline_fast
-================================================================================
-Type: Execution Profile ([profiles])
-Description: Fast interferometry calibration regression test
-  env                   : dev
-  nprocs                : 8
-  vis                   : ['regression/fast_vis.ms']
-  procedure             : procedure_hifa_calimage.xml
-  workdir               : runs/regression_fast
-  dry_run               : False
-================================================================================
+  desc: Fast interferometry calibration regression test
+  env: dev
+  vis: ['regression/fast_vis.ms']
+  recipe: procedure_hifa_calimage.xml
+  nprocs: 8
+  workdir: runs/regression_fast
+  dry_run: False
 ```
 
 ### 6. Pipeline Request Generation & Archive Fetching (`calibpipe pmr`)
@@ -1412,11 +1404,11 @@ calibpipe report /path/to/workdir --no-xml
 
 #### Automated Finalize Workflow with Slurm
 
-Rather than polling running batch jobs manually or running report commands by hand, `calibpipe submit` can automate this reporting step:
+Rather than polling running batch jobs manually or running report commands by hand, `calibpipe submit` can automate this reporting step when `collect = true` and `with_report = true` are set in the profile:
 
 ```bash
-# Automatically submit a dependent wrap-up job:
-calibpipe submit -p regression/casa674_array_fast --collect --with-report
+# Automatically submit test jobs and a dependent wrap-up job:
+calibpipe submit -p regression/casa674_array_fast
 ```
 
 When all test jobs finish, Slurm launches the finalize job (`#SBATCH --dependency=afterany:<ids>`), executing `calibpipe report <workdir>` automatically.
@@ -1507,17 +1499,16 @@ calibpipe update-ref --apply ./
 
 `calibpipe` preserves runner shims in `scripts/` so existing scripts and scheduled jobs continue to work:
 
-- `scripts/calibPipeIF.py` $\to$ `calibpipe run` / `calibpipe.runner`
-- `scripts/runbatch.py` $\to$ `calibpipe submit` / `calibpipe.batch`
-- `scripts/calibpipe_env.sh` $\to$ `calibpipe env`
-- `scripts/update_regression_reference.py` $\to$ `calibpipe update-ref`
-- `scripts/pipelineMakeRequest.py` $\to$ `calibpipe pmr`
+- `scripts/calibPipeIF.py` → `calibpipe run` / `calibpipe.runner`
+- `scripts/runbatch.py` → `calibpipe submit` / `calibpipe.batch`
+- `scripts/calibpipe_env.sh` → `calibpipe env`
+- `scripts/update_regression_reference.py` → `calibpipe update-ref`
 
 This allows gradual migration to the unified `calibpipe` CLI without breaking older job wrappers or polluting the global `$PATH`.
 
 ### Specifying a Python Interpreter for Legacy Shims
 
-`calibpipe` requires Python $\ge 3.10$. On clusters where the system `python3` is older, the Python shims in `scripts/` use `#!/usr/bin/env python3` and add `src/` automatically, so you can select your own interpreter (such as conda, miniforge, `uv`, or the repository `.venv`):
+`calibpipe` requires Python ≥ 3.10. On clusters where the system `python3` is older, the Python shims in `scripts/` use `#!/usr/bin/env python3` and add `src/` automatically, so you can select your own interpreter (such as conda, miniforge, `uv`, or the repository `.venv`):
 
 ```bash
 # 1. Invoke your interpreter explicitly (works in any shell or batch script):
@@ -1537,7 +1528,7 @@ CALIBPIPE_PYTHON=/path/to/conda/envs/py312/bin/python source /path/to/calibpipe/
 ```
 
 > [!TIP] Running directly from a checkout without installing dependencies
-> Python $\ge 3.11$ includes `tomllib` in the standard library, so a bare conda/miniforge Python $\ge 3.11$ can run the `scripts/` shims directly from a repository checkout (`psrecord-io` is only required when `--psrecord` profiling is enabled). Python 3.10 requires `tomli`.
+> Python ≥ 3.11 includes `tomllib` in the standard library, so a bare conda/miniforge Python ≥ 3.11 can run the `scripts/` shims directly from a repository checkout (`psrecord-io` is only required when `psrecord = true` profiling is enabled). Python 3.10 requires `tomli`.
 
 ---
 
@@ -1553,7 +1544,7 @@ pytest tests/
 uv run --extra dev pytest tests/
 ```
 
-The test suite runs 100% offline without requiring local CASA installations, Slurm daemons, or cluster filesystems. Subprocess invocations (`sbatch`, `casa`, `pipelineMakeRequest`) are mocked, and generated execution steps and Slurm batch scripts are validated against golden reference specifications under `tests/reference/`.
+The test suite runs 100% offline without requiring local CASA installations, Slurm daemons, or cluster filesystems. Subprocess invocations (`sbatch`, `casa`, `pipelineMakeRequest`) are mocked, and driver execution steps and scheduler scripts are validated against golden reference calls (`tests/reference/calibpipeif_calls.txt`) and unit test assertions.
 
 ### Cluster Pre-Flight Verification
 
@@ -1572,7 +1563,7 @@ When developing locally while targeting a remote cluster (or before submitting l
    You can verify driver environment initialization for a specific MOUS without triggering pipeline staging or launching CASA:
 
    ```bash
-   calibpipe run --mous=uid://A001/X1/X1 --env=main --print-env
+   calibpipe run --mous=uid://A001/X1/X1 --env=main --dry-run
    ```
 
 3. **Site & User Configuration Separation:**
@@ -1602,5 +1593,5 @@ The Zensical configuration lives in `zensical.toml`. API pages are generated thr
 - [Execution Internals](internals.md): deep dive on project ID resolution, PMR staging, and OUS structure
 - [Changelog & History](changelog.md): evolution from prototype, version-by-version release history, and pending features
 - `config.example.toml`: unified configuration template (for site admins and individual users)
-- `quick.run`: sample batch input format
+- [Migrating to 0.2](migration-0.2.md): breaking 0.2 interface changes and canonical TOML/CLI replacements
 - [API Reference](api/index.md): generated API reference

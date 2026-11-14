@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0
+
+- Native run/submit now select targets and immediate controls; tuning and resources live in TOML.
+- Canonical typed configuration, strict key validation, flat profiles, and effective-setting sources.
+- Shared resolution/execution and per-invocation frozen TOML snapshots (`batch.<timestamp>.toml`) for native batch submission.
+- Thin entrypoint shims in `scripts/` (`calibPipeIF.py`, `runbatch.py`, `calibpipe_env.sh`) forward directly to the native `calibpipe` CLI.
+- Breaking native changes and replacements are documented in [Migrating to 0.2](migration-0.2.md).
+
+The entries below describe earlier interfaces; consult the [User Guide](guide.md) and [Migrating to 0.2](migration-0.2.md) for current 0.2 usage.
+
 All notable changes to `calibpipe` are documented in this file, following [Keep a Changelog](https://keepachangelog.com/).
 
 ---
@@ -8,7 +18,7 @@ All notable changes to `calibpipe` are documented in this file, following [Keep 
 
 `calibpipe` evolved from loose operational scripts in `scripts/` into a standalone, typed Python package:
 
-- **Packaging:** Converted from unversioned scripts into a standard Python package (`pyproject.toml`, Python $\ge 3.10$, `uv`).
+- **Packaging:** Converted from unversioned scripts into a standard Python package (`pyproject.toml`, Python ≥ 3.10, `uv`).
 - **Unified CLI:** Replaced scattered scripts with the single `calibpipe` CLI (`run`, `batch`, `env`) while maintaining backward-compatible shims.
 - **Typed Configuration:** Migrated from untyped dictionary parsing to typed dataclasses with cascading multi-layer merging.
 - **Modern Runtimes:** Added first-class support for modular CASA 6 environments via Pixi alongside traditional tarballs.
@@ -18,15 +28,13 @@ All notable changes to `calibpipe` are documented in this file, following [Keep 
 
 ---
 
-## [Unreleased]
-
-Pending changes on `feat/direct-execution-modes` and `feat/cascading-config`:
+### Earlier 0.2 development
 
 - **Regression Reporting, Coverage Synthesis & Automated Slurm Finalization:**
   - `calibpipe update-ref`: Subcommand (and `scripts/update_regression_reference.py` shim) to recursively discover `*.NEW.results.txt` outputs, merge them into `pipeline-testdata` reference files while preserving custom `:::<tol>` tolerances, auto-detect live CASA/Pipeline versions, and stage `.candidate` files for review before `--apply`.
   - `calibpipe report`: Subcommand to consolidate distributed test run results. Recursively discovers `.coverage.*` files from individual test directories and merges them via Python `coverage` into `<workdir>/.coverage`, generating both a terminal report and an interactive HTML report at `<workdir>/htmlcov/index.html`. Parses all JUnit XML files (`regression-results-*.xml`) into structured pass/fail summaries and exports `<workdir>/test-summary.txt` and `<workdir>/test-summary.md`. Automatically falls back to CASA Python's `coverage` when running in environments without the library installed.
   - `calibpipe coverage`: Dedicated standalone subcommand to discover, combine, and report on distributed `.coverage.*` files. Includes cross-environment source path remapping (`--remap-source`) to map remote cluster execution checkouts back to local git workspaces, and native fallback to `<casa_root>/bin/python3 -m coverage`.
-  - Batch Concurrency Throttling (`--max-concurrent` / `--throttle`): Native Slurm job slot throttling for batch test arrays. When submitting large test sets, injects `#SBATCH --dependency=afterany:<Job_{i-K}>` into Job $i$, guaranteeing at most $K$ concurrent jobs without requiring standing daemon processes on login nodes. Configurable via CLI flag `--max-concurrent` / `--throttle` or profile option `max_concurrent` / `throttle`.
+  - Batch Concurrency Throttling (`--max-concurrent` / `--throttle`): Native Slurm job slot throttling for batch test arrays. When submitting large test sets, injects `#SBATCH --dependency=afterany:<Job_{i-K}>` into Job `i`, guaranteeing at most `K` concurrent jobs without requiring standing daemon processes on login nodes. Configurable via CLI flag `--max-concurrent` / `--throttle` or profile option `max_concurrent` / `throttle`.
   - Automated Slurm Wrap-up (`--with-report`): Added `--with-report` / `--report` CLI flag and `with_report` profile configuration field. When submitting test arrays via `calibpipe submit` (from runfiles or `--collect`), `calibpipe` captures dispatched job IDs and submits a dependent finalize wrap-up job with `#SBATCH --dependency=afterany:<job1>:<job2>:...`, automatically running `calibpipe report` once all test jobs finish.
 - **Regression Test Discovery & Batch Array Execution:** Added first-class support for discovering pipeline regression tests and dispatching them as parallel batch arrays:
   - `calibpipe collect`: Subcommand to query and inspect pytest test nodes in pipeline source checkouts using CASA Python, with marker (`-m`) and keyword (`-k`) filtering and optional runfile export (`-o <file>`).
@@ -51,13 +59,13 @@ Pending changes on `feat/direct-execution-modes` and `feat/cascading-config`:
   - Single-job profile submission: submit self-contained execution profiles or ad-hoc targets directly to Slurm/HTCondor without requiring a temporary pipefile (`calibpipe submit -p <profile>`).
   - Multi-job pipefile queues: process batches containing both MOUS UIDs and direct dataset paths (`calibpipe submit pipefile.txt -p <profile>`).
 - **Named Execution & Batch Profiles:** Configurable `[profiles.<name>]` supporting modular subtables (`.env`, `.run`, `.batch`) as well as flat keys, target overrides, and workspace search path integration.
-- **Path Candidate Lists & 3-Pass Resolution:** Configurable candidate lists for `scipipe_rootdir`, `scipipe_logdir`, and `casarundata`. Evaluates candidates via 3-pass resolution (direct path $\to$ parent directory $\to$ index 0 fallback) with `{user}` and `~` expansion.
+- **Path Candidate Lists & 3-Pass Resolution:** Configurable candidate lists for `scipipe_rootdir`, `scipipe_logdir`, and `casarundata`. Evaluates candidates via 3-pass resolution (direct path → parent directory → index 0 fallback) with `{user}` and `~` expansion.
 - **CASA Measures Path Consolidation:** Unified measures path settings under `casarundata` (with backward-compatible aliases `casadata` and `rundata`), populating `.casa/config.py` and exporting both `CASADATA` and `CASARUNDATA`.
 - **Pipeline Heuristics Aliases:** Added `pipe_ver` alias for heuristics directory configuration alongside `pl_ver`, `pipe_dir`, and `heuristics_dir`.
 - **MPI SQLite History Locking Prevention:** Automatically generates `.casa/ipython/profile_default/ipython_config.py` with `c.HistoryManager.enabled = False` for batch runs, eliminating 32-second Lustre lock contention and SQLite locking errors across multi-rank MPI runs while preserving command history for interactive sessions (`-i`).
 - **HPC Hardware Tuning & Diagnostics:** Automatically injects OpenMPI diagnostic flags (`--display-allocation`, `--display-map`) for multi-process runs, unified process counts under `nprocs` (aliasing `ncores`), and added subprocess thread controls (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`).
 - **Ancillary Staging & Backup Rotation:** Extended input staging (`--cont-dat`, `--jyperk-csv`, `--parameter-list`, `--ancillary`) and safe non-destructive backup directory rotation (`--backup`).
-- **Cascading Configuration:** Multi-layer deep config merging (Site `/etc/calibpipe` $\to$ User `~/.config/calibpipe` $\to$ Workspace `./config.toml` $\to$ CLI), additive `[envs]` tables, and `--no-site-config` isolation flag.
+- **Cascading Configuration:** Multi-layer deep config merging (Site `/etc/calibpipe` → User `~/.config/calibpipe` → Workspace `./config.toml` → CLI), additive `[envs]` tables, and `--no-site-config` isolation flag.
 - **Convenience Symlink Shortcuts:** Automatic relative symlinks in project root (`working`, `products`, `rawdata`, `weblog`) to bypass nested OUS structures (`[run].symlink_shortcuts = true`).
 - **Dynamic Weblog Linking:** Automatically locates and symlinks the latest generated pipeline HTML report post-run.
 - **Execution Internals Documentation:** Added `docs/internals.md` covering PMR metadata resolution, project naming, and OUS directory layouts.

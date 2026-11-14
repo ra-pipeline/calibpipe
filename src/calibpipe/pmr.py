@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # ALMA - Atacama Large Millimeter/submillimeter Array
 # (c) Associated Universities Inc., 2024
@@ -48,16 +47,16 @@ JVM flags configured when launching the process:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
-from datetime import datetime
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 
 from calibpipe import config as envconfig
 from calibpipe.workspace import create_project_symlinks
@@ -88,7 +87,7 @@ class PMRRuntime:
 
         Args:
             env: Optional environment dictionary. Defaults to `os.environ`.
-            cfg: Optional CalibpipeConfig instance to read site defaults.
+            cfg: Optional CalibpipeConfig instance to read tool installation paths.
             java_home: Optional path to override JAVA_HOME.
             max_heap: Maximum Java heap size (e.g. '4G', '8G').
 
@@ -115,7 +114,7 @@ class PMRRuntime:
         }
         missing = [f"{k} ({desc})" for k, desc in required.items() if not source.get(k)]
         if missing:
-            raise EnvironmentError(
+            raise OSError(
                 "Required PMR environment variables are not set:\n  - " + "\n  - ".join(missing)
             )
 
@@ -697,12 +696,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     cfg = None
     env = None
+    explicit_cfg = bool(args.config or args.env or os.environ.get("CALIBPIPE_CONFIG"))
     try:
         cfg = envconfig.load_merged_config(cli_arg=args.config)
-        spec = envconfig.resolve_env(cfg, args.env)
-        env = envconfig.build_environment(cfg, spec)
-    except Exception:
-        pass
+    except (envconfig.ConfigError, FileNotFoundError, ValueError) as exc:
+        if explicit_cfg or not str(exc).startswith("No config file found"):
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+
+    if cfg is not None and (args.env or cfg.envs):
+        try:
+            spec = envconfig.resolve_env(cfg, args.env)
+            env = envconfig.build_environment(cfg, spec)
+        except (envconfig.ConfigError, FileNotFoundError, ValueError) as exc:
+            if explicit_cfg:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 1
 
     req = PMRRequest(
         mous=args.mous,
@@ -719,7 +728,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         runtime = PMRRuntime.from_env(env=env, cfg=cfg)
-    except EnvironmentError as err:
+    except OSError as err:
         print(f"ERROR: {err}", file=sys.stderr)
         return 1
 

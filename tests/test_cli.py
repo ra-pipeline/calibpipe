@@ -11,20 +11,30 @@ from calibpipe import cli
 class TestCliRouting(unittest.TestCase):
     """Test top-level CLI argument parsing and subcommand routing."""
 
-    def test_submit_routes_to_batch_main(self) -> None:
-        with patch("calibpipe.batch.main") as mock_batch_main:
+    def test_submit_routes_to_typed_handler(self) -> None:
+        from calibpipe.config import SubmitRequest
+        with patch("calibpipe.batch.submit_request", return_value=0) as handler:
             cli.main(["submit", "pipefile.txt", "--env=main"])
-            mock_batch_main.assert_called_once_with(["pipefile.txt", "--env=main"])
+            handler.assert_called_once_with(SubmitRequest(pipefile="pipefile.txt", env="main"))
 
-    def test_batch_alias_routes_to_batch_main(self) -> None:
-        with patch("calibpipe.batch.main") as mock_batch_main:
-            cli.main(["batch", "pipefile.txt", "--env=main"])
-            mock_batch_main.assert_called_once_with(["pipefile.txt", "--env=main"])
+    def test_batch_alias_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit) as cm:
+            cli.main(["batch", "pipefile.txt"])
+        self.assertEqual(cm.exception.code, 2)
 
-    def test_run_subcommand_routes_to_runner_main(self) -> None:
-        with patch("calibpipe.runner.main") as mock_runner_main:
+    def test_run_routes_to_typed_handler(self) -> None:
+        from calibpipe.config import RunRequest
+        with patch("calibpipe.runner.run_request", return_value=0) as handler:
             cli.main(["run", "--mous=uid://A001/X1/X1", "--env=main"])
-            mock_runner_main.assert_called_once_with(["--mous=uid://A001/X1/X1", "--env=main"])
+            handler.assert_called_once_with(RunRequest(mous="uid://A001/X1/X1", env="main"))
+
+    def test_run_config_only_routes_to_typed_handler(self) -> None:
+        from calibpipe.config import RunRequest
+        with patch("calibpipe.runner.run_request", return_value=0) as handler:
+            cli.main(["run", "--config=snap.toml", "--config-only", "--cmd=print(1)"])
+            handler.assert_called_once_with(
+                RunRequest(config="snap.toml", config_only=True, cmd="print(1)")
+            )
 
     def test_pmr_subcommand_routes_to_pmr_main(self) -> None:
         with patch("calibpipe.pmr.main", return_value=0) as mock_pmr_main:
@@ -33,10 +43,10 @@ class TestCliRouting(unittest.TestCase):
             self.assertEqual(cm.exception.code, 0)
             mock_pmr_main.assert_called_once_with(["uid://A001/X1/X1", "--download"])
 
-    def test_implicit_run_routing(self) -> None:
-        with patch("calibpipe.runner.main") as mock_runner_main:
-            cli.main(["--mous=uid://A001/X1/X1", "--env=main"])
-            mock_runner_main.assert_called_once_with(["--mous=uid://A001/X1/X1", "--env=main"])
+    def test_implicit_run_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit) as cm:
+            cli.main(["--mous=uid://A001/X1/X1"])
+        self.assertEqual(cm.exception.code, 2)
 
     def test_empty_arguments_exits_0(self) -> None:
         with self.assertRaises(SystemExit) as cm:
@@ -62,8 +72,8 @@ casa_root = "/fake/casa"
 
 [profiles.fast_test]
 desc = "Fast test profile"
-vis = "test.ms"
-ncores = 4
+vis = ["test.ms"]
+nprocs = 4
 """)
             buf = io.StringIO()
             with redirect_stdout(buf):
@@ -91,14 +101,14 @@ casa_root = "/fake/casa"
 
 [profiles.fast_test]
 desc = "Fast test profile"
-vis = "test.ms"
-ncores = 4
+vis = ["test.ms"]
+nprocs = 4
 """)
             buf = io.StringIO()
             with redirect_stdout(buf):
                 cli.main(["profile", "show", "fast_test", f"--config={cfg_path}"])
             self.assertIn("Profile: fast_test", buf.getvalue())
-            self.assertIn("nprocs                : 4", buf.getvalue())
+            self.assertIn("nprocs: 4", buf.getvalue())
 
             # Missing profile exits with 1
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
@@ -125,7 +135,6 @@ workspaces = ["/fake/ws"]
 casa_root = "/fake/casa"
 
 [profiles.interactive]
-target = "interactive"
 interactive = true
 env = "main"
 dry_run = true
@@ -135,7 +144,7 @@ dry_run = true
                 cli.main(["run", "-p=interactive", f"--config={cfg_path}", "--no-site-config"])
             self.assertIn("Execution mode: interactive", buf.getvalue())
 
-    def test_run_subcommand_empty_args_shows_help(self) -> None:
+    def test_run_subcommand_without_target_reports_error(self) -> None:
         import io
         import os
         import tempfile
@@ -159,16 +168,14 @@ casa_root = "/fake/casa"
             with redirect_stdout(buf), patch.dict(
                 os.environ, {"CALIBPIPE_CONFIG": str(cfg_path), "CALIBPIPE_NO_SITE_CONFIG": "1"}
             ):
-                # When run without arguments, prints driver help and exits 0
+                # An explicit run without a target or default profile is an error.
                 with self.assertRaises(SystemExit) as cm:
                     cli.main(["run"])
-                self.assertEqual(cm.exception.code, 0)
-            self.assertIn("Assists in the execution of the interferometric pipeline", buf.getvalue())
+                self.assertEqual(cm.exception.code, 1)
 
     def test_submit_subcommand_rejects_interactive_profile(self) -> None:
         import tempfile
         from pathlib import Path
-        from calibpipe import batch
 
         with tempfile.TemporaryDirectory() as td:
             cfg_path = Path(td) / "config.toml"
@@ -179,12 +186,11 @@ default_env = "main"
 casa_root = "/fake/casa"
 
 [profiles.interactive]
-target = "interactive"
 interactive = true
 env = "main"
 """)
             with self.assertRaises(SystemExit) as cm:
-                batch.main(["-p", "interactive", f"--config={cfg_path}", "--no-site-config"])
+                cli.main(["submit", "-p", "interactive", f"--config={cfg_path}", "--no-site-config"])
             self.assertEqual(cm.exception.code, 1)
 
     def test_report_subcommand_dispatch(self) -> None:

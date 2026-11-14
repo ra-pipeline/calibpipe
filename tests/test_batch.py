@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import os
-import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -15,47 +15,83 @@ from pathlib import Path
 from unittest.mock import patch
 
 from calibpipe import batch as runbatch
+from calibpipe import cli
+from calibpipe.config import ProfileConfig, RunRequest, load_config, resolve_run_options
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-REFERENCE_FILE = Path(__file__).resolve().parent / "reference" / "sbatch_commands.txt"
 
 CONFIG = FIXTURES / "config.toml"
 CONFIG_SUBMIT_HOST = FIXTURES / "config_submit_host.toml"
 PIPEFILE = FIXTURES / "pipefile.txt"
 PIPEFILE_ONE_LINE = FIXTURES / "pipefile_one_line.txt"
 
-FAKE_CALIBPIPEIF = Path("/fake/checkout/scripts/calibPipeIF.py")
 FAKE_USER = "testuser"
 FAKE_DATE = "20260101-000000"
 
 
-def _load_reference():
-    """Parse reference/sbatch_commands.txt into {name: {"command": ..., "script": ...}}."""
-    text = REFERENCE_FILE.read_text()
-    pattern = re.compile(
-        r"=====BEGIN (?P<name>\S+)=====\n"
-        r"-----COMMAND-----\n(?P<command>.*?)\n"
-        r"-----SCRIPT-----\n(?P<script>.*?)"
-        r"=====END (?P=name)=====\n?",
-        re.DOTALL,
-    )
-    blocks = {}
-    for m in pattern.finditer(text):
-        blocks[m.group("name")] = {
-            "command": m.group("command"),
-            "script": m.group("script"),
-        }
-    return blocks
-
-
 def _normalize(text, sbatch_script_path):
     text = text.replace(sbatch_script_path, "<SBATCH_SCRIPT>")
-    text = text.replace(str(FAKE_CALIBPIPEIF), "<CALIBPIPEIF>")
     text = text.replace(str(CONFIG), "<CONFIG>")
     return text
 
 
+def _extract_calibpipe_tokens(script: str) -> list[str]:
+    """Extract argv tokens starting at `run` from a generated batch script."""
+    lines = script.splitlines()
+    for idx, line in enumerate(lines):
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "calibpipe" in stripped and (
+            " run " in stripped or stripped.endswith((" run \\", " run"))
+        ):
+            tokens = [tok for tok in shlex.split("\n".join(lines[idx:])) if tok != "\n"]
+            run_idx = tokens.index("run")
+            return tokens[run_idx:]
+    raise AssertionError("calibpipe run command not found in batch script")
+
+
+def _extract_run_state(
+    script: str, snapshots: dict[str, str] | None = None
+) -> dict:
+    """Parse `calibpipe run` flags and its frozen `batch.<ts>.toml` snapshot."""
+    tokens = _extract_calibpipe_tokens(script)
+    args = cli.build_parser().parse_args(tokens)
+    req = cli.request(args, RunRequest)
+    assert req.config_only, f"Expected --config-only in batch script:\n{script}"
+    assert req.config, f"Expected --config in batch script:\n{script}"
+
+    cfg_path = Path(req.config)
+    if cfg_path.is_file():
+        cfg = load_config(cfg_path)
+    elif snapshots and req.config in snapshots:
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as tf:
+            tf.write(snapshots[req.config])
+            tmp_cfg = Path(tf.name)
+        try:
+            cfg = load_config(tmp_cfg)
+        finally:
+            tmp_cfg.unlink(missing_ok=True)
+    else:
+        raise AssertionError(f"Snapshot config missing: {req.config}")
+
+    resolved_run = resolve_run_options(cfg, req)
+    return {
+        "tokens": tokens,
+        "request": req,
+        "config": cfg,
+        "run": resolved_run,
+    }
+
+
 class RunbatchCaptureCase(unittest.TestCase):
+    def _write_temp_config(self, toml_content: str) -> str:
+        """Write a temporary TOML config file and schedule its removal."""
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as tf:
+            tf.write(toml_content)
+        self.addCleanup(lambda p=tf.name: Path(p).unlink(missing_ok=True))
+        return tf.name
+
     def _run_in_tmpdir(self, argv):
         """Run batch.main() from a fresh tmpdir; return (calls, tmpdir_path).
 
@@ -64,6 +100,7 @@ class RunbatchCaptureCase(unittest.TestCase):
         cleans it up.
         """
         calls = []
+        self._captured_snapshots = {}
 
         def fake_run(cmd, check=True, **kwargs):
             if cmd[0] not in ("sbatch", "condor_submit"):
@@ -72,6 +109,11 @@ class RunbatchCaptureCase(unittest.TestCase):
                 )
             sub_path = cmd[-1]
             script_content = Path(sub_path).read_text()
+            for tok in shlex.split(script_content):
+                if tok.startswith("--config="):
+                    snap = Path(tok.split("=", 1)[1])
+                    if snap.is_file():
+                        self._captured_snapshots[str(snap)] = snap.read_text()
             normalized_cmd = " ".join(_normalize(part, sub_path) for part in cmd)
             calls.append((normalized_cmd, _normalize(script_content, sub_path)))
             return subprocess.CompletedProcess(args=cmd, returncode=0)
@@ -81,19 +123,26 @@ class RunbatchCaptureCase(unittest.TestCase):
         try:
             os.chdir(tmpdir)
             with (
-                patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF),
-                patch.object(runbatch.subprocess, "run", side_effect=fake_run),
+                patch.object(subprocess, "run", side_effect=fake_run),
                 patch.object(runbatch.time, "strftime", return_value=FAKE_DATE),
                 patch.object(runbatch.time, "sleep", return_value=None),
-                patch.dict(runbatch.os.environ, {"USER": FAKE_USER}),
+                patch.dict(
+                    runbatch.os.environ,
+                    {"USER": FAKE_USER, "CALIBPIPE_NO_SITE_CONFIG": "1"},
+                ),
                 patch.object(sys, "argv", ["runbatch.py"] + argv),
                 redirect_stdout(io.StringIO()),
             ):
                 runbatch.main()
+            for snap in Path(tmpdir).rglob("batch.*.toml"):
+                self._captured_snapshots.setdefault(str(snap), snap.read_text())
         finally:
             os.chdir(orig_cwd)
 
         return calls, tmpdir
+
+    def _extract_run_state(self, script: str) -> dict:
+        return _extract_run_state(script, getattr(self, "_captured_snapshots", None))
 
     def run_and_capture(self, argv):
         """Convenience wrapper that discards the tmpdir after capture."""
@@ -101,21 +150,10 @@ class RunbatchCaptureCase(unittest.TestCase):
         shutil.rmtree(tmpdir, ignore_errors=True)
         return calls
 
-    def assert_matches_reference(self, name, command, script):
-        reference = _load_reference()
-        self.assertIn(
-            name, reference, f"no reference block named {name!r} in {REFERENCE_FILE}"
-        )
-        self.assertEqual(
-            command, reference[name]["command"], f"sbatch command mismatch for {name}"
-        )
-        self.assertEqual(
-            script, reference[name]["script"], f"sbatch script mismatch for {name}"
-        )
-
 
 class TestBasicPipefile(RunbatchCaptureCase):
     def test_two_real_lines_produce_two_matching_submissions(self):
+        cfg = runbatch.envconfig.load_merged_config(str(CONFIG), include_site=False)
         calls = self.run_and_capture(
             [
                 str(PIPEFILE),
@@ -126,82 +164,111 @@ class TestBasicPipefile(RunbatchCaptureCase):
         self.assertEqual(len(calls), 2, "comment/blank lines should be skipped")
 
         command0, script0 = calls[0]
-        self.assert_matches_reference("basic_line1_explicit_recipe", command0, script0)
+        self.assertEqual(command0, "sbatch <SBATCH_SCRIPT>")
+        self.assertIn("#SBATCH --partition=plwg", script0)
+        self.assertIn("#SBATCH --nodes=1", script0)
+        self.assertIn("#SBATCH --ntasks=8", script0)
+        self.assertIn("#SBATCH --mem=248G", script0)
+        self.assertIn(f"#SBATCH --job-name=X1_X1_{FAKE_DATE}", script0)
+        self.assertIn("#SBATCH --mail-user=testuser", script0)
+        self.assertIn("#SBATCH --mail-type=ALL", script0)
+        self.assertIn("#SBATCH --no-requeue", script0)
+        self.assertIn("calibpipe", script0)
+        self.assertIn("--config-only", script0)
+        state0 = self._extract_run_state(script0)
+        self.assertEqual(state0["run"].mous, "uid___A001_X1_X1")
+        self.assertEqual(state0["run"].recipe, "calimage")
+        self.assertEqual(state0["run"].env_name, "main")
+        self.assertEqual(state0["config"].envs["main"].casa_root, "/fake/casa/main")
 
         command1, script1 = calls[1]
-        self.assert_matches_reference("basic_line2_default_recipe", command1, script1)
+        self.assertEqual(command1, "sbatch <SBATCH_SCRIPT>")
+        self.assertIn(f"#SBATCH --job-name=X2_X2_{FAKE_DATE}", script1)
+        state1 = self._extract_run_state(script1)
+        self.assertEqual(state1["run"].mous, "uid___A001_X2_X2")
+        self.assertEqual(state1["run"].recipe, cfg.run.recipe)
+        self.assertEqual(state1["run"].env_name, "main")
+        self.assertEqual(state0["request"].config, state1["request"].config)
 
 
 class TestCliFlags(RunbatchCaptureCase):
-    def test_custom_cores_mem_and_batch2_queue(self):
+    def test_custom_cores_mem_and_partition_from_config(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+partition = "plwg2"
+cores = 4
+mem = 32
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "-c",
-                "4",
-                "-m",
-                "32",
-                "-b",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
         command, script = calls[0]
-        self.assert_matches_reference("custom_cores_mem_batch2", command, script)
+        self.assertEqual(command, "sbatch <SBATCH_SCRIPT>")
+        self.assertIn("#SBATCH --partition=plwg2", script)
+        self.assertIn("#SBATCH --ntasks=4", script)
+        self.assertIn("#SBATCH --mem=32G", script)
 
-    def test_extra_args_and_different_env_are_forwarded(self):
+    def test_run_options_and_different_env_are_forwarded(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[envs.pl2025]
+casa_root = "/fake/casa/pl2025"
+[run]
+backup = false
+nprocs = 2
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=pl2025",
-                f"--config={CONFIG}",
-                "--extra-arg=--legacy",
-                "--extra-arg=--noupdate",
-            ]
-        )
-        self.assertEqual(len(calls), 1)
-        command, script = calls[0]
-        self.assert_matches_reference("extra_args_and_pl2025_env", command, script)
-
-    def test_custom_outfile_errfile_and_mail_type(self):
-        calls = self.run_and_capture(
-            [
-                str(PIPEFILE_ONE_LINE),
-                "--env=main",
-                f"--config={CONFIG}",
-                "-o",
-                "my.out",
-                "-e",
-                "my.err",
-                "-M",
-                "FAIL",
-            ]
-        )
-        self.assertEqual(len(calls), 1)
-        command, script = calls[0]
-        self.assert_matches_reference(
-            "custom_outfile_errfile_mail_type", command, script
-        )
-
-    def test_custom_partition_flag(self):
-        calls = self.run_and_capture(
-            [
-                str(PIPEFILE_ONE_LINE),
-                "--env=main",
-                f"--config={CONFIG}",
-                "--partition=test_queue",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
         _, script = calls[0]
-        self.assertIn("#SBATCH --partition=test_queue", script)
+        state = self._extract_run_state(script)
+        self.assertEqual(state["run"].env_name, "pl2025")
+        self.assertFalse(state["run"].backup)
+        self.assertEqual(state["run"].nprocs, 2)
+        self.assertEqual(state["config"].envs["pl2025"].casa_root, "/fake/casa/pl2025")
+
+    def test_custom_outfile_errfile_and_mail_type(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+outfile = "my.out"
+errfile = "my.err"
+mail_type = "FAIL"
+""")
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={cfg_path}",
+            ]
+        )
+        self.assertEqual(len(calls), 1)
+        _, script = calls[0]
+        self.assertIn("#SBATCH --output=my.out", script)
+        self.assertIn("#SBATCH --error=my.err", script)
+        self.assertIn("#SBATCH --mail-type=FAIL", script)
+        self.assertIn("export CALIBPIPE_BATCH_OUTFILE=my.out", script)
+        self.assertIn("export CALIBPIPE_BATCH_ERRFILE=my.err", script)
 
     def test_batch_profile_flag(self):
-        import tempfile
-
-        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as tf:
-            tf.write("""
+        tf_path = self._write_temp_config("""
 default_env = "main"
 [paths]
 scipipe_rootdir = "/fake/root/{user}"
@@ -210,36 +277,33 @@ scipipe_logdir = "/fake/logs/{user}"
 casa_root = "/fake/casa/main"
 
 [batch]
-queue = "plwg"
+partition = "plwg"
 cores = 8
 mem = 248
 
-[batches.debug]
-queue = "debug"
+[profiles.debug]
+partition = "debug"
 cores = 4
 mem = 32
 walltime = "01:00:00"
 """)
-            tf_path = tf.name
-
-        try:
-            calls = self.run_and_capture(
-                [
-                    str(PIPEFILE_ONE_LINE),
-                    "--env=main",
-                    f"--config={tf_path}",
-                    "--profile=debug",
-                ]
-            )
-            self.assertEqual(len(calls), 1)
-            _, script = calls[0]
-            self.assertIn("#SBATCH --partition=debug", script)
-            self.assertIn("#SBATCH --ntasks=4", script)
-            self.assertIn("#SBATCH --mem=32G", script)
-            self.assertIn("#SBATCH --time=01:00:00", script)
-            self.assertNotIn("--profile=debug", script)
-        finally:
-            Path(tf_path).unlink(missing_ok=True)
+        calls = self.run_and_capture(
+            [
+                str(PIPEFILE_ONE_LINE),
+                "--env=main",
+                f"--config={tf_path}",
+                "--profile=debug",
+            ]
+        )
+        self.assertEqual(len(calls), 1)
+        _, script = calls[0]
+        self.assertIn("#SBATCH --partition=debug", script)
+        self.assertIn("#SBATCH --ntasks=4", script)
+        self.assertIn("#SBATCH --mem=32G", script)
+        self.assertIn("#SBATCH --time=01:00:00", script)
+        self.assertIn("-p debug", script)
+        state = self._extract_run_state(script)
+        self.assertEqual(state["run"].profile, "debug")
 
 
 class TestErrorPaths(RunbatchCaptureCase):
@@ -267,7 +331,7 @@ class TestErrorPaths(RunbatchCaptureCase):
 
     def test_submit_host_mismatch_aborts_before_any_submission(self):
         with patch.object(
-            runbatch.subprocess, "getoutput", return_value="some-other-host"
+            subprocess, "getoutput", return_value="some-other-host"
         ):
             with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
                 self.run_and_capture([str(PIPEFILE), f"--config={CONFIG_SUBMIT_HOST}"])
@@ -315,15 +379,19 @@ class TestScriptRecord(RunbatchCaptureCase):
 
     def test_record_write_failure_does_not_abort_submission(self):
         """If the record file can't be written, the job is still submitted."""
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+outfile = "/nonexistent/dir/batch.out"
+errfile = "/nonexistent/dir/batch.err"
+""")
         calls, tmpdir = self._run_in_tmpdir(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "-o",
-                "/nonexistent/dir/batch.out",
-                "-e",
-                "/nonexistent/dir/batch.err",
+                f"--config={cfg_path}",
             ]
         )
         try:
@@ -337,19 +405,24 @@ class TestSlurmDirectives(RunbatchCaptureCase):
     """Verify that advanced Slurm directives render correctly in submitted scripts."""
 
     def test_advanced_directives_rendered_in_sbatch(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+walltime = "12:00:00"
+nodelist = "node01"
+chdir = "/scratch/work"
+cpus_per_task = 4
+ntasks_per_core = 1
+hint = "nomultithread"
+distribution = "cyclic:cyclic"
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "-t",
-                "12:00:00",
-                "--nodelist=node01",
-                "--chdir=/scratch/work",
-                "--cpus-per-task=4",
-                "--ntasks-per-core=1",
-                "--hint=nomultithread",
-                "--distribution=cyclic:cyclic",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -365,12 +438,18 @@ class TestSlurmDirectives(RunbatchCaptureCase):
         self.assertIn("#SBATCH --mem=248G", script)
 
     def test_mem_per_cpu_suppresses_mem(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+mem_per_cpu = "30G"
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--mem-per-cpu=30G",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -379,36 +458,28 @@ class TestSlurmDirectives(RunbatchCaptureCase):
         self.assertNotIn("#SBATCH --mem=", script)
 
     def test_requeue_flag_omits_no_requeue(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+no_requeue = false
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--requeue",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
         _, script = calls[0]
         self.assertNotIn("#SBATCH --no-requeue", script)
 
-    def test_mem_and_mem_per_cpu_cli_mutual_exclusion(self):
-        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
-            self.run_and_capture(
-                [
-                    str(PIPEFILE_ONE_LINE),
-                    "--env=main",
-                    f"--config={CONFIG}",
-                    "-m",
-                    "100",
-                    "--mem-per-cpu=30G",
-                ]
-            )
-        self.assertEqual(cm.exception.code, 2)
-
     def test_print_queue_executes_squeue_with_pcasa_format(self):
         with (
-            patch.object(runbatch.shutil, "which", return_value="/usr/bin/squeue"),
-            patch.object(runbatch.subprocess, "run") as mock_run,
+            patch.object(shutil, "which", return_value="/usr/bin/squeue"),
+            patch.object(subprocess, "run") as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="  12345 plwg testuser R ..."
@@ -431,17 +502,21 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
     """Test HTCondor batch submission and directive generation."""
 
     def test_htcondor_submit_generates_correct_directives(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+scheduler = "htcondor"
+cores = 4
+mem = 32
+partition = "plwg"
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--scheduler=htcondor",
-                "-c",
-                "4",
-                "-m",
-                "32",
-                "--partition=plwg",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -460,13 +535,19 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
         )
 
     def test_htcondor_nodelist_adds_target_machine(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+scheduler = "htcondor"
+nodelist = "node01"
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--scheduler=htcondor",
-                "--nodelist=node01",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -474,13 +555,19 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
         self.assertIn('( TARGET.Machine == "node01" )', htc_script)
 
     def test_htcondor_requirements_override_none(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+scheduler = "htcondor"
+requirements = "none"
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--scheduler=htcondor",
-                "--requirements=none",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -489,13 +576,19 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
         self.assertNotIn("HasLustre", htc_script)
 
     def test_htcondor_requirements_override_custom(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+scheduler = "htcondor"
+requirements = '( TARGET.Arch == "X86_64" )'
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--scheduler=htcondor",
-                '--requirements=( TARGET.Arch == "X86_64" )',
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -503,15 +596,20 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
         self.assertIn('requirements = ( ( TARGET.Arch == "X86_64" ) )', htc_script)
 
     def test_htcondor_mem_per_cpu_scales_by_cores(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+scheduler = "htcondor"
+cores = 4
+mem_per_cpu = "8G"
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--scheduler=htcondor",
-                "-c",
-                "4",
-                "--mem-per-cpu=8G",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -521,8 +619,8 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
 
     def test_print_queue_executes_condor_q(self):
         with (
-            patch.object(runbatch.shutil, "which", return_value="/usr/bin/condor_q"),
-            patch.object(runbatch.subprocess, "run") as mock_run,
+            patch.object(shutil, "which", return_value="/usr/bin/condor_q"),
+            patch.object(subprocess, "run") as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="  123.0  testuser  RUNNING ..."
@@ -536,8 +634,8 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
             self.assertIn("123.0  testuser  RUNNING", buf.getvalue())
 
         with (
-            patch.object(runbatch.shutil, "which", return_value="/usr/bin/condor_q"),
-            patch.object(runbatch.subprocess, "run") as mock_run,
+            patch.object(shutil, "which", return_value="/usr/bin/condor_q"),
+            patch.object(subprocess, "run") as mock_run,
         ):
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="  123.0  testuser  RUNNING ..."
@@ -565,17 +663,22 @@ class TestHTCondorDirectives(RunbatchCaptureCase):
             )
 
     def test_htcondor_remote_submission_flags(self):
+        cfg_path = self._write_temp_config("""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+scheduler = "htcondor"
+cores = 4
+pool = "cm.example.org"
+schedd = "schedd.example.org"
+spool = true
+""")
         calls = self.run_and_capture(
             [
                 str(PIPEFILE_ONE_LINE),
                 "--env=main",
-                f"--config={CONFIG}",
-                "--scheduler=htcondor",
-                "-c",
-                "4",
-                "--pool=cm.example.org",
-                "--schedd=schedd.example.org",
-                "--spool",
+                f"--config={cfg_path}",
             ]
         )
         self.assertEqual(len(calls), 1)
@@ -626,14 +729,12 @@ class TestBatchProfiles(RunbatchCaptureCase):
     """Test named profile resolution in batch submission."""
 
     def test_batch_profile_sets_scheduler_and_directives(self):
-        from calibpipe.config import ProfileConfig
-
-        cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+        cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
         cfg.profiles["htc_profile"] = ProfileConfig(
             scheduler="htcondor",
             cores=12,
             mem=64,
-            queue="batch",
+            partition="batch",
         )
         with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
             calls = self.run_and_capture(
@@ -653,13 +754,12 @@ class TestBatchProfiles(RunbatchCaptureCase):
             self.assertIn('+partition = "batch"', htc_script)
 
     def test_profile_direct_submission_without_pipefile(self):
-        from calibpipe.config import ProfileConfig
-
-        cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+        cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
         cfg.profiles["test_prof"] = ProfileConfig(
             cores=4,
             mem=32,
-            queue="test_partition",
+            partition="test_partition",
+            cmd="print(1)",
         )
         with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
             calls = self.run_and_capture(
@@ -676,21 +776,23 @@ class TestBatchProfiles(RunbatchCaptureCase):
             self.assertIn("#SBATCH --ntasks=4", script)
             self.assertIn("#SBATCH --mem=32G", script)
             self.assertIn("#SBATCH --job-name=test_prof_", script)
-            self.assertIn("calibpipe run -p=test_prof", script)
+            self.assertIn("--config-only", script)
+            state = self._extract_run_state(script)
+            self.assertEqual(state["run"].profile, "test_prof")
+            self.assertEqual(state["run"].cmd, "print(1)")
 
     def test_batch_profile_auto_chdir_emits_directive_and_creates_dir(self):
-        from calibpipe.config import ProfileConfig
-
         with tempfile.TemporaryDirectory() as td:
             target_dir = Path(td) / "new_project_run" / "working"
             self.assertFalse(target_dir.parent.exists())
 
-            cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+            cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
             cfg.profiles["auto_chdir_prof"] = ProfileConfig(
                 cores=4,
                 mem=32,
-                queue="test_partition",
+                partition="test_partition",
                 workdir=str(target_dir),
+                cmd="print(1)",
             )
             with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
                 calls = self.run_and_capture(
@@ -709,17 +811,16 @@ class TestBatchProfiles(RunbatchCaptureCase):
                 self.assertTrue(target_dir.parent.is_dir())
 
     def test_batch_profile_backup_derives_parent_chdir_for_non_working_dir(self):
-        from calibpipe.config import ProfileConfig
-
         with tempfile.TemporaryDirectory() as td:
             target_dir = Path(td) / "regression" / "casa_cov_test"
-            cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG))
+            cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
             cfg.profiles["reg_backup_prof"] = ProfileConfig(
                 cores=4,
                 mem=32,
-                queue="test_partition",
+                partition="test_partition",
                 workdir=str(target_dir),
                 backup=True,
+                cmd="print(1)",
             )
             with patch("calibpipe.batch.envconfig.load_merged_config", return_value=cfg):
                 calls = self.run_and_capture(
@@ -742,10 +843,12 @@ class TestBatchProfiles(RunbatchCaptureCase):
         try:
             os.chdir(tmpdir)
             with (
-                patch.object(runbatch, "CALIBPIPEIF", FAKE_CALIBPIPEIF),
-                patch.object(runbatch.subprocess, "run") as mock_run,
+                patch.object(subprocess, "run") as mock_run,
                 patch.object(runbatch.time, "strftime", return_value=FAKE_DATE),
-                patch.dict(runbatch.os.environ, {"USER": FAKE_USER}),
+                patch.dict(
+                    runbatch.os.environ,
+                    {"USER": FAKE_USER, "CALIBPIPE_NO_SITE_CONFIG": "1"},
+                ),
                 patch.object(
                     sys,
                     "argv",
@@ -775,12 +878,18 @@ class TestBatchLogdir(RunbatchCaptureCase):
     def test_cli_logdir_routes_artifacts_and_exports_batch_env(self):
         tmp_logdir = tempfile.mkdtemp()
         try:
+            cfg_path = self._write_temp_config(f"""
+default_env = "main"
+[envs.main]
+casa_root = "/fake/casa/main"
+[batch]
+logdir = "{tmp_logdir}"
+""")
             calls, tmpdir = self._run_in_tmpdir(
                 [
                     str(PIPEFILE_ONE_LINE),
                     "--env=main",
-                    f"--config={CONFIG}",
-                    f"--logdir={tmp_logdir}",
+                    f"--config={cfg_path}",
                 ]
             )
             self.assertEqual(len(calls), 1)
@@ -1092,56 +1201,63 @@ casa_root = "/fake/casa/main"
             calls = self.run_and_capture(["--config", str(CONFIG), runfile_path])
             self.assertEqual(len(calls), 2)
             _, script1 = calls[0]
-            self.assertIn("pytest.main", script1)
-            self.assertIn("uid___A002_X1", script1)
-            self.assertIn("--workdir=", script1)
-            self.assertIn("#SBATCH --job-name=uid___A002_X1_20260101-000000", script1)
+            state1 = self._extract_run_state(script1)
+            self.assertIn("pytest.main", state1["run"].cmd)
+            self.assertIn("uid___A002_X1", state1["run"].cmd)
+            self.assertIn("uid___A002_X1", state1["run"].workdir)
+            self.assertTrue(state1["request"].isolate_root)
+            self.assertIn(
+                "#SBATCH --job-name=tests_regression_fast_test_alma.py__test_uid___A002_X1__regression_20260101-000000",
+                script1,
+            )
 
             _, script2 = calls[1]
-            self.assertIn("pytest.main", script2)
-            self.assertIn("uid___A002_X2", script2)
-            self.assertIn("#SBATCH --job-name=uid___A002_X2_20260101-000000", script2)
+            state2 = self._extract_run_state(script2)
+            self.assertIn("pytest.main", state2["run"].cmd)
+            self.assertIn("uid___A002_X2", state2["run"].cmd)
+            self.assertTrue(state2["request"].isolate_root)
+            self.assertIn(
+                "#SBATCH --job-name=tests_regression_fast_test_alma.py__test_uid___A002_X2__regression_20260101-000000",
+                script2,
+            )
         finally:
             os.unlink(runfile_path)
 
     def test_batch_submit_collect_flag(self):
-        """Verify --collect queries test nodes and dispatches an array of batch jobs."""
-        test_cfg = (
+        """Verify collect = true queries test nodes and dispatches an array of batch jobs."""
+        cfg_path = self._write_temp_config(
             'default_env = "main"\n'
             "[envs.main]\n"
             'casa_root = "/fake/casa/main"\n'
             'heuristics_dir = "/fake/pipeline"\n'
             "[profiles.regression_fast]\n"
             'env = "main"\n'
+            "collect = true\n"
             'test_target = "tests/regression/fast"\n'
             'workdir = "/tmp/fake_workdir"\n'
         )
-        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
-            cf.write(test_cfg)
-            cfg_path = cf.name
 
         fake_nodes = [
             "tests/regression/fast/alma.py::test_uid___A002_X100__regression",
             "tests/regression/fast/alma.py::test_uid___A002_X200__regression",
         ]
-        try:
-            with patch("calibpipe.collect.collect_tests", return_value=fake_nodes) as mock_collect:
-                calls = self.run_and_capture(
-                    ["--config", cfg_path, "-p", "regression_fast", "--collect"]
-                )
-                mock_collect.assert_called_once()
-                self.assertEqual(len(calls), 2)
-                _, script1 = calls[0]
-                self.assertIn("uid___A002_X100", script1)
-                self.assertIn("--workdir=/tmp/fake_workdir/uid___A002_X100", script1)
-                self.assertIn("#SBATCH --job-name=regression_fast/uid___A002_X100_20260101-000000", script1)
+        with patch("calibpipe.collect.collect_tests", return_value=fake_nodes) as mock_collect:
+            calls = self.run_and_capture(
+                ["--config", cfg_path, "-p", "regression_fast"]
+            )
+            mock_collect.assert_called_once()
+            self.assertEqual(len(calls), 2)
+            _, script1 = calls[0]
+            state1 = self._extract_run_state(script1)
+            self.assertIn("uid___A002_X100", state1["run"].cmd)
+            self.assertEqual(state1["run"].workdir, "/tmp/fake_workdir/uid___A002_X100")
+            self.assertIn("#SBATCH --job-name=regression_fast/uid___A002_X100_20260101-000000", script1)
 
-                _, script2 = calls[1]
-                self.assertIn("uid___A002_X200", script2)
-                self.assertIn("--workdir=/tmp/fake_workdir/uid___A002_X200", script2)
-                self.assertIn("#SBATCH --job-name=regression_fast/uid___A002_X200_20260101-000000", script2)
-        finally:
-            os.unlink(cfg_path)
+            _, script2 = calls[1]
+            state2 = self._extract_run_state(script2)
+            self.assertIn("uid___A002_X200", state2["run"].cmd)
+            self.assertEqual(state2["run"].workdir, "/tmp/fake_workdir/uid___A002_X200")
+            self.assertIn("#SBATCH --job-name=regression_fast/uid___A002_X200_20260101-000000", script2)
 
     def test_job_name_with_test_name_collect_profile_format(self):
         """Verify job_name formats {profilename}/{test_name}_{timestamp}."""
@@ -1167,7 +1283,7 @@ casa_root = "/fake/casa/main"
             cores=1,
             mem="8G",
             job_name="report_job",
-            mail_user="test@nrao.edu",
+            mail_user="user@example.com",
             mail_type="NONE",
             outfile="/tmp/out.log",
             errfile="/tmp/err.log",
@@ -1176,57 +1292,52 @@ casa_root = "/fake/casa/main"
         self.assertIn("#SBATCH --dependency=afterany:9001:9002", script)
 
     def test_batch_submit_with_report_flag(self):
-        """Verify --with-report submits a dependent wrap-up job following test jobs."""
-        test_cfg = (
+        """Verify with_report = true submits a dependent wrap-up job following test jobs."""
+        cfg_path = self._write_temp_config(
             'default_env = "main"\n'
             "[envs.main]\n"
             'casa_root = "/fake/casa/main"\n'
             'heuristics_dir = "/fake/pipeline"\n'
             "[profiles.regression_fast]\n"
             'env = "main"\n'
+            "collect = true\n"
+            "with_report = true\n"
             'test_target = "tests/regression/fast"\n'
             'workdir = "/tmp/fake_workdir"\n'
         )
-        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
-            cf.write(test_cfg)
-            cfg_path = cf.name
 
         fake_nodes = [
             "tests/regression/fast/alma.py::test_uid___A002_X100__regression",
             "tests/regression/fast/alma.py::test_uid___A002_X200__regression",
         ]
-        try:
-            with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
-                calls = self.run_and_capture(
-                    ["--config", cfg_path, "-p", "regression_fast", "--collect", "--with-report"]
-                )
-                # 2 test jobs + 1 dependent report job
-                self.assertEqual(len(calls), 3)
+        with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
+            calls = self.run_and_capture(
+                ["--config", cfg_path, "-p", "regression_fast"]
+            )
+            # 2 test jobs + 1 dependent report job
+            self.assertEqual(len(calls), 3)
 
-                # Report job is the 3rd call
-                _, report_script = calls[2]
-                self.assertIn("calibpipe report /tmp/fake_workdir", report_script)
-                self.assertIn("--casa-root=/fake/casa/main", report_script)
-                self.assertIn("#SBATCH --dependency=afterany:", report_script)
-                self.assertIn("regression_fast/report_", report_script)
-        finally:
-            os.unlink(cfg_path)
+            # Report job is the 3rd call
+            _, report_script = calls[2]
+            self.assertIn("calibpipe report /tmp/fake_workdir", report_script)
+            self.assertIn("--casa-root=/fake/casa/main", report_script)
+            self.assertIn("#SBATCH --dependency=afterany:", report_script)
+            self.assertIn("regression_fast/report_", report_script)
 
     def test_batch_submit_with_throttle_slots(self):
-        """Verify --max-concurrent chains slot dependencies across submitted batch jobs."""
-        test_cfg = (
+        """Verify max_concurrent chains slot dependencies across submitted batch jobs."""
+        cfg_path = self._write_temp_config(
             'default_env = "main"\n'
             "[envs.main]\n"
             'casa_root = "/fake/casa/main"\n'
             'heuristics_dir = "/fake/pipeline"\n'
             "[profiles.regression_throttle]\n"
             'env = "main"\n'
+            "collect = true\n"
+            "max_concurrent = 2\n"
             'test_target = "tests/regression/fast"\n'
             'workdir = "/tmp/fake_workdir"\n'
         )
-        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
-            cf.write(test_cfg)
-            cfg_path = cf.name
 
         fake_nodes = [
             "tests/regression/fast/alma.py::test_uid___A002_X1__regression",
@@ -1234,120 +1345,113 @@ casa_root = "/fake/casa/main"
             "tests/regression/fast/alma.py::test_uid___A002_X3__regression",
             "tests/regression/fast/alma.py::test_uid___A002_X4__regression",
         ]
-        try:
-            with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
-                calls = self.run_and_capture(
-                    ["--config", cfg_path, "-p", "regression_throttle", "--collect", "--max-concurrent=2"]
-                )
-                self.assertEqual(len(calls), 4)
-
-                _, script1 = calls[0]
-                _, script2 = calls[1]
-                _, script3 = calls[2]
-                _, script4 = calls[3]
-
-                # Jobs 1 and 2 start immediately (slots 1 and 2)
-                self.assertNotIn("#SBATCH --dependency=", script1)
-                self.assertNotIn("#SBATCH --dependency=", script2)
-
-                # Job 3 fills slot 1 when Job 1 completes
-                self.assertIn("#SBATCH --dependency=afterany:", script3)
-                # Job 4 fills slot 2 when Job 2 completes
-                self.assertIn("#SBATCH --dependency=afterany:", script4)
-
-            # Test max_concurrent from [batch] table
-            batch_cfg = (
-                "[batch]\n"
-                "max_concurrent = 2\n"
-                "[envs.main]\n"
-                'casa_root = "/fake/casa/main"\n'
-                'heuristics_dir = "/fake/pipeline"\n'
-                "[profiles.regression_batch_throttle]\n"
-                'env = "main"\n'
-                'test_target = "tests/regression/fast"\n'
-                'workdir = "/tmp/fake_workdir"\n'
+        with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
+            calls = self.run_and_capture(
+                ["--config", cfg_path, "-p", "regression_throttle"]
             )
-            with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf2:
-                cf2.write(batch_cfg)
-                cfg_path2 = cf2.name
-            try:
-                with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
-                    calls2 = self.run_and_capture(
-                        ["--config", cfg_path2, "-p", "regression_batch_throttle", "--collect"]
-                    )
-                    self.assertEqual(len(calls2), 4)
-                    self.assertNotIn("#SBATCH --dependency=", calls2[0][1])
-                    self.assertNotIn("#SBATCH --dependency=", calls2[1][1])
-                    self.assertIn("#SBATCH --dependency=afterany:", calls2[2][1])
-                    self.assertIn("#SBATCH --dependency=afterany:", calls2[3][1])
-            finally:
-                os.unlink(cfg_path2)
-        finally:
-            os.unlink(cfg_path)
+            self.assertEqual(len(calls), 4)
+
+            _, script1 = calls[0]
+            _, script2 = calls[1]
+            _, script3 = calls[2]
+            _, script4 = calls[3]
+
+            # Jobs 1 and 2 start immediately (slots 1 and 2)
+            self.assertNotIn("#SBATCH --dependency=", script1)
+            self.assertNotIn("#SBATCH --dependency=", script2)
+
+            # Job 3 fills slot 1 when Job 1 completes
+            self.assertIn("#SBATCH --dependency=afterany:", script3)
+            # Job 4 fills slot 2 when Job 2 completes
+            self.assertIn("#SBATCH --dependency=afterany:", script4)
+
+        # Test max_concurrent from [batch] table
+        cfg_path2 = self._write_temp_config(
+            "[batch]\n"
+            "max_concurrent = 2\n"
+            "[envs.main]\n"
+            'casa_root = "/fake/casa/main"\n'
+            'heuristics_dir = "/fake/pipeline"\n'
+            "[profiles.regression_batch_throttle]\n"
+            'env = "main"\n'
+            "collect = true\n"
+            'test_target = "tests/regression/fast"\n'
+            'workdir = "/tmp/fake_workdir"\n'
+        )
+        with patch("calibpipe.collect.collect_tests", return_value=fake_nodes):
+            calls2 = self.run_and_capture(
+                ["--config", cfg_path2, "-p", "regression_batch_throttle"]
+            )
+            self.assertEqual(len(calls2), 4)
+            self.assertNotIn("#SBATCH --dependency=", calls2[0][1])
+            self.assertNotIn("#SBATCH --dependency=", calls2[1][1])
+            self.assertIn("#SBATCH --dependency=afterany:", calls2[2][1])
+            self.assertIn("#SBATCH --dependency=afterany:", calls2[3][1])
 
     def test_batch_submit_forwards_staticobscal_and_oldcont(self):
-        """Verify pipefile and single-job profile submissions forward obscal flags cleanly."""
+        """Verify pipefile and single-job profile submissions resolve obscal settings into payloads."""
         test_cfg = (
             'default_env = "main"\n'
             "[envs.main]\n"
             'casa_root = "/fake/casa/main"\n'
+            "[paths]\n"
+            'obscaldir = "/site/obscal"\n'
+            "[run]\n"
+            "staticobscal = true\n"
             "[profiles.mous_prof]\n"
             'env = "main"\n'
             'mous = "uid://A001/X1/X1"\n'
+            "staticobscal = true\n"
+            "oldcont = true\n"
+            'obscaldir = "/cli/obscal"\n'
         )
-        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf:
-            cf.write(test_cfg)
-            cfg_path = cf.name
+        cfg_path = self._write_temp_config(test_cfg)
+        cfg2_path = self._write_temp_config(
+            test_cfg
+            + (
+                "[profiles.obscal_only]\n"
+                "staticobscal = false\n"
+                "oldcont = true\n"
+                'obscaldir = "/cli/obscal"\n'
+            )
+        )
         with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as pf:
             pf.write("uid___A001_X1_X1 calimage\n")
             pipe_path = pf.name
         try:
-            # Pipefile mode: --no-staticobscal, --oldcont, --obscaldir, and obscal-only profile
-            test_cfg_obscal_prof = test_cfg + (
-                "[profiles.obscal_only]\n"
-                "oldcont = true\n"
-                'obscaldir = "/prof/obscal"\n'
+            calls_pipe = self.run_and_capture(
+                [
+                    "--config",
+                    cfg2_path,
+                    "-p",
+                    "obscal_only",
+                    pipe_path,
+                ]
             )
-            with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as cf2:
-                cf2.write(test_cfg_obscal_prof)
-                cfg2_path = cf2.name
-            try:
-                calls_pipe = self.run_and_capture(
-                    [
-                        "--config", cfg2_path,
-                        "-p", "obscal_only",
-                        "--no-staticobscal",
-                        "--oldcont",
-                        "--obscaldir", "/cli/obscal",
-                        pipe_path,
-                    ]
-                )
-                self.assertEqual(len(calls_pipe), 1)
-                _, pipe_script = calls_pipe[0]
-                self.assertIn("--no-staticobscal", pipe_script)
-                self.assertIn("--oldcont", pipe_script)
-                self.assertIn("--obscaldir=/cli/obscal", pipe_script)
-                self.assertIn("--profile=obscal_only", pipe_script)
-            finally:
-                os.unlink(cfg2_path)
+            self.assertEqual(len(calls_pipe), 1)
+            _, pipe_script = calls_pipe[0]
+            pipe_state = self._extract_run_state(pipe_script)
+            self.assertFalse(pipe_state["run"].staticobscal)
+            self.assertTrue(pipe_state["run"].oldcont)
+            self.assertEqual(pipe_state["run"].obscaldir, "/cli/obscal")
+            self.assertEqual(pipe_state["run"].profile, "obscal_only")
 
-            # Single-job profile mode: forwards --staticobscal, --oldcont, and --obscaldir
             calls_prof = self.run_and_capture(
                 [
-                    "--config", cfg_path,
-                    "-p", "mous_prof",
-                    "--staticobscal",
-                    "--oldcont",
-                    "--obscaldir", "/cli/obscal",
+                    "--config",
+                    cfg_path,
+                    "-p",
+                    "mous_prof",
                 ]
             )
             self.assertEqual(len(calls_prof), 1)
             _, prof_script = calls_prof[0]
-            self.assertIn("--staticobscal", prof_script)
-            self.assertIn("--oldcont", prof_script)
-            self.assertIn("--obscaldir=/cli/obscal", prof_script)
+            prof_state = self._extract_run_state(prof_script)
+            self.assertTrue(prof_state["run"].staticobscal)
+            self.assertTrue(prof_state["run"].oldcont)
+            self.assertEqual(prof_state["run"].obscaldir, "/cli/obscal")
+            self.assertEqual(prof_state["run"].profile, "mous_prof")
         finally:
-            os.unlink(cfg_path)
             os.unlink(pipe_path)
 
 
