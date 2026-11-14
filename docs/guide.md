@@ -263,9 +263,9 @@ flowchart TD
 2. **Profile Overrides:** Settings defined with **flat keys** directly inside `[profiles.<name>]`:
    - Environment overrides: `env`, `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, `branch`
    - Path overrides: `workspaces`, `casarundata`, `scipipe_rootdir`, `scipipe_logdir`, `pickle_dir`, `obscaldir`, `aUdir`, `validation_dir`, `datapath`, `rundata`, `workdir`
-   - Run & target options: `mous`, `vis`, `script`, `cmd`, `ppr`, `vla`, `interactive`, `recipe`, `nprocs`, `loglevel`, `useresume`, `symlink_shortcuts`, `log2term`, `verbose`, `use_custom_rcdir`, `casa_enable_telemetry`, `omp_num_threads`, `openblas_num_threads`, `omp_max_threads`, `mem_frac`, etc.
+   - Run & target options: `mous`, `vis`, `script`, `cmd`, `ppr`, `vla`, `interactive`, `recipe`, `nprocs`, `loglevel`, `useresume`, `symlink_shortcuts`, `log2term`, `verbose`, `use_custom_rcdir`, `omp_num_threads`, `openblas_num_threads`, `omp_max_threads`, `mem_frac`, etc.
    - Batch & test-array options: `partition`, `cores`, `mem`, `mem_per_cpu`, `cpus_per_task`, `scheduler`, `logdir`, `outfile`, `errfile`, `save_runfile`, `max_concurrent`, `collect`, `test_target`, `test_marker`, `test_filter`, `test_opts`, `with_report`, etc.
-3. **Section Table Defaults:** Top-level defaults defined in `[run]`, `[batch]`, `[paths]`, and `[envs.<name>]`. Note that `pixi_bin` belongs under `[paths]`, while `use_custom_rcdir`, `casa_enable_telemetry`, and `log2term` belong under `[run]` (or `[profiles.<name>]`).
+3. **Section Table Defaults:** Top-level defaults defined in `[run]`, `[batch]`, `[paths]`, and `[envs.<name>]`. Note that `pixi_bin` belongs under `[paths]`, while `use_custom_rcdir` and `log2term` belong under `[run]` (or `[profiles.<name>]`).
 4. **Site Configuration:** Facility-wide tooling locations and policies from `[site]` (`submit_host`, `pmr_home`, `datapacker_home`, `acsdata`, `java_home`, `flux_service_url`, `flux_service_url_backup`, `strict_paths`).
 5. **Built-in System Defaults (Lowest Priority):** Dataclass field defaults on `PathsConfig`, `SiteConfig`, `BatchConfig`, and `RunConfig`.
 
@@ -281,7 +281,6 @@ nprocs = 8
 partition = "queue"
 cpus_per_task = 3
 use_custom_rcdir = true
-casa_enable_telemetry = false
 mem_per_cpu = "5G"
 ```
 
@@ -466,7 +465,6 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `nologger`: Disable the CASA GUI logger window (`casaconfig` `--nologger` flag; default: `false`).
 - `logfile`: Custom logfile path or filename passed to CASA (`casaconfig` `--logfile` flag; default: auto timestamped `casa-<timestamp>.log`).
 - `use_custom_rcdir`: Generate an isolated CASA runtime environment (`.casa/` with `config.py`, `startup.py`, and `ipython/profile_default/ipython_config.py`) in the run tree (default: `true`). Can also be configured in `[profiles.<name>]`.
-- `casa_enable_telemetry`: Control CASA telemetry collection (default: `false`). Can also be configured in `[profiles.<name>]`.
 - `workdir`, `rawdata`, `ppr`, `vla`, `flag_dir`, `subdir`, `onlysemipass`: Execution directory, rawdata symlink root, PPR override, VLA mode toggle (`executevlappr`), prior flag/WVR directory, `SCIPIPE_ROOTDIR` subdirectory, and comma-separated semipass ASDM list for PMR (all optional; also configurable per profile).
 
 #### Presets: Unified Named Profiles (`[profiles.<name>]`)
@@ -584,7 +582,6 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `nologger` | Disable CASA GUI logger window (`--nologger`). |
 | | `logfile` | Custom logfile path or name (`--logfile`). |
 | | `use_custom_rcdir` | Isolated `.casa/` runtime generation in run tree (`true`/`false`). |
-| | `casa_enable_telemetry` | CASA telemetry reporting (`true`/`false`). |
 | **Test Array & Discovery** | `collect` | Submit an array of individual test jobs collected from `test_target` (`true`/`false`). |
 | | `test_target` | Pytest test directory or file to collect from (e.g. `tests/regression/fast`). |
 | | `test_marker` | Pytest marker expression filter for test collection (e.g. `"regression"`). |
@@ -642,14 +639,14 @@ When `build_environment()` runs, environment variables are assembled and overlai
 ```mermaid
 flowchart TD
     A["1. Host Shell Environment (os.environ: USER, HOME, PATH)"] --> B["2. Built-in &amp; [site] Settings (JAVA_HOME, ACSDATA, PMR/tool paths, FLUX_SERVICE_URL*)"]
-    B --> C["3. [paths] &amp; [run] Settings (SCIPIPE_ROOTDIR, SCIPIPE_LOGDIR, CASADATA, CASA_ENABLE_TELEMETRY)"]
+    B --> C["3. [paths] &amp; [run] Settings (SCIPIPE_ROOTDIR, SCIPIPE_LOGDIR, CASADATA)"]
     C --> D["4. [envs.&lt;name&gt;] (CASA_ROOT / PIXI_DIR, heuristics, PATH prepends, extra_vars)"]
     D --> E["5. Path Reachability Validation (check_paths)"]
 ```
 
 1. **Host Environment:** Reads baseline `os.environ` (inherits `USER`, `HOME`, base `PATH`).
 2. **Site Tooling & Endpoints:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`, and `FLUX_SERVICE_URL_BACKUP`.
-3. **Paths & Run Behavior:** Resolves and creates `SCIPIPE_ROOTDIR` and `SCIPIPE_LOGDIR` (interpolating `{user}` and optional `subdir`), resolves `CASADATA`/`CASARUNDATA`, and sets `CASA_ENABLE_TELEMETRY` from `[run]`/`[profiles.<name>]`.
+3. **Paths & Run Behavior:** Resolves and creates `SCIPIPE_ROOTDIR` and `SCIPIPE_LOGDIR` (interpolating `{user}` and optional `subdir`) and resolves `CASADATA`/`CASARUNDATA`.
 4. **Environment Target Resolution:** Sets `CASA_ROOT` (or `PIXI_DIR`), prepends `pmr_home/bin` and `casa_root/bin` (or `[paths].pixi_bin` parent dir) to `PATH`, sets `SCIPIPE_HEURISTICS`/`SCIPIPE_SCRIPTDIR`, sets `MATPLOTLIBRC`, and overlays `[envs.<name>.extra_vars]`.
 5. **Path Validation:** `check_paths()` verifies `CASA_ROOT` (or `pixi_dir` and `pixi_bin`), plus `pmr_home`, `datapacker_home`, `acsdata`, and `java_home` when running MOUS/PMR workflows. Missing paths print actionable warnings to `sys.stderr` (or raise `ConfigError` when `strict_paths = true`).
 

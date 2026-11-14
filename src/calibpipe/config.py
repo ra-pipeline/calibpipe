@@ -463,7 +463,6 @@ class RunConfig(Model):
     nologger: bool = False
     logfile: str | None = None
     use_custom_rcdir: bool = True
-    casa_enable_telemetry: bool = False
     rawdata: str | None = None
     ppr: str | None = None
     vla: bool = False
@@ -582,7 +581,6 @@ class ProfileConfig(Model):
     nologger: bool | None = None
     logfile: str | None = None
     use_custom_rcdir: bool | None = None
-    casa_enable_telemetry: bool | None = None
     collect: bool | None = None
     test_target: str | None = None
     test_marker: str | None = None
@@ -648,7 +646,6 @@ class ResolvedRunOptions(Model):
     autoreload: bool = True
     nologger: bool = False
     logfile: str | None = None
-    casa_enable_telemetry: bool = False
     casa_root: str | None = None
     heuristics_dir: str | None = None
     pixi_dir: str | None = None
@@ -781,7 +778,7 @@ def tool_settings(config):
         **asdict(config.site),
         **{
             key: getattr(config.run, key)
-            for key in ("use_custom_rcdir", "casa_enable_telemetry", "log2term")
+            for key in ("use_custom_rcdir", "log2term")
         },
         "pixi_bin": config.paths.pixi_bin,
     }
@@ -824,7 +821,7 @@ ALIASES = {
 }
 SITE_TOOLS = {"pmr_home", "datapacker_home", "acsdata", "java_home"}
 PATH_TOOLS = {"pixi_bin"}
-BEHAVIOR = {"use_custom_rcdir", "casa_enable_telemetry", "log2term"}
+BEHAVIOR = {"use_custom_rcdir", "log2term"}
 
 
 def matches(value, annotation):
@@ -965,9 +962,6 @@ def resolve_run_options(
         return cfg_val
 
     use_custom_rcdir = bool(_val("use_custom_rcdir", cfg.run.use_custom_rcdir))
-    casa_enable_telemetry = bool(
-        _val("casa_enable_telemetry", cfg.run.casa_enable_telemetry)
-    )
 
     symlink_shortcuts = _val("symlink_shortcuts", cfg.run.symlink_shortcuts)
     log2term = _val("log2term", cfg.run.log2term)
@@ -1420,7 +1414,6 @@ def resolve_run_options(
         autoreload=autoreload,
         nologger=nologger,
         logfile=logfile,
-        casa_enable_telemetry=casa_enable_telemetry,
         casa_root=resolved_casa_root,
         heuristics_dir=resolved_heuristics_dir,
         pixi_dir=resolved_pixi_dir,
@@ -2532,7 +2525,6 @@ def build_environment(
     env["JARSDIR"] = f"{site['datapacker_home']}/lib"
     env["FLUX_SERVICE_URL"] = site["flux_service_url"]
     env["FLUX_SERVICE_URL_BACKUP"] = site["flux_service_url_backup"]
-    env["CASA_ENABLE_TELEMETRY"] = "true" if site["casa_enable_telemetry"] else "false"
 
     pmr_bin = f"{site['pmr_home']}/bin"
     path_parts = env.get("PATH", "").split(":")
@@ -2711,7 +2703,6 @@ def format_shell_exports(
         "JARSDIR",
         "FLUX_SERVICE_URL",
         "FLUX_SERVICE_URL_BACKUP",
-        "CASA_ENABLE_TELEMETRY",
         "PATH",
         "MATPLOTLIBRC",
     ]

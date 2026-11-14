@@ -2046,39 +2046,35 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
         )
         self.assertIn("--logfile /tmp/test_work/custom.log", cmd_custom)
         self.assertIn("--nologger", cmd_custom)
-    def test_run_options_rcdir_telemetry_precedence(self):
+    def test_run_options_rcdir_precedence(self):
         # 1. Defaults when not in [run] or profile
         cfg_default = CalibpipeConfig.from_dict({})
         opts1 = resolve_run_options(cfg_default, Namespace())
         self.assertTrue(opts1.use_custom_rcdir)
-        self.assertFalse(opts1.casa_enable_telemetry)
 
         # 2. [run] sets values
         cfg_run_override = CalibpipeConfig.from_dict({
-            "run": {"use_custom_rcdir": False, "casa_enable_telemetry": True},
+            "run": {"use_custom_rcdir": False},
         })
         opts2 = resolve_run_options(cfg_run_override, Namespace())
         self.assertFalse(opts2.use_custom_rcdir)
-        self.assertTrue(opts2.casa_enable_telemetry)
 
         # 3. [profiles.<name>] overrides [run]
         cfg_profile_override = CalibpipeConfig.from_dict({
-            "run": {"use_custom_rcdir": False, "casa_enable_telemetry": False},
+            "run": {"use_custom_rcdir": False},
             "profiles": {
-                "test_prof": {"use_custom_rcdir": True, "casa_enable_telemetry": True},
+                "test_prof": {"use_custom_rcdir": True},
             },
         })
         opts3 = resolve_run_options(cfg_profile_override, Namespace(profile="test_prof"))
         self.assertTrue(opts3.use_custom_rcdir)
-        self.assertTrue(opts3.casa_enable_telemetry)
 
         # 4. Explicit override beats [profiles]
         opts4 = resolve_run_options(
             cfg_profile_override,
-            Namespace(profile="test_prof", use_custom_rcdir=False, casa_enable_telemetry=False),
+            Namespace(profile="test_prof", use_custom_rcdir=False),
         )
         self.assertFalse(opts4.use_custom_rcdir)
-        self.assertFalse(opts4.casa_enable_telemetry)
 
     def test_relative_workdir_and_chdir_resolved_against_scipipe_rootdir(self):
         with tempfile.TemporaryDirectory() as tmpdir:

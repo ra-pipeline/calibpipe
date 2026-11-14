@@ -11,9 +11,9 @@ class TestTemplates(unittest.TestCase):
     """Test suite for calibpipe template loading and rendering."""
 
     def test_render_casa_config(self) -> None:
-        """Verify casa_config.py.in renders with telemetry variable."""
-        rendered = render_template("casa_config.py.in", telemetry="True")
-        self.assertIn("telemetry_enabled = True", rendered)
+        """Verify casa_config.py.in renders with suppressed telemetry and defaults."""
+        rendered = render_template("casa_config.py.in")
+        self.assertIn("telemetry_enabled = False", rendered)
         self.assertIn("crashreporter_enabled = False", rendered)
         self.assertIn("log2term = False", rendered)
         self.assertIn("measures_auto_update = False", rendered)

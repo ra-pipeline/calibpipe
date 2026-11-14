@@ -210,7 +210,6 @@ def write_casa_config(
     casarundata: str | None = None,
     nologger: bool = False,
     logfile: str | None = None,
-    telemetry: bool | None = None,
 ) -> Path:
     """Generate isolated config.py for CASA inside rcdir.
 
@@ -225,18 +224,11 @@ def write_casa_config(
         casarundata: Optional resolved casarundata path.
         nologger: Disable CASA GUI logger window.
         logfile: Optional custom logfile path or filename.
-        telemetry: Optional telemetry enable override.
 
     Returns:
         Path to the generated config.py file.
     """
     site = site_config or {}
-    enable_telemetry = (
-        bool(telemetry)
-        if telemetry is not None
-        else bool(site.get("casa_enable_telemetry", False))
-    )
-    telemetry_str = "True" if enable_telemetry else "False"
     log2term_str = "True" if (site.get("log2term", False) or log2term) else "False"
     nologger_str = "True" if (site.get("nologger", False) or nologger) else "False"
 
@@ -261,7 +253,6 @@ def write_casa_config(
         rundata_specified = True
     content = render_template(
         "casa_config.py.in",
-        telemetry=telemetry_str,
         log2term=log2term_str,
         nologger=nologger_str,
         logfile_expr=logfile_expr,
@@ -910,7 +901,6 @@ def _run_mous(
             rundata_specified=run_opts.rundata_specified,
             nologger=run_opts.nologger,
             logfile=run_opts.logfile,
-            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1172,7 +1162,6 @@ def _run_recipe_reducer(
                 rundata_specified=run_opts.rundata_specified,
                 nologger=run_opts.nologger,
                 logfile=run_opts.logfile,
-                telemetry=run_opts.casa_enable_telemetry,
             )
             write_casa_startup(rcdir)
             write_ipython_config(rcdir, autoreload=False)
@@ -1401,7 +1390,6 @@ def _run_standalone_ppr(
             rundata_specified=run_opts.rundata_specified,
             nologger=run_opts.nologger,
             logfile=run_opts.logfile,
-            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1569,7 +1557,6 @@ def _run_script(
             rundata_specified=run_opts.rundata_specified,
             nologger=run_opts.nologger,
             logfile=run_opts.logfile,
-            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1683,7 +1670,6 @@ def _run_cmd(
             rundata_specified=run_opts.rundata_specified,
             nologger=run_opts.nologger,
             logfile=run_opts.logfile,
-            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(rcdir, autoreload=False)
@@ -1771,7 +1757,6 @@ def _run_interactive(
             rundata_specified=run_opts.rundata_specified,
             nologger=run_opts.nologger,
             logfile=run_opts.logfile,
-            telemetry=run_opts.casa_enable_telemetry,
         )
         write_casa_startup(rcdir)
         write_ipython_config(

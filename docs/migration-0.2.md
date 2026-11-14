@@ -50,7 +50,8 @@ A PPR can still override the request used with `--mous`.
 | `[batches.<name>]`, nested profile subtables | Flat `[profiles.<name>]` |
 | `pmr_home`, `datapacker_home`, `acsdata`, `java_home` | `[site]` |
 | `pixi_bin` | `[paths].pixi_bin` |
-| `use_custom_rcdir`, `casa_enable_telemetry`, `log2term` under `[site]` | `[run]` |
+| `use_custom_rcdir`, `log2term` under `[site]` | `[run]` |
+| `casa_enable_telemetry` | Removed (`--notelemetry` and `telemetry_enabled = False` are always enforced) |
 | Implicit extra keys under `[envs.<name>]` | `[envs.<name>.extra_vars]` |
 
 `[paths].heuristics_root` remains a parent directory for branch discovery. It differs

@@ -412,6 +412,11 @@ class TestPMRCLI(unittest.TestCase):
 
     def test_main_restore_only(self):
         with (
+            patch.dict("os.environ", {"CALIBPIPE_CONFIG": ""}),
+            patch(
+                "calibpipe.pmr.envconfig.load_merged_config",
+                side_effect=pmr.envconfig.ConfigError("No config file found"),
+            ),
             patch("calibpipe.pmr.PMRRuntime.from_env"),
             patch("calibpipe.pmr.run_pmr") as mock_run,
         ):
@@ -428,6 +433,11 @@ class TestPMRCLI(unittest.TestCase):
 
     def test_main_download_only(self):
         with (
+            patch.dict("os.environ", {"CALIBPIPE_CONFIG": ""}),
+            patch(
+                "calibpipe.pmr.envconfig.load_merged_config",
+                side_effect=pmr.envconfig.ConfigError("No config file found"),
+            ),
             patch("calibpipe.pmr.PMRRuntime.from_env"),
             patch("calibpipe.pmr.run_pmr") as mock_run,
         ):
