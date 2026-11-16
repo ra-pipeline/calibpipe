@@ -485,7 +485,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.subcommand == "submit":
         try:
             code = batch.submit_request(request(args, SubmitRequest))
-        except envconfig.ConfigError as e:
+        except (envconfig.ConfigError, RuntimeError) as e:
             print(f"ERROR: {e}", file=sys.stderr)
             raise SystemExit(1) from None
         if code:
