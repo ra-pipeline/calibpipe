@@ -2,7 +2,7 @@
 import os
 import time
 
-telemetry_enabled = $telemetry
+telemetry_enabled = False
 crashreporter_enabled = False
 log2term = $log2term
 nologger = $nologger

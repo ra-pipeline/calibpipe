@@ -15,9 +15,9 @@ Detailed package documentation is available in [docs/guide.md](docs/guide.md).
 
 ## Features
 
-- **Decoupled Architecture:** Pure Python 3 ($\ge 3.10$) standard library runtime with zero heavy dependencies.
+- **Decoupled Architecture:** Lightweight Python 3 (≥ 3.10) package with minimal runtime dependencies (`psrecord-io[plot]`, plus `tomli` on Python 3.10).
 - **Location & Version Agnostic:** Never hardcodes personal paths. All environments, CASA builds, and pipeline checkouts live in a gitignored `config.toml`.
-- **Backward Compatible:** Preserves legacy runner shims in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`).
+- **Compatibility Wrappers:** Preserves thin wrapper scripts in `scripts/` (`scripts/calibPipeIF.py`, `scripts/runbatch.py`, `scripts/calibpipe_env.sh`) that pass 0.2 CLI arguments directly to `calibpipe run`, `calibpipe submit`, and `calibpipe env`.
 
 ---
 
@@ -67,6 +67,8 @@ uv tool install --editable /path/to/calibpipe
 
 ## Configuration
 
+Version 0.2 uses a configuration-first CLI. Execution tuning and scheduler resources belong in TOML profiles. See [the migration guide](docs/migration-0.2.md); the compatibility wrappers in `scripts/` pass arguments straight through to `calibpipe run`, `calibpipe submit`, and `calibpipe env`.
+
 1. Copy `config.example.toml` to `config.toml` in your working directory (or `~/.config/calibpipe/config.toml`):
 
    ```bash
@@ -94,7 +96,7 @@ uv tool install --editable /path/to/calibpipe
 
 **Cascading Configuration Architecture:**
 Discovers and deep-merges configuration across layers:
-Site config (`/etc/calibpipe/config.toml`, `$CALIBPIPE_SITE_CONFIG`, or `config.site.toml`) $\to$ User config (`~/.config/calibpipe/config.toml`) $\to$ Workspace (`./config.toml`) $\to$ Explicit CLI (`--config=<path>`).
+Site config (`/etc/calibpipe/config.toml`, `$CALIBPIPE_SITE_CONFIG`, or `config.site.toml`) → User config (`~/.config/calibpipe/config.toml`, `~/.calibpipe/config.toml`) → Workspace (`./config.toml` or `./.calibpipe.toml`) → Explicit config (`--config=<path>` or `$CALIBPIPE_CONFIG`, which replaces user/workspace layers while retaining site defaults unless `--no-site-config` is passed; `calibpipe run --config-only` loads only `--config`).
 On shared clusters, users inherit site infrastructure automatically and only specify personal overrides. Pass `--no-site-config` to run fully isolated.
 
 For the complete schema (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`, `[run]`), variable interpolation, and architecture flowcharts, see [User Guide: Configuration](docs/guide.md#configuration).
@@ -109,21 +111,18 @@ For the complete schema (`[paths]`, `[envs.<name>]`, `[site]`, `[batch]`, `[run]
 # Using unified CLI
 calibpipe run --mous=uid://A001/X128a/Xb9 --env=main --recipe=calimage
 
-# Or direct shortcut
-calibpipe --mous=uid://A001/X128a/Xb9 --env=main
-
-# Legacy interface (backward-compatible script shim)
+# Compatibility wrapper (passes arguments to `calibpipe run`)
 ./scripts/calibPipeIF.py --mous=uid://A001/X128a/Xb9 --env=main
 ```
 
 ### 2. Submit to Slurm
 
 ```bash
-# Using unified CLI (submit or batch alias)
+# Using unified CLI
 calibpipe submit quick.run --env=main
 calibpipe submit quick.run --profile=debug --env=main
 
-# Legacy interface (backward-compatible script shim)
+# Compatibility wrapper (passes arguments to `calibpipe submit`)
 ./scripts/runbatch.py quick.run --profile=debug --env=main
 ```
 
@@ -140,7 +139,7 @@ uid://A002/Xcff05c/Xd calimage
 Set the ALMA pipeline environment variables directly in your current shell session (`bash` or `zsh`):
 
 ```bash
-# Modern direct eval:
+# Direct eval:
 eval "$(calibpipe env --env=main)"
 
 # Or source the helper script:
@@ -150,10 +149,10 @@ source scripts/calibpipe_env.sh --env=main
 calibpipe env --env=main --print-env
 ```
 
-Use `scripts/calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the legacy `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
+Use `scripts/calibpipe_env.sh` when you want those variables applied directly to your current shell and prefer the `source ...` workflow. It is a compatibility wrapper around `calibpipe env`, so it should be sourced rather than executed.
 
 > [!NOTE]
-> If the default OS `python3` is older than 3.10, run the Python shims with your own interpreter (`/path/to/conda/bin/python scripts/calibPipeIF.py ...`, or activate a Python $\ge 3.10$ environment first), or set `CALIBPIPE_PYTHON=/path/to/conda/bin/python` when sourcing `scripts/calibpipe_env.sh`. See [Backward Compatibility](docs/guide.md#backward-compatibility) for details.
+> If the default OS `python3` is older than 3.10, run the Python wrappers with your own interpreter (`/path/to/conda/bin/python scripts/calibPipeIF.py ...`, or activate a Python ≥ 3.10 environment first), or set `CALIBPIPE_PYTHON=/path/to/conda/bin/python` when sourcing `scripts/calibpipe_env.sh`. See [Backward Compatibility](docs/guide.md#backward-compatibility) for details.
 
 ### 4. Inspect Configuration
 

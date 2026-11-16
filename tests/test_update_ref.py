@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import io
-from contextlib import redirect_stdout
 import tempfile
-from pathlib import Path
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from calibpipe import update_ref
@@ -86,6 +86,10 @@ class TestUpdateRefStagingAndApply(unittest.TestCase):
     """Test candidate staging, promotion (--apply), and file outputs."""
 
     def setUp(self) -> None:
+        # Reference-update tests must never discover workstation or site testdata.
+        testdata = patch.object(update_ref, "find_testdata_root", return_value=None)
+        testdata.start()
+        self.addCleanup(testdata.stop)
         self.td = tempfile.TemporaryDirectory()
         self.tmp_dir = Path(self.td.name)
         self.working_dir = self.tmp_dir / "working"

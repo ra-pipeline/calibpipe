@@ -95,7 +95,7 @@ def collect_tests(
     marker: str | None = None,
     filter_k: str | None = None,
     extra_opts: Sequence[str] | str | None = None,
-    timeout: int = 300,
+    timeout: int = 600,
     logger: Callable[[str], None] | None = None,
 ) -> list[str]:
     """Collect test node IDs from a pipeline repository using CASA Python.
@@ -155,6 +155,10 @@ def collect_tests(
 
     if logger:
         logger(f"Collecting tests in {heuristics_path}: {' '.join(cmd)}")
+        logger(
+            f"Warning: Cold CASA/pipeline package imports on network filesystems (e.g., Lustre) "
+            f"can be slow; collection may take several minutes (timeout: {timeout}s)."
+        )
 
     env = os.environ.copy()
     env["PYTHONNOUSERSITE"] = "1"
@@ -163,15 +167,21 @@ def collect_tests(
         ppath.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = ":".join(ppath)
 
-    proc = subprocess.run(
-        cmd,
-        cwd=str(heuristics_path),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(heuristics_path),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Test collection timed out after {timeout}s while running: {' '.join(cmd)}\n"
+            "Try running that command directly to diagnose slow/hung CASA imports, "
+            "or pre-collect tests with `calibpipe collect` and pass `--runfile`."
+        ) from exc
 
     if proc.returncode not in (0, 5) and logger:
         err_msg = (proc.stderr or proc.stdout or "").strip()

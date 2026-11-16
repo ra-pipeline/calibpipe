@@ -39,36 +39,37 @@ PMR_OUTPUT = (
 )
 
 
-def _write_config(path, root, logdir):
+def _write_config(path, root, logdir, run_toml="", paths_toml=""):
+    paths_extra = f"\n{paths_toml.strip()}" if paths_toml else ""
+    run_block = f"\n[run]\n{run_toml.strip()}\n" if run_toml else ""
     path.write_text(f"""
 default_env = "main"
 
 [paths]
 scipipe_rootdir = "{root}"
-scipipe_logdir  = "{logdir}"
+scipipe_logdir  = "{logdir}"{paths_extra}
 
 [envs.main]
 casa_root = "/fake/casa/main"
-""")
+{run_block}""")
 
 
 def _write_pixi_config(
-    path, root, logdir, pixi_dir, pixi_env="default", pixi_bin="/fake/bin/pixi"
+    path, root, logdir, pixi_dir, pixi_env="default", pixi_bin="/fake/bin/pixi", run_toml=""
 ):
+    run_block = f"\n[run]\n{run_toml.strip()}\n" if run_toml else ""
     path.write_text(f"""
 default_env = "modular"
 
 [paths]
 scipipe_rootdir = "{root}"
 scipipe_logdir  = "{logdir}"
-
-[site]
 pixi_bin = "{pixi_bin}"
 
 [envs.modular]
 pixi_dir = "{pixi_dir}"
 pixi_env = "{pixi_env}"
-""")
+{run_block}""")
 
 
 def _build_ppmr_tree(root):
@@ -148,7 +149,7 @@ class CalibPipeIFCaptureCase(unittest.TestCase):
         _write_config(self.config, self.root, self.logdir)
         _build_ppmr_tree(self.root)
 
-    def run_and_capture(self, extra_args):
+    def run_and_capture(self, extra_args, *, run_toml="", paths_toml=""):
         calls = []
         real_getoutput = subprocess.getoutput
         real_copy = shutil.copy
@@ -185,28 +186,38 @@ class CalibPipeIFCaptureCase(unittest.TestCase):
                 calls.append(("casa", cmd))
             return 0
 
+        if run_toml or paths_toml:
+            _write_config(
+                self.config,
+                self.root,
+                self.logdir,
+                run_toml=run_toml,
+                paths_toml=paths_toml,
+            )
+
         argv = (
-            ["calibPipeIF.py"]
-            + [
+            [
                 f"--mous={MOUS}",
                 f"--config={self.config}",
                 "--env=main",
-                "--recipe=calimage",
             ]
             + extra_args
         )
 
         with (
-            patch.object(calibPipeIF, "argv", argv),
             patch.object(calibPipeIF, "getoutput", side_effect=fake_getoutput),
             patch.object(calibPipeIF.shutil, "copy", side_effect=fake_copy),
             patch.object(calibPipeIF.shutil, "copytree", side_effect=fake_copytree),
             patch.object(calibPipeIF.RunLogger, "run", side_effect=fake_run),
             patch.object(calibPipeIF.RunLogger, "runquiet", side_effect=fake_run),
-            patch.dict(calibPipeIF.os.environ, {}, clear=False),
+            patch.dict(
+                calibPipeIF.os.environ,
+                {"CALIBPIPE_NO_SITE_CONFIG": "1"},
+                clear=False,
+            ),
             redirect_stdout(io.StringIO()),
         ):
-            calibPipeIF.main()
+            calibPipeIF.main(argv)
 
         return calls
 
@@ -223,7 +234,7 @@ class TestFlagDirCopiesOldProducts(CalibPipeIFCaptureCase):
     def test_flag_dir_yields_pipelineMakeRequest_then_copies_then_casa(self):
         flagdir = self.tmp / "flagdir"
         _build_flag_dir(flagdir)
-        calls = self.run_and_capture([f"--flag={flagdir}"])
+        calls = self.run_and_capture([], run_toml=f'flag_dir = "{flagdir}"')
 
         categories = [c[0] for c in calls]
         self.assertEqual(
@@ -278,7 +289,7 @@ class TestCustomRcdir(CalibPipeIFCaptureCase):
         self.assertIn("c.HistoryManager.enabled = False", ipython_content)
 
     def test_no_custom_rcdir_omits_rcdir_args(self):
-        calls = self.run_and_capture(["--no-custom-rcdir"])
+        calls = self.run_and_capture([], run_toml="use_custom_rcdir = false")
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
         self.assertEqual(len(casa_calls), 1)
         self.assertNotIn("--cachedir", casa_calls[0])
@@ -412,11 +423,18 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         )
 
     def test_pixi_serial_execution(self):
+        _write_pixi_config(
+            self.pixi_config,
+            self.root,
+            self.logdir,
+            self.pixi_dir,
+            pixi_bin="/opt/pixi/bin/pixi",
+            run_toml="nprocs = 1",
+        )
         calls = self.run_and_capture(
             [
                 f"--config={self.pixi_config}",
                 "--env=modular",
-                "--ncores=1",
             ]
         )
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
@@ -439,11 +457,18 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertIn("eppr.executeppr", piperun.read_text())
 
     def test_pixi_mpi_execution(self):
+        _write_pixi_config(
+            self.pixi_config,
+            self.root,
+            self.logdir,
+            self.pixi_dir,
+            pixi_bin="/opt/pixi/bin/pixi",
+            run_toml="nprocs = 16",
+        )
         calls = self.run_and_capture(
             [
                 f"--config={self.pixi_config}",
                 "--env=modular",
-                "--ncores=16",
             ]
         )
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
@@ -458,30 +483,38 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertTrue(piperun.is_file())
 
     def test_pixi_mpi_execution_with_nprocs_flags(self):
-        # Verify --nprocs flag
+        _write_pixi_config(
+            self.pixi_config,
+            self.root,
+            self.logdir,
+            self.pixi_dir,
+            pixi_bin="/opt/pixi/bin/pixi",
+            run_toml="nprocs = 1\n\n[profiles.mpi16]\nnprocs = 16",
+        )
+        # Verify -p profile override
         calls = self.run_and_capture(
             [
                 f"--config={self.pixi_config}",
                 "--env=modular",
-                "--nprocs=16",
+                "-p",
+                "mpi16",
             ]
         )
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
         self.assertEqual(len(casa_calls), 1)
         self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", casa_calls[0])
 
-        # Verify -n flag
-        calls_short = self.run_and_capture(
+        # Verify --profile override
+        calls_long = self.run_and_capture(
             [
                 f"--config={self.pixi_config}",
                 "--env=modular",
-                "-n",
-                "16",
+                "--profile=mpi16",
             ]
         )
-        casa_calls_short = [c[1] for c in calls_short if c[0] == "casa"]
-        self.assertEqual(len(casa_calls_short), 1)
-        self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", casa_calls_short[0])
+        casa_calls_long = [c[1] for c in calls_long if c[0] == "casa"]
+        self.assertEqual(len(casa_calls_long), 1)
+        self.assertIn("env CASA_NPROCS=16 /opt/pixi/bin/pixi run --frozen --manifest-path", casa_calls_long[0])
 
     def test_pixi_custom_env(self):
         custom_cfg = self.tmp / "custom_pixi.toml"
@@ -492,12 +525,12 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
             self.pixi_dir,
             pixi_env="casa676-py312",
             pixi_bin="/opt/pixi/bin/pixi",
+            run_toml="nprocs = 8",
         )
         calls = self.run_and_capture(
             [
                 f"--config={custom_cfg}",
                 "--env=modular",
-                "--ncores=8",
             ]
         )
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
@@ -507,12 +540,19 @@ class TestPixiExecution(CalibPipeIFCaptureCase):
         self.assertIn("casampi", cmd)
 
     def test_virtual_env_popped_from_environment(self):
+        _write_pixi_config(
+            self.pixi_config,
+            self.root,
+            self.logdir,
+            self.pixi_dir,
+            pixi_bin="/opt/pixi/bin/pixi",
+            run_toml="nprocs = 1",
+        )
         with patch.dict(os.environ, {"VIRTUAL_ENV": "/tmp/fake_venv"}):
             self.run_and_capture(
                 [
                     f"--config={self.pixi_config}",
                     "--env=modular",
-                    "--ncores=1",
                 ]
             )
             self.assertIsNotNone(self.casa_environ)
@@ -618,56 +658,30 @@ class TestSymlinkShortcuts(unittest.TestCase):
             self.assertEqual(link.resolve(), wl_prod.resolve())
             self.assertIn("products", os.readlink(link))
 
-    def test_driver_parser_symlink_shortcuts_flags(self):
+    def test_driver_build_parser_returns_native_run_parser(self):
         p = calibPipeIF.build_parser()
-        args_default = p.parse_args(["--mous=uid://A001/X1/X1"])
-        self.assertIsNone(args_default.symlink_shortcuts)
-
-        args_on = p.parse_args(["--mous=uid://A001/X1/X1", "--symlink-shortcuts"])
-        self.assertTrue(args_on.symlink_shortcuts)
-
-        args_off = p.parse_args(["--mous=uid://A001/X1/X1", "--no-symlink-shortcuts"])
-        self.assertFalse(args_off.symlink_shortcuts)
-
-    def test_driver_parser_log2term_flags(self):
-        p = calibPipeIF.build_parser()
-        args_default = p.parse_args(["--mous=uid://A001/X1/X1"])
-        self.assertIsNone(args_default.log2term)
-
-        args_on = p.parse_args(["--mous=uid://A001/X1/X1", "--log2term"])
-        self.assertTrue(args_on.log2term)
-
-        args_off = p.parse_args(["--mous=uid://A001/X1/X1", "--no-log2term"])
-        self.assertFalse(args_off.log2term)
-
-    def test_driver_parser_obscal_flags(self):
-        p = calibPipeIF.build_parser()
-        args_default = p.parse_args(["--mous=uid://A001/X1/X1"])
-        self.assertIsNone(args_default.staticobscal)
-        self.assertIsNone(args_default.oldcont)
-        self.assertIsNone(args_default.obscaldir)
-
-        args_on = p.parse_args(
+        args = p.parse_args(
             [
                 "--mous=uid://A001/X1/X1",
-                "--staticobscal",
-                "--oldcont",
-                "--obscaldir=/tmp/obscal",
+                "--profile=plwg",
+                "--env=main",
+                "--workdir=/tmp/work",
+                "--dry-run",
             ]
         )
-        self.assertTrue(args_on.staticobscal)
-        self.assertTrue(args_on.oldcont)
-        self.assertEqual(args_on.obscaldir, "/tmp/obscal")
+        self.assertEqual(args.mous, "uid://A001/X1/X1")
+        self.assertEqual(args.profile, "plwg")
+        self.assertEqual(args.env, "main")
+        self.assertEqual(args.workdir, "/tmp/work")
+        self.assertTrue(args.dry_run)
 
-        args_off = p.parse_args(
-            ["--mous=uid://A001/X1/X1", "--no-staticobscal", "--no-oldcont"]
-        )
-        self.assertFalse(args_off.staticobscal)
-        self.assertFalse(args_off.oldcont)
+        for retired_flag in ("--symlink-shortcuts", "--log2term", "--staticobscal"):
+            with patch("sys.stderr", new=io.StringIO()), self.assertRaises(SystemExit):
+                p.parse_args(["--mous=uid://A001/X1/X1", retired_flag])
 
 
 class TestStaticObscalAndOldcontExecution(CalibPipeIFCaptureCase):
-    """Test --staticobscal and --oldcont staging during MOUS execution."""
+    """Test staticobscal and oldcont staging during MOUS execution."""
 
     def test_staticobscal_and_oldcont_stage_files_from_obscaldir(self):
         obscal = self.tmp / "obscaldir"
@@ -679,7 +693,9 @@ class TestStaticObscalAndOldcontExecution(CalibPipeIFCaptureCase):
         (obscal / "uid___A002_Xaaa_Xbbb.flagtemplate.txt").write_text("static eb flag\n")
 
         self.run_and_capture(
-            ["--staticobscal", "--oldcont", f"--obscaldir={obscal}"]
+            [],
+            paths_toml=f'obscaldir = "{obscal}"',
+            run_toml="staticobscal = true\noldcont = true",
         )
 
         self.assertEqual((self.working / "flux.csv").read_text(), "static flux\n")
@@ -703,26 +719,27 @@ class TestStaticObscalAndOldcontExecution(CalibPipeIFCaptureCase):
         anc_flux.write_text("ancillary flux\n")
 
         self.run_and_capture(
-            [
-                "--staticobscal",
-                "--oldcont",
-                f"--obscaldir={obscal}",
-                f"--cont-dat={self.tmp / 'nonexistent_cont.dat'}",
-                f"--ancillary={anc_flux}",
-            ]
+            [],
+            paths_toml=f'obscaldir = "{obscal}"',
+            run_toml=(
+                "staticobscal = true\n"
+                "oldcont = true\n"
+                f'cont_dat = "{self.tmp / "nonexistent_cont.dat"}"\n'
+                f'ancillary = ["{anc_flux}"]'
+            ),
         )
 
         # Explicit ancillary flux.csv must not be overwritten by obscaldir
         self.assertEqual((self.working / "flux.csv").read_text(), "ancillary flux\n")
-        # Non-existent --cont-dat must allow --oldcont fallback from obscaldir
+        # Non-existent cont_dat must allow oldcont fallback from obscaldir
         self.assertEqual((self.working / "cont.dat").read_text(), "static cont\n")
 
 
 class TestLog2termExecution(CalibPipeIFCaptureCase):
-    """Test log2term CLI and configuration behavior during execution."""
+    """Test log2term configuration behavior during execution."""
 
     def test_log2term_flag_passed_to_casa_call(self):
-        calls = self.run_and_capture(["--log2term"])
+        calls = self.run_and_capture([], run_toml="log2term = true")
         casa_calls = [c[1] for c in calls if c[0] == "casa"]
         self.assertEqual(len(casa_calls), 1)
         self.assertIn("--log2term", casa_calls[0])

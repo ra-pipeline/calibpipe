@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Legacy entrypoint for calibPipeIF.py forwarding to calibpipe.runner."""
+"""Thin forwarder from calibPipeIF.py to `calibpipe run`."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ _src = Path(__file__).resolve().parent.parent / "src"
 if _src.is_dir() and str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 
-from calibpipe.runner import main
+from calibpipe.cli import main
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(["run", *sys.argv[1:]]))

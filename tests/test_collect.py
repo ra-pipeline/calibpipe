@@ -156,3 +156,43 @@ def test_write_and_read_test_runfile(tmp_path: Path) -> None:
     assert len(parsed) == 2
     assert parsed[0] == ("uid___A002_X1", nodes[0])
     assert parsed[1] == ("uid___A002_X2", nodes[1])
+
+
+def test_collect_tests_default_timeout_and_warning(tmp_path: Path) -> None:
+    heuristics_dir = tmp_path / "pipeline"
+    heuristics_dir.mkdir()
+    logs: list[str] = []
+    recorded_timeout: int | None = None
+
+    def fake_subprocess_run(cmd, **kwargs):
+        nonlocal recorded_timeout
+        recorded_timeout = kwargs.get("timeout")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_subprocess_run):
+        collect.collect_tests(
+            target="tests/regression/fast",
+            heuristics_dir=heuristics_dir,
+            logger=logs.append,
+        )
+
+    assert recorded_timeout == 600
+    assert len(logs) >= 2
+    assert logs[0].startswith("Collecting tests in ")
+    assert "Lustre" in logs[1] and "600s" in logs[1]
+
+
+def test_collect_tests_timeout_raises_actionable_error(tmp_path: Path) -> None:
+    heuristics_dir = tmp_path / "pipeline"
+    heuristics_dir.mkdir()
+
+    with (
+        patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["pytest"], timeout=600)),
+        pytest.raises(RuntimeError, match="timed out after 600s") as exc_info,
+    ):
+        collect.collect_tests(
+            target="tests/regression/fast",
+            heuristics_dir=heuristics_dir,
+        )
+
+    assert "--runfile" in str(exc_info.value)

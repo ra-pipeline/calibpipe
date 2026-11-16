@@ -21,47 +21,43 @@ if [ "$__calibpipe_sourced" -eq 0 ]; then
     exit 1
 fi
 
-# Locate Python or calibpipe executable
+# Installed launchers may wrap Python, so keep their interpreter selection intact.
 if [ -z "${CALIBPIPE_PYTHON:-}" ] && command -v calibpipe >/dev/null 2>&1; then
-    __calibpipe_cmd="calibpipe env"
+    __calibpipe_out=$(calibpipe env "$@")
+    __calibpipe_status=$?
+    if [ "$__calibpipe_status" -eq 0 ]; then
+        eval "$__calibpipe_out"
+    fi
+    if [ "$__calibpipe_status" -ne 0 ]; then
+        unset __calibpipe_sourced __calibpipe_out __calibpipe_status
+        return 1 2>/dev/null || exit 1
+    fi
+    unset __calibpipe_sourced __calibpipe_out __calibpipe_status
+    return 0 2>/dev/null || exit 0
+fi
+__calibpipe_python="${CALIBPIPE_PYTHON:-}"
+__calibpipe_script_dir=$(cd "$(dirname "${BASH_SOURCE:-$0}")" >/dev/null 2>&1 && pwd)
+__calibpipe_root=$(cd "$__calibpipe_script_dir/.." >/dev/null 2>&1 && pwd)
+__calibpipe_src="$__calibpipe_root/src"
+if [ -z "$__calibpipe_python" ]; then
+    if [ -x "$__calibpipe_root/.venv/bin/python" ]; then
+        __calibpipe_python="$__calibpipe_root/.venv/bin/python"
+    else
+        __calibpipe_python=python3
+    fi
+fi
+if [ -d "$__calibpipe_src/calibpipe" ]; then
+    __calibpipe_out=$(PYTHONPATH="$__calibpipe_src${PYTHONPATH:+:$PYTHONPATH}" "$__calibpipe_python" -m calibpipe.cli env "$@")
 else
-    # Fallback to python in checkout: locate repo root and src directory relative to this script
-    __calibpipe_script_dir=$(cd "$(dirname "${BASH_SOURCE:-$0}")" >/dev/null 2>&1 && pwd)
-    if [ -d "$__calibpipe_script_dir/src" ]; then
-        __calibpipe_root="$__calibpipe_script_dir"
-        __calibpipe_src="$__calibpipe_script_dir/src"
-    elif [ -d "$__calibpipe_script_dir/../src" ]; then
-        __calibpipe_root="$(cd "$__calibpipe_script_dir/.." >/dev/null 2>&1 && pwd)"
-        __calibpipe_src="$__calibpipe_root/src"
-    else
-        __calibpipe_root=""
-        __calibpipe_src=""
-    fi
-
-    __calibpipe_python="${CALIBPIPE_PYTHON:-}"
-    if [ -z "$__calibpipe_python" ]; then
-        if [ -n "$__calibpipe_root" ] && [ -x "$__calibpipe_root/.venv/bin/python" ]; then
-            __calibpipe_python="$__calibpipe_root/.venv/bin/python"
-        else
-            __calibpipe_python="python3"
-        fi
-    fi
-
-    if [ -n "$__calibpipe_src" ]; then
-        __calibpipe_cmd="PYTHONPATH=\"$__calibpipe_src\${PYTHONPATH:+:\$PYTHONPATH}\" \"$__calibpipe_python\" -m calibpipe.cli env"
-    else
-        __calibpipe_cmd="\"$__calibpipe_python\" -m calibpipe.cli env"
-    fi
-    unset __calibpipe_script_dir __calibpipe_root __calibpipe_src __calibpipe_python
+    __calibpipe_out=$("$__calibpipe_python" -m calibpipe.cli env "$@")
 fi
 
-__calibpipe_out=$(eval "$__calibpipe_cmd \"\$@\"")
 __calibpipe_status=$?
 
 if [ "$__calibpipe_status" -ne 0 ]; then
-    unset __calibpipe_sourced __calibpipe_cmd __calibpipe_out __calibpipe_status
+    unset __calibpipe_sourced __calibpipe_out __calibpipe_status __calibpipe_python __calibpipe_script_dir __calibpipe_root __calibpipe_src
     return 1 2>/dev/null || exit 1
 fi
 
 eval "$__calibpipe_out"
-unset __calibpipe_sourced __calibpipe_cmd __calibpipe_out __calibpipe_status
+unset __calibpipe_sourced __calibpipe_out __calibpipe_status __calibpipe_python __calibpipe_script_dir __calibpipe_root __calibpipe_src

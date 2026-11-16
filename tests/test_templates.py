@@ -11,9 +11,9 @@ class TestTemplates(unittest.TestCase):
     """Test suite for calibpipe template loading and rendering."""
 
     def test_render_casa_config(self) -> None:
-        """Verify casa_config.py.in renders with telemetry variable."""
-        rendered = render_template("casa_config.py.in", telemetry="True")
-        self.assertIn("telemetry_enabled = True", rendered)
+        """Verify casa_config.py.in renders with suppressed telemetry and defaults."""
+        rendered = render_template("casa_config.py.in")
+        self.assertIn("telemetry_enabled = False", rendered)
         self.assertIn("crashreporter_enabled = False", rendered)
         self.assertIn("log2term = False", rendered)
         self.assertIn("measures_auto_update = False", rendered)
@@ -63,7 +63,7 @@ class TestTemplates(unittest.TestCase):
             pipejob=cmd,
             queue="plwg",
             node="1",
-            cores="8",
+            ntasks="8",
             job_name="myjob",
             mail_user="testuser",
             mail_type="ALL",
@@ -73,6 +73,7 @@ class TestTemplates(unittest.TestCase):
         )
         self.assertIn("#!/bin/sh", rendered)
         self.assertIn("#SBATCH --partition=plwg", rendered)
+        self.assertIn("#SBATCH --ntasks=8", rendered)
         self.assertIn("#SBATCH --output=my.out", rendered)
         self.assertIn("#SBATCH --error=my.err", rendered)
         self.assertIn("ulimit -Sn 8192", rendered)

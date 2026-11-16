@@ -35,18 +35,18 @@ calibpipe run --mous=uid://A001/X1/X1 --env=main
 In `src/calibpipe/runner.py`:
 
 ```python
-pmr_res = pmr.run_pmr(pmr_req, env=env)
+pmr_res = pmr.run_pmr(pmr_req, env=env, symlink_shortcuts=run_opts.symlink_shortcuts)
 cmdoutput = pmr_res.output
 ```
 
 The arguments passed to PMR are:
 
-- `asdms`: Optional list of specific Execution Blocks (`--asdms [...]` when `--onlysemipass` is used).
+- `asdms`: Optional list of specific Execution Blocks (`--asdms [...]` when `[run].onlysemipass` or profile `onlysemipass` is set).
 - `mous_uid`: The target MOUS identifier (e.g. `uid://A001/X1/X1`).
 - `intents`: Selection of pipeline intents (`intents_hsd.xml` for single-dish; `intents_hifa.xml` for interferometry).
 - `procedure`: The pipeline procedure XML file derived from the recipe (e.g. `procedure_hifa_calimage.xml`).
 - `download_asdms`: Boolean flag indicating whether PMR should download ASDM raw data (`true` or `false`).
-- `download_restore`: Boolean flag indicating whether PMR should fetch calibrator tables (`true` for image recipes without `--flag`).
+- `download_restore`: Boolean flag indicating whether PMR should fetch calibrator tables (`true` for image recipes without `flag_dir`).
 
 ### Metadata Resolution Inside PMR
 
@@ -55,7 +55,11 @@ When `pipelineMakeRequest` executes:
 1. It contacts the ALMA archive / metadata services using the MOUS UID.
 2. It resolves the project code (e.g. `2099.1.00001.S`), the science goal, and the OUS tree structure.
 3. It combines the project code with the current execution timestamp to form a unique project run directory:
-   $$\text{ppmr\_rel\_dir} = \text{<ProjectCode>}\_\text{<ISO\_Timestamp>}$$
+
+   ```text
+   ppmr_rel_dir = <ProjectCode>_<ISO_Timestamp>
+   ```
+
    *(e.g. `2099.1.00001.S_2099_12_31T23_59_59.000`)*.
 4. It creates the project directory inside `SCIPIPE_ROOTDIR` and generates the OUS directory tree underneath it.
 
@@ -71,22 +75,17 @@ Project root directory is 2099.1.00001.S_2099_12_31T23_59_59.000
 no files missing
 ```
 
-In `src/calibpipe/runner.py`, `calibpipe` scans the output or parsed project root:
+In `src/calibpipe/runner.py`, `pmr.run_pmr()` parses the project root via `pmr.parse_project_root()` and returns `pmr_res.project_root` (while legacy mocked `getoutput` harnesses scan for `"Project root directory is"` directly):
 
 ```python
-ppmr_rel_dir = ""
-piperootdir = env.get("SCIPIPE_ROOTDIR", "")
-for line in cmdoutput.split("\n"):
-    if "Project root directory is" in line:
-        ppmr_rel_dir = line.split()[-1]
-        break
-
-ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
+if pmr_res.project_root:
+    ppmr_dir = str(pmr_res.project_root)
+    ...
+else:
+    ppmr_dir = f"{piperootdir}/{ppmr_rel_dir}" if ppmr_rel_dir else piperootdir
 ```
 
-- `line.split()[-1]` extracts the relative directory: `2099.1.00001.S_2099_12_31T23_59_59.000`.
-- It prepends `SCIPIPE_ROOTDIR` (configured in `[paths].scipipe_rootdir`, e.g. `/data/pipeline/root/{user}`), producing the absolute project run path:
-  `/data/pipeline/root/user/2099.1.00001.S_2099_12_31T23_59_59.000`.
+- `pmr_res.project_root` resolves the relative directory `2099.1.00001.S_2099_12_31T23_59_59.000` under `SCIPIPE_ROOTDIR` (configured in `[paths].scipipe_rootdir`, e.g. `/data/pipeline/root/{user}`), producing `/data/pipeline/root/user/2099.1.00001.S_2099_12_31T23_59_59.000`.
 
 > [!WARNING] Failure Detection
 > If `pipelineMakeRequest` fails (due to archive connection issues, missing credentials, or invalid MOUS UIDs), no line matching `"Project root directory is"` will be printed. In this case, `calibpipe` halts immediately with an explicit error, logging the complete PMR output:
@@ -108,7 +107,8 @@ Inside `ppmr_dir`, `pipelineMakeRequest` lays out the standard ALMA Science Pipe
     ├── working   -> SOUS_.../GOUS_.../MOUS_.../working   <-- Convenience shortcut
     ├── products  -> SOUS_.../GOUS_.../MOUS_.../products  <-- Convenience shortcut
     ├── rawdata   -> SOUS_.../GOUS_.../MOUS_.../rawdata   <-- Convenience shortcut
-    ├── calibPipeIF.2099.1.00001.S_....log          <-- calibpipe runner log
+    ├── weblog    -> SOUS_.../pipeline-*/html            <-- Linked when HTML exists
+    ├── calibPipeIF.2099.1.00001.S_....uid___A001_X1_X1.<ts>.log  <-- calibpipe runner log
     └── SOUS_uid___A001_X1_X1/                      <-- Science OUS
         └── GOUS_uid___A001_X1_X2/                  <-- Group OUS
             └── MOUS_uid___A001_X1_X3/              <-- Member OUS
@@ -133,9 +133,9 @@ Inside `ppmr_dir`, `pipelineMakeRequest` lays out the standard ALMA Science Pipe
    ls <scipipe_rootdir>/2016.2.00105.S_2026_10_01T07_10_51.324/products
    ```
 
-2. **PPR XML Safety:** The pipeline process executes within the canonical physical directory `.../MOUS_.../working/`, keeping `<RelativePath>` inside `PPR.xml` 100% valid.
+2. **PPR XML Safety:** The pipeline process executes within the canonical physical directory `.../MOUS_.../working/`, keeping `<RelativePath>` inside `PPR*.xml` 100% valid.
 3. **Archival & Datapacker Compatibility:** Downstream packaging tools (e.g. `datapacker`) and ingestion scripts strictly expect the 3-tier `SOUS_.../GOUS_.../MOUS_...` hierarchy. Symlinks keep the canonical hierarchy intact.
-4. **Configuration & CLI Control:** Controlled by `[run].symlink_shortcuts = true` in `config.toml` (or via `--symlink-shortcuts` / `--no-symlink-shortcuts` on the CLI).
+4. **Configuration & CLI Control:** Controlled by `[run].symlink_shortcuts = true` or `[profiles.<name>].symlink_shortcuts = true` in `config.toml` (and via `--symlink-shortcuts` on `calibpipe pmr`).
 
 ### Directory Roles
 
@@ -218,15 +218,29 @@ You can point `calibpipe` to it directly:
 calibpipe run --config=/etc/calibpipe/config.toml --env=main --mous=uid://A001/X128a/Xb9
 ```
 
-Or copy it to your working directory or user config directory and customise locally:
+On shared clusters, `/etc/calibpipe/config.toml` is already loaded automatically as the base layer (unless `--no-site-config` is passed). To override individual settings locally, create a working-directory or user configuration file:
 
 ```bash
 # Working-directory scope (affects only this run directory)
 cp /etc/calibpipe/config.toml ./config.toml
 
 # User-level scope (applies to all calibpipe invocations by this user)
-mkdir -p ~/.calibpipe
-cp /etc/calibpipe/config.toml ~/.calibpipe/config.toml
+mkdir -p ~/.config/calibpipe
+cp /etc/calibpipe/config.toml ~/.config/calibpipe/config.toml
 ```
 
 If you need access or have questions about the site config, contact the pipeline team.
+
+## Configuration and batch execution in 0.2
+
+The CLI parser creates typed requests. Configuration loading validates each source
+file, merges layers, and builds canonical dataclasses. Resolution applies profile and
+request controls once. Execution handlers receive resolved settings without parser
+namespaces. Compatibility wrappers under `scripts/` forward directly to `calibpipe`.
+
+Native batch submission writes one frozen TOML snapshot (`batch.<timestamp>.toml`) per
+`submit` invocation in `logdir` (or the current directory if `logdir` is unset) and emits
+`calibpipe run --config=<snapshot> --config-only ...` commands in the generated scheduler
+scripts. Workers load only that frozen snapshot via `--config-only`, build their
+environment from current scheduler variables and frozen explicit settings, validate paths,
+and execute through `calibpipe.runner.execute`.
