@@ -151,10 +151,11 @@ pixi_dir = "/data/pipeline/branches/main"
 #   -----------------------------------------------------------------------------
 #   Config Key        Slurm Directive                   HTCondor Directive
 #   -----------------------------------------------------------------------------
-#   cores             #SBATCH --ntasks=<cores>          request_cpus = <cores>
+#   ntasks            #SBATCH --ntasks=<ntasks>         (N/A)
+#   request_cpus      (N/A)                             request_cpus = <request_cpus>
 #   partition         #SBATCH --partition=<partition>   +partition = "<partition>"
 #   mem               #SBATCH --mem=<mem>G              request_memory = <mem>G
-#   mem_per_cpu       #SBATCH --mem-per-cpu=<val>       request_memory = cores * val
+#   mem_per_cpu       #SBATCH --mem-per-cpu=<val>       request_memory = request_cpus * val
 #   chdir             #SBATCH --chdir=<dir>             initialdir = <dir>
 #   nodelist          #SBATCH --nodelist=<host>         TARGET.Machine == "<host>"
 #   mail_type         #SBATCH --mail-type=<type>        notification = <type>
@@ -174,7 +175,7 @@ pixi_dir = "/data/pipeline/branches/main"
 #   requirements      (N/A)                             requirements = ( ... )
 #   -----------------------------------------------------------------------------
 #   Note: MPI process count inside CASA is configured in [run].nprocs (mpicasa -n <nprocs>).
-#   Batch [batch].cores controls cluster allocation (--ntasks / request_cpus).
+#   Batch [batch].ntasks controls Slurm --ntasks, and [batch].request_cpus controls HTCondor request_cpus.
 #
 # [batch]
 # # --- General & Scheduler Selection [Slurm & HTCondor] ---
@@ -190,14 +191,14 @@ pixi_dir = "/data/pipeline/branches/main"
 
 # # --- Shared Resource Allocation [Slurm & HTCondor] ---
 # partition = "plwg"                      # Slurm partition / HTCondor partition
-# cores = 8                               # Tasks/CPUs per batch job (Slurm: --ntasks; HTCondor: request_cpus)
 # mem = 248                               # Total memory in GB per batch job (Slurm: --mem; HTCondor: request_memory; mutually exclusive with mem_per_cpu)
-# mem_per_cpu = "5G"                      # Memory per CPU (Slurm: --mem-per-cpu; HTCondor: converts to request_memory = cores * mem_per_cpu)
+# mem_per_cpu = "5G"                      # Memory per CPU (Slurm: --mem-per-cpu; HTCondor: converts to request_memory = request_cpus * mem_per_cpu)
 # mail_type = "ALL"                       # Notification policy (Slurm: --mail-type; HTCondor: notification = Always|Never|Complete|Error)
 # chdir = "/lustre/pipeline/working"      # Working directory override (Slurm: --chdir; HTCondor: initialdir)
 # nodelist = "node01"                     # Target host pinning (Slurm: --nodelist; HTCondor: TARGET.Machine == "<nodelist>")
 
 # # --- Slurm-Specific Directives [Slurm only] ---
+# ntasks = 8                              # Number of Slurm tasks (--ntasks; ignored by HTCondor)
 # node = "1"                              # Number of nodes (--nodes)
 # walltime = "24:00:00"                   # Slurm walltime limit (--time; omitted if unset)
 # cpus_per_task = 3                       # Logical CPUs/threads per task (Slurm: --cpus-per-task)
@@ -207,6 +208,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # no_requeue = true                       # Prevent job requeuing on node failure (--no-requeue, default: true)
 
 # # --- HTCondor-Specific Directives [HTCondor only] ---
+# request_cpus = 8                        # Number of HTCondor CPU slots (request_cpus; ignored by Slurm)
 # requirements = "none"                   # HTCondor ClassAd requirements override ("none", "default", or custom expression)
 # request_gpus = 0                        # Number of GPUs requested (HTCondor: request_gpus; Slurm: --gpus)
 # pool = "cm.example.org"                 # Central Manager host (condor_submit -pool <host>)
@@ -220,13 +222,13 @@ pixi_dir = "/data/pipeline/branches/main"
 #
 # [profiles.debug]
 # partition = "debug"                     # Test/debug partition
-# cores = 4                               # Reduced CPU/task count
+# ntasks = 4                              # Reduced Slurm task count
 # mem = 32                                # Reduced RAM (GB)
 # walltime = "01:00:00"                   # Short walltime limit
 #
 # [profiles.heavy]
 # partition = "batch2"                    # High-capacity partition
-# cores = 16                              # High CPU/task count
+# ntasks = 16                             # High Slurm task count
 # mem = 500
 # cpus_per_task = 2                       # Logical CPUs/threads per task
 
@@ -321,12 +323,13 @@ pixi_dir = "/data/pipeline/branches/main"
 #
 # [profiles.regression_array]
 # env = "main"
+# collect = true                            # Auto-collect and submit test array without a runfile
 # test_target = "tests/regression/fast"     # Pytest test directory or file to collect
 # test_marker = "regression"                # Marker filter
 # test_opts = "--cov=pipeline --cov-branch --cov-report=" # Additional pytest options
 # workdir = "~/Workspace/tests/fast_reg"    # Base workdir (tests run in sub-folders)
 # partition = "plwg"
-# cores = 8
+# ntasks = 8
 # mem = 64
 # backup = true                             # Safe directory rotation per test
 # max_concurrent = 8                        # Chained Slurm slot throttling

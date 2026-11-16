@@ -32,7 +32,8 @@ casa_root = "/opt/casa/other"
 [profiles.science]
 cmd = "print('science')"
 nprocs = 3
-cores = 6
+ntasks = 6
+request_cpus = 12
 cpus_per_task = 2
 workdir = "science"
 """)
@@ -80,7 +81,12 @@ def test_retired_run_flags_explain_replacement(flag, replacement, capsys):
         ("[site]\nlog2term = true", "[run].log2term"),
         ("[batches.debug]\ncores = 2", "[profiles.<name>]"),
         ("[profiles.nested.run]\nnprocs = 2", "flat"),
-        ("[profiles.wrong]\nntasks = 2", "cores"),
+        ("[run]\nntasks = 2", "[batch].ntasks"),
+        ("[run]\nrequest_cpus = 2", "[batch].request_cpus"),
+        ("[batch]\ncores = 4", "ntasks"),
+        ("[profiles.wrong]\ncores = 4", "request_cpus"),
+        ("[profiles.wrong]\nntasks = true", "invalid value"),
+        ("[profiles.wrong]\nrequest_cpus = true", "invalid value"),
         ('[envs.main]\ncasa_root="/opt/casa"\nUNKNOWN="value"', "extra_vars"),
         ('[run]\nprocedure = "procedure_hifa_calimage.xml"', "recipe"),
         ("[run]\nnprocs = true", "invalid value"),
@@ -108,13 +114,63 @@ def test_precedence_false_empty_and_resource_distinctions(configured):
     cfg.profiles["science"].ancillary = []
     run = config.resolve_run_options(cfg, RunRequest(profile="science", verbose=False))
     submit = config.resolve_batch_options(cfg, SubmitRequest(profile="science"))
-    assert (run.nprocs, submit.cores, submit.cpus_per_task) == (3, 6, 2)
+    assert (run.nprocs, submit.ntasks, submit.request_cpus, submit.cpus_per_task) == (3, 6, 12, 2)
     assert run.backup is False
     assert run.rundata == [] and run.rundata_specified
     assert run.ancillary == []
     assert config.resolve_run_options(
         cfg, RunRequest(profile="science", overrides={"backup": True})
     ).backup
+
+
+def test_ntasks_and_request_cpus_independent_in_batch_and_profile_configs(tmp_path):
+    base = tmp_path / "base.toml"
+    overlay = tmp_path / "overlay.toml"
+    base.write_text(
+        "[batch]\nntasks = 6\nrequest_cpus = 12\n"
+        "[profiles.alpha]\nntasks = 8\ncpus_per_task = 2\n"
+        "[profiles.beta]\nscheduler = \"htcondor\"\nrequest_cpus = 16\n"
+    )
+    overlay.write_text(
+        "[profiles.beta]\nrequest_cpus = 24\n"
+    )
+    cfg = config.load_config([base, overlay])
+    assert cfg.batch.ntasks == 6
+    assert cfg.batch.request_cpus == 12
+    assert cfg.profiles["alpha"].ntasks == 8
+    assert cfg.profiles["alpha"].request_cpus is None
+    assert cfg.profiles["beta"].request_cpus == 24
+
+    batch_alpha = config.resolve_batch_options(cfg, SubmitRequest(profile="alpha"))
+    batch_beta = config.resolve_batch_options(cfg, SubmitRequest(profile="beta"))
+    assert batch_alpha.ntasks == 8
+    assert batch_alpha.request_cpus == 12
+    assert batch_beta.ntasks == 6
+    assert batch_beta.request_cpus == 24
+    assert cfg.sources["batch.ntasks"] == str(base.resolve())
+    assert cfg.sources["batch.request_cpus"] == str(base.resolve())
+    assert cfg.sources["profiles.beta.request_cpus"] == str(overlay.resolve())
+
+
+def test_submit_with_test_target_without_collect_explains_options(tmp_path):
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        '[envs.main]\ncasa_root = "/opt/casa"\n'
+        '[profiles.reg_array]\n'
+        'env = "main"\n'
+        'test_target = "tests/regression/fast"\n'
+        '[profiles.reg_marker_only]\n'
+        'env = "main"\n'
+        'test_marker = "regression"\n'
+    )
+    for profile_name in ("reg_array", "reg_marker_only"):
+        with pytest.raises(config.ConfigError) as exc:
+            batch.submit_request(
+                SubmitRequest(config=str(cfg_path), profile=profile_name, no_site_config=True)
+            )
+        msg = str(exc.value)
+        assert "collect = true" in msg
+        assert "runfile" in msg
 
 
 def test_config_sources_and_explicit_file_layering(tmp_path, monkeypatch):
@@ -295,7 +351,7 @@ schedd = "scheduler.example.test"
         assert "#SBATCH --cpus-per-task=2" in text
     else:
         htc = next(Path.cwd().rglob("*.htc")).read_text()
-        assert "request_cpus = 6" in htc
+        assert "request_cpus = 12" in htc
 
 
 def test_native_collection_isolation_throttle_report_and_env_override(configured):
@@ -881,7 +937,8 @@ def test_submit_report_job_uses_calibpipe_argv_handles_pixi_and_rejects_htcondor
         pipefile=None,
         env_name="main",
         partition="plwg",
-        cores=1,
+        ntasks=1,
+        request_cpus=1,
         mem=4,
         node=None,
         mail_type="FAIL",
@@ -958,7 +1015,8 @@ pixi_dir = "pixi_rel"
         pipefile=None,
         env_name="mono",
         partition="plwg",
-        cores=1,
+        ntasks=1,
+        request_cpus=1,
         mem=4,
         node=None,
         mail_type="FAIL",

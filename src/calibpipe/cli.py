@@ -87,7 +87,11 @@ RETIRED_GROUPS = {
     "[run].datapath or [profiles.<name>].datapath": ("--datapath",),
     "[run].rundata or [profiles.<name>].rundata": ("--rundata",),
     "[run].autoreload or [profiles.<name>].autoreload": ("--autoreload",),
-    "[batch].cores or [profiles.<name>].cores": ("-c", "--cores", "--ntasks"),
+    "[batch].ntasks (Slurm) / [batch].request_cpus (HTCondor) or [profiles.<name>].ntasks / request_cpus": (
+        "-c",
+        "--cores",
+        "--ntasks",
+    ),
     "[batch].mail_type or [profiles.<name>].mail_type": ("-M", "--mail-type"),
     "[batch].outfile or [profiles.<name>].outfile": ("-o", "--outfile"),
     "[batch].errfile or [profiles.<name>].errfile": ("-e", "--errfile"),

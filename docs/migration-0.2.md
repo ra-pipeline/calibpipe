@@ -37,8 +37,8 @@ A PPR can still override the request used with `--mous`.
 | `--procedure` / `[run].procedure` / profile `procedure` | `recipe` (accepts shorthand or `.xml` filename/path) |
 | Logging, backup, ancillary staging, MPI placement, monitoring flags | Corresponding `[run]` or profile keys; use underscores in TOML |
 | `--custom-rcdir` | `use_custom_rcdir` under `[run]` or profile |
-| `--cores` / `--ntasks`, `--cpus-per-task`, `--mem`, `--partition` / `--queue` | `[batch]` or profile `cores`, `cpus_per_task`, `mem`, `partition` |
-| `ntasks`, `threads`, `queue`, `gpus` | `cores`, `cpus_per_task`, `partition`, `request_gpus` |
+| `--cores` / `--ntasks`, `--cpus-per-task`, `--mem`, `--partition` / `--queue` | `[batch]` or profile `ntasks` (Slurm) / `request_cpus` (HTCondor), `cpus_per_task`, `mem`, `partition` |
+| `cores`, `threads`, `queue`, `gpus` | `ntasks` (Slurm) / `request_cpus` (HTCondor), `cpus_per_task`, `partition`, `request_gpus` |
 | Other scheduler/resource/routing flags | Corresponding `[batch]` or profile keys |
 | `central_manager` / `central_manager_host`, `schedd_name` / `remote` | `pool`, `schedd` |
 | `transfer_files`, `throttle`, `noglogger`, `work_path` | `should_transfer_files`, `max_concurrent`, `nologger`, `workdir` |
@@ -58,8 +58,9 @@ A PPR can still override the request used with `--mous`.
 from an individual environment's `heuristics_dir`. Likewise, `rundata` is an explicit
 list of CASA runtime-data search directories; keep it distinct from `casarundata`.
 
-MPI process count (`nprocs`), scheduler task/CPU allocation (`cores`), and threads per
-task (`cpus_per_task`) are independent. Renaming `ntasks` to `cores` must not change
+MPI process count (`nprocs`), Slurm task allocation (`ntasks`), HTCondor CPU allocation
+(`request_cpus`), and threads per task (`cpus_per_task`) are independent. `cores` is
+retired in favor of scheduler-native `ntasks` and `request_cpus`, and neither changes
 `nprocs`. Omitted values inherit; `false` and empty lists are explicit overrides.
 
 Unknown native keys now fail with the file and table location. `config show -p NAME`

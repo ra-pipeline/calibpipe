@@ -320,28 +320,30 @@ class BatchConfig(Model):
       - Both Slurm & HTCondor:
           - scheduler: "slurm" or "htcondor".
           - partition: Slurm partition (--partition) or HTCondor (+partition).
-          - cores: Slurm tasks (--ntasks) or HTCondor CPUs (request_cpus).
           - mem: Total memory in GB (Slurm: --mem; HTCondor: request_memory).
-          - mem_per_cpu: Memory per CPU (Slurm: --mem-per-cpu; HTCondor: request_memory = cores * mem_per_cpu).
+          - mem_per_cpu: Memory per CPU (Slurm: --mem-per-cpu; HTCondor: request_memory = request_cpus * mem_per_cpu).
           - mail_type: Notification setting (Slurm: --mail-type; HTCondor: notification).
           - chdir: Working directory (Slurm: --chdir; HTCondor: initialdir).
           - nodelist: Pinned host (Slurm: --nodelist; HTCondor: TARGET.Machine == "<nodelist>").
           - logdir: Output directory for script records and scheduler logs.
           - dry_run: Preview submit scripts without submitting.
       - Slurm only (ignored by HTCondor):
+          - ntasks: Number of tasks (--ntasks).
           - node: Number of nodes (--nodes).
           - walltime: Job runtime limit (--time).
-          - cpus_per_task: Logical CPUs/threads per task (--cpus-per-task; total allocated = cores * cpus_per_task).
+          - cpus_per_task: Logical CPUs/threads per task (--cpus-per-task; total allocated = ntasks * cpus_per_task).
           - ntasks_per_core: Tasks per physical silicon core (--ntasks-per-core; 1 to avoid HT sharing).
           - hint: Placement hint (--hint, e.g. "nomultithread").
           - distribution: Task distribution across nodes/sockets (--distribution).
           - no_requeue: Prevent silent job requeuing on failure (--no-requeue).
       - HTCondor only (ignored by Slurm):
+          - request_cpus: Requested CPU slots (request_cpus).
           - requirements: Custom ClassAd requirements expression override.
     """
 
     partition: str = "plwg"  # Slurm: --partition; HTCondor: +partition (alias: queue)
-    cores: int = 8  # Slurm: --ntasks; HTCondor: request_cpus (alias: ntasks)
+    ntasks: int = 8  # Slurm: --ntasks
+    request_cpus: int = 8  # HTCondor: request_cpus
     mem: int = 248  # Total RAM in GB (Slurm: --mem; HTCondor: request_memory)
     mem_per_cpu: str | None = (
         None  # RAM per CPU (Slurm: --mem-per-cpu; HTCondor: scaled into request_memory)
@@ -523,7 +525,8 @@ class ProfileConfig(Model):
     partition: str | None = (
         None  # Slurm: --partition; HTCondor: +partition (alias: queue)
     )
-    cores: int | None = None  # Slurm: --ntasks; HTCondor: request_cpus (alias: ntasks)
+    ntasks: int | None = None  # Slurm: --ntasks
+    request_cpus: int | None = None  # HTCondor: request_cpus
     mem: int | None = None  # Total RAM in GB (Slurm: --mem; HTCondor: request_memory)
     mem_per_cpu: str | None = (
         None  # RAM per CPU (Slurm: --mem-per-cpu; HTCondor: scaled into request_memory)
@@ -665,7 +668,8 @@ class ResolvedBatchOptions(Model):
     pipefile: Path | None
     env_name: str
     partition: str
-    cores: int  # Tasks/CPUs per job (Slurm: --ntasks; HTCondor: request_cpus; alias: ntasks)
+    ntasks: int  # [Slurm only] Tasks per job (--ntasks)
+    request_cpus: int  # [HTCondor only] Requested CPU slots (request_cpus)
     mem: int  # Total RAM in GB (Slurm: --mem; HTCondor: request_memory)
     node: str  # [Slurm only] --nodes
     mail_type: str  # [Slurm & HTCondor] Notification policy
@@ -795,7 +799,7 @@ ALIASES = {
     "casadata": "casarundata",
     "data": "casarundata",
     "ncores": "nprocs",
-    "ntasks": "cores",
+    "cores": "ntasks (Slurm) or request_cpus (HTCondor)",
     "threads": "cpus_per_task",
     "queue": "partition",
     "noglogger": "nologger",
@@ -822,6 +826,7 @@ ALIASES = {
 SITE_TOOLS = {"pmr_home", "datapacker_home", "acsdata", "java_home"}
 PATH_TOOLS = {"pixi_bin"}
 BEHAVIOR = {"use_custom_rcdir", "log2term"}
+BATCH_KEYS = {f.name for f in fields(BatchConfig)} - {f.name for f in fields(RunConfig)}
 
 
 def matches(value, annotation):
@@ -861,6 +866,8 @@ def validate_table(data, model, location, file):
                 hint = f"move it to [paths].{key}"
             elif location == "site" and key in BEHAVIOR:
                 hint = f"move it to [run].{key}"
+            elif location == "run" and key in BATCH_KEYS:
+                hint = f"move it to [batch].{key} or [profiles.<name>].{key}"
             elif key in ALIASES:
                 hint = f"use {ALIASES[key]}"
             elif model is ProfileConfig and isinstance(value, dict):
@@ -1478,9 +1485,13 @@ def resolve_batch_options(
     cli_partition = getattr(cli_args, "partition", None)
     partition = cli_partition if cli_partition else active_batch.partition
 
-    cores = getattr(cli_args, "cores", None)
-    if cores is None:
-        cores = active_batch.cores
+    ntasks = getattr(cli_args, "ntasks", None)
+    if ntasks is None:
+        ntasks = active_batch.ntasks
+
+    request_cpus = getattr(cli_args, "request_cpus", None)
+    if request_cpus is None:
+        request_cpus = active_batch.request_cpus
 
     mem = getattr(cli_args, "mem", None)
     if mem is None:
@@ -1715,7 +1726,8 @@ def resolve_batch_options(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
         partition=str(partition),
-        cores=int(cores),
+        ntasks=int(ntasks),
+        request_cpus=int(request_cpus),
         mem=int(mem),
         node=str(node),
         mail_type=str(mail_type),

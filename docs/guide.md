@@ -264,7 +264,7 @@ flowchart TD
    - Environment overrides: `env`, `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, `branch`
    - Path overrides: `workspaces`, `casarundata`, `scipipe_rootdir`, `scipipe_logdir`, `pickle_dir`, `obscaldir`, `aUdir`, `validation_dir`, `datapath`, `rundata`, `workdir`
    - Run & target options: `mous`, `vis`, `script`, `cmd`, `ppr`, `vla`, `interactive`, `recipe`, `nprocs`, `loglevel`, `useresume`, `symlink_shortcuts`, `log2term`, `verbose`, `use_custom_rcdir`, `omp_num_threads`, `openblas_num_threads`, `omp_max_threads`, `mem_frac`, etc.
-   - Batch & test-array options: `partition`, `cores`, `mem`, `mem_per_cpu`, `cpus_per_task`, `scheduler`, `logdir`, `outfile`, `errfile`, `save_runfile`, `max_concurrent`, `collect`, `test_target`, `test_marker`, `test_filter`, `test_opts`, `with_report`, etc.
+   - Batch & test-array options: `partition`, `ntasks`, `request_cpus`, `mem`, `mem_per_cpu`, `cpus_per_task`, `scheduler`, `logdir`, `outfile`, `errfile`, `save_runfile`, `max_concurrent`, `collect`, `test_target`, `test_marker`, `test_filter`, `test_opts`, `with_report`, etc.
 3. **Section Table Defaults:** Top-level defaults defined in `[run]`, `[batch]`, `[paths]`, and `[envs.<name>]`. Note that `pixi_bin` belongs under `[paths]`, while `use_custom_rcdir` and `log2term` belong under `[run]` (or `[profiles.<name>]`).
 4. **Site Configuration:** Facility-wide tooling locations and policies from `[site]` (`submit_host`, `pmr_home`, `datapacker_home`, `acsdata`, `java_home`, `flux_service_url`, `flux_service_url_backup`, `strict_paths`).
 5. **Built-in System Defaults (Lowest Priority):** Dataclass field defaults on `PathsConfig`, `SiteConfig`, `BatchConfig`, and `RunConfig`.
@@ -393,11 +393,12 @@ Configures baseline defaults for `calibpipe submit` when profile overrides are n
 
 | Configuration Key | Supported Scheduler | Slurm Directive (`#SBATCH`) | HTCondor Attribute | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `cores` | **Both** | `--ntasks=<n>` | `request_cpus = <n>` | Cluster CPU / task allocation (default: `8`). |
+| `ntasks` | **Slurm only** | `--ntasks=<n>` | *(N/A)* | Number of Slurm tasks (default: `8`). |
+| `request_cpus` | **HTCondor only** | *(N/A)* | `request_cpus = <n>` | Requested HTCondor CPU slots (default: `8`). |
 | `cpus_per_task` | **Slurm only** | `--cpus-per-task=<c>` | *(Used only as OpenMP fallback)* | Logical CPUs / threads per task for OpenMP (optional; omitted by default). |
 | `partition` | **Both** | `--partition=<p>` | `+partition = "<p>"` | Partition or queue name (default: `plwg`). |
 | `mem` | **Both** | `--mem=<m>G` | `request_memory = <m>G` | Total memory in GB (default: `248`; mutually exclusive with `mem_per_cpu`). |
-| `mem_per_cpu` | **Both** | `--mem-per-cpu=<m>` | `request_memory = cores × mem_per_cpu` | Memory per CPU (e.g. `"5G"`; scaled to total RAM in HTCondor). |
+| `mem_per_cpu` | **Both** | `--mem-per-cpu=<m>` | `request_memory = request_cpus × mem_per_cpu` | Memory per CPU (e.g. `"5G"`; scaled to total RAM in HTCondor). |
 | `mail_type` | **Both** | `--mail-type=<t>` | `notification = <keyword>` | Notification event policy (default: `ALL`). |
 | `chdir` | **Both** | `--chdir=<dir>` | `initialdir = <dir>` | Initial working directory on execution node (defaults to project root derived from `profile.workdir` if omitted). |
 | `nodelist` | **Both** | `--nodelist=<host>` | `TARGET.Machine == "<host>"` | Pin execution to a specific host machine. |
@@ -420,10 +421,11 @@ Configures baseline defaults for `calibpipe submit` when profile overrides are n
 | `should_transfer_files`, `when_to_transfer_output` | **HTCondor only** | *(N/A)* | File transfer attributes | Sandbox file transfer policy (`YES`/`IF_NEEDED`/`NO`, `ON_EXIT`/`ON_EXIT_OR_EVICT`). |
 
 > [!NOTE]
-> **Cluster Allocation (`cores`) vs. MPI Process Count (`nprocs`)**:
-> - **Cluster Resource Allocation (`[batch].cores`)**: Configures the hardware slots allocated by the workload manager (`#SBATCH --ntasks` in Slurm, or `request_cpus` in HTCondor).
+> **Cluster Allocation (`ntasks` / `request_cpus`) vs. MPI Process Count (`nprocs`)**:
+> - **Slurm Task Allocation (`[batch].ntasks`)**: Configures `#SBATCH --ntasks=<n>` in Slurm (ignored by HTCondor).
+> - **HTCondor CPU Allocation (`[batch].request_cpus`)**: Configures `request_cpus = <n>` in HTCondor (ignored by Slurm). Unlike Slurm, HTCondor does not multiply `request_cpus` by `cpus_per_task`; set `request_cpus` to the total CPUs needed for the job slot.
 > - **MPI Process Count (`[run].nprocs`)**: Configures the number of MPI worker processes launched inside CASA via `mpicasa -n <nprocs>`.
-> - **Total Allocated CPUs in Slurm**: Slurm computes the total logical CPUs allocated as `cores × cpus_per_task`. For example, setting `cores = 7` and `cpus_per_task = 3` requests 7 × 3 = 21 logical CPUs, which is the number reported in `squeue` under `CP` or `CPUS`.
+> - **Total Allocated CPUs in Slurm**: Slurm computes the total logical CPUs allocated as `ntasks × cpus_per_task`. For example, setting `ntasks = 7` and `cpus_per_task = 3` requests 7 × 3 = 21 logical CPUs, which is the number reported in `squeue` under `CP` or `CPUS`.
 >
 > **Working Directory Resolution (`chdir`)**:
 > - When `chdir` is omitted but `workdir` is defined in a profile, `calibpipe` automatically derives `chdir` as the project root (the parent directory if `workdir` ends in `working/`, preventing locks on `working/` when directory rotation `backup = true` is enabled).
@@ -470,7 +472,7 @@ Configures single-run driver execution defaults for `calibpipe run`:
 #### Presets: Unified Named Profiles (`[profiles.<name>]`)
 
 `[profiles.<name>]` serves as the single canonical preset mechanism across `calibpipe`. A profile can encapsulate:
-- **Batch resource bundles:** partition, core count (`cores`), thread allocation (`cpus_per_task`), memory, walltime, and scheduler backend.
+- **Batch resource bundles:** partition, Slurm task count (`ntasks`), HTCondor CPU count (`request_cpus`), thread allocation (`cpus_per_task`), memory, walltime, and scheduler backend.
 - **Self-contained execution targets:** MOUS UIDs, MeasurementSets (`vis`), procedures, standalone PPRs, custom scripts, inline commands, or interactive sessions.
 - **Hardware & runtime tuning:** process counts, OpenMP threads, memory limits, and subprocess environments.
 
@@ -484,14 +486,14 @@ Define reusable queue and resource configurations:
 [profiles.debug]
 desc = "Interactive debug queue with quick turnaround"
 partition = "debug"
-cores = 4
+ntasks = 4
 mem = 32
 walltime = "01:00:00"
 
 [profiles.heavy]
 desc = "High-memory multi-node batch queue preset"
 partition = "batch2"
-cores = 16
+ntasks = 16
 cpus_per_task = 2
 mem = 500
 ```
@@ -590,7 +592,8 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `with_report` | Automatically submit a dependent Slurm wrap-up job to combine coverage and synthesize test results (`true`/`false`). |
 | | `save_runfile` | Persist collected test node IDs to a runfile during `calibpipe submit`. |
 | **Batch Directives** | `max_concurrent` | Maximum concurrent batch jobs running simultaneously via chained Slurm dependency slots (`#SBATCH --dependency=afterany:<job_{i-K}>`). |
-| | `cores` | Allocated CPU / task count (Slurm `--ntasks` / HTCondor `request_cpus`). |
+| | `ntasks` | Slurm task count (`--ntasks`). |
+| | `request_cpus` | HTCondor CPU slot count (`request_cpus`). |
 | | `cpus_per_task` | Logical CPUs / threads per task for OpenMP multithreading. |
 | | `partition` | Slurm partition / HTCondor queue name. |
 | | `mem` | Total memory in GB (mutually exclusive with `mem_per_cpu`). |
@@ -895,7 +898,7 @@ heuristics_dir = "PROJ-101/pipeline"
 
 # Scheduler directives (Slurm / HTCondor):
 partition = "batch2"
-cores = 8                           # tasks / MPI ranks
+ntasks = 8                          # Slurm tasks
 mem = 128                           # total GB (or mem_per_cpu = "16G")
 walltime = "24:00:00"
 backup = true
@@ -915,7 +918,7 @@ recipe = "procedure_vlassCCIP.xml"
 
 # Scheduler directives:
 partition = "batch2"
-cores = 16
+ntasks = 16
 mem = 248
 ```
 
@@ -932,7 +935,7 @@ calibpipe submit -p e2e_mous_calimage --dry-run
 ```
 
 **What `calibpipe submit` does under the hood:**
-1. Evaluates `#SBATCH` directives (`partition`, `cores`, `mem`, `walltime`, etc.) from the profile.
+1. Evaluates `#SBATCH` directives (`partition`, `ntasks`, `mem`, `walltime`, etc.) from the profile.
 2. Resolves paths, environment settings, and profile overrides up front into one shared frozen snapshot (`batch.<timestamp>.toml`).
 3. Writes the persistent submission script to `scipipe_logdir` (e.g. `batch.e2e_mous_calimage_<timestamp>.sbatch`).
 4. Dispatches `calibpipe run --config=<snapshot> --config-only -p=e2e_mous_calimage` inside the allocated job allocation.
@@ -950,7 +953,7 @@ When you need to process a queue of multiple MOUSes using a shared cluster and e
    [profiles."alma_batch_template"]
    desc = "Shared cluster template for ALMA batch reductions"
    partition = "batch2"
-   cores = 8
+   ntasks = 8
    mem = 64
    walltime = "12:00:00"
    casa_root = "casa-6.7.7-7-py3.12.el8"

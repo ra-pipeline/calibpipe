@@ -63,7 +63,7 @@ class TestTemplates(unittest.TestCase):
             pipejob=cmd,
             queue="plwg",
             node="1",
-            cores="8",
+            ntasks="8",
             job_name="myjob",
             mail_user="testuser",
             mail_type="ALL",
@@ -73,6 +73,7 @@ class TestTemplates(unittest.TestCase):
         )
         self.assertIn("#!/bin/sh", rendered)
         self.assertIn("#SBATCH --partition=plwg", rendered)
+        self.assertIn("#SBATCH --ntasks=8", rendered)
         self.assertIn("#SBATCH --output=my.out", rendered)
         self.assertIn("#SBATCH --error=my.err", rendered)
         self.assertIn("ulimit -Sn 8192", rendered)

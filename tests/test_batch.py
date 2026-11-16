@@ -192,14 +192,14 @@ class TestBasicPipefile(RunbatchCaptureCase):
 
 
 class TestCliFlags(RunbatchCaptureCase):
-    def test_custom_cores_mem_and_partition_from_config(self):
+    def test_custom_ntasks_mem_and_partition_from_config(self):
         cfg_path = self._write_temp_config("""
 default_env = "main"
 [envs.main]
 casa_root = "/fake/casa/main"
 [batch]
 partition = "plwg2"
-cores = 4
+ntasks = 4
 mem = 32
 """)
         calls = self.run_and_capture(
@@ -278,12 +278,12 @@ casa_root = "/fake/casa/main"
 
 [batch]
 partition = "plwg"
-cores = 8
+ntasks = 8
 mem = 248
 
 [profiles.debug]
 partition = "debug"
-cores = 4
+ntasks = 4
 mem = 32
 walltime = "01:00:00"
 """)
@@ -508,7 +508,7 @@ default_env = "main"
 casa_root = "/fake/casa/main"
 [batch]
 scheduler = "htcondor"
-cores = 4
+request_cpus = 4
 mem = 32
 partition = "plwg"
 """)
@@ -595,14 +595,14 @@ requirements = '( TARGET.Arch == "X86_64" )'
         _, htc_script = calls[0]
         self.assertIn('requirements = ( ( TARGET.Arch == "X86_64" ) )', htc_script)
 
-    def test_htcondor_mem_per_cpu_scales_by_cores(self):
+    def test_htcondor_mem_per_cpu_scales_by_request_cpus(self):
         cfg_path = self._write_temp_config("""
 default_env = "main"
 [envs.main]
 casa_root = "/fake/casa/main"
 [batch]
 scheduler = "htcondor"
-cores = 4
+request_cpus = 4
 mem_per_cpu = "8G"
 """)
         calls = self.run_and_capture(
@@ -669,7 +669,7 @@ default_env = "main"
 casa_root = "/fake/casa/main"
 [batch]
 scheduler = "htcondor"
-cores = 4
+request_cpus = 4
 pool = "cm.example.org"
 schedd = "schedd.example.org"
 spool = true
@@ -696,7 +696,7 @@ spool = true
         htc_body, _ = build_htcondor_script(
             "calibpipe run -p=transfer_prof",
             partition="batch",
-            cores=4,
+            request_cpus=4,
             mem="16G",
             job_name="test_transfer_job",
             outfile="/tmp/test.out",
@@ -713,7 +713,7 @@ spool = true
         htc_body_default, _ = build_htcondor_script(
             "calibpipe run -p=default_prof",
             partition="batch",
-            cores=4,
+            request_cpus=4,
             mem="16G",
             job_name="test_default_job",
             outfile="/tmp/test.out",
@@ -732,7 +732,7 @@ class TestBatchProfiles(RunbatchCaptureCase):
         cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
         cfg.profiles["htc_profile"] = ProfileConfig(
             scheduler="htcondor",
-            cores=12,
+            request_cpus=12,
             mem=64,
             partition="batch",
         )
@@ -756,7 +756,7 @@ class TestBatchProfiles(RunbatchCaptureCase):
     def test_profile_direct_submission_without_pipefile(self):
         cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
         cfg.profiles["test_prof"] = ProfileConfig(
-            cores=4,
+            ntasks=4,
             mem=32,
             partition="test_partition",
             cmd="print(1)",
@@ -788,7 +788,7 @@ class TestBatchProfiles(RunbatchCaptureCase):
 
             cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
             cfg.profiles["auto_chdir_prof"] = ProfileConfig(
-                cores=4,
+                ntasks=4,
                 mem=32,
                 partition="test_partition",
                 workdir=str(target_dir),
@@ -815,7 +815,7 @@ class TestBatchProfiles(RunbatchCaptureCase):
             target_dir = Path(td) / "regression" / "casa_cov_test"
             cfg = runbatch.envconfig.load_merged_config(cli_arg=str(CONFIG), include_site=False)
             cfg.profiles["reg_backup_prof"] = ProfileConfig(
-                cores=4,
+                ntasks=4,
                 mem=32,
                 partition="test_partition",
                 workdir=str(target_dir),
@@ -955,7 +955,7 @@ casa_root = "/fake/casa/main"
             "uv run calibpipe run -p=my_prof",
             partition="batch",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             job_name="test_uv_job",
             mail_user="test",
@@ -971,7 +971,7 @@ casa_root = "/fake/casa/main"
             "/usr/bin/python script.py",
             partition="batch",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             job_name="test_plain_job",
             mail_user="test",
@@ -986,7 +986,7 @@ casa_root = "/fake/casa/main"
         _, htc_wrapper = build_htcondor_script(
             "uv run calibpipe run -p=my_prof",
             partition="batch",
-            cores=8,
+            request_cpus=8,
             mem="32G",
             job_name="test_htc_job",
             outfile="/tmp/test.out",
@@ -1004,7 +1004,7 @@ casa_root = "/fake/casa/main"
             "pixi run calibpipe run -p=my_prof",
             partition="batch",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             job_name="test_pixi_job",
             mail_user="test",
@@ -1021,7 +1021,7 @@ casa_root = "/fake/casa/main"
             "calibpipe run -p=my_prof",
             partition="batch",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             job_name="test_pixi_job",
             mail_user="test",
@@ -1039,7 +1039,7 @@ casa_root = "/fake/casa/main"
             "/usr/bin/python script.py",
             partition="batch",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             job_name="test_plain_job",
             mail_user="test",
@@ -1055,7 +1055,7 @@ casa_root = "/fake/casa/main"
         _, htc_wrapper = build_htcondor_script(
             "calibpipe run -p=my_prof",
             partition="batch",
-            cores=8,
+            request_cpus=8,
             mem="32G",
             job_name="test_htc_job",
             outfile="/tmp/test.out",
@@ -1075,7 +1075,7 @@ casa_root = "/fake/casa/main"
             "calibpipe run -p=my_prof",
             partition="batch",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             cpus_per_task=2,
             job_name="test_thread_job",
@@ -1093,7 +1093,7 @@ casa_root = "/fake/casa/main"
             "calibpipe run -p=my_prof",
             partition="batch",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             cpus_per_task=4,
             omp_num_threads=1,
@@ -1112,7 +1112,7 @@ casa_root = "/fake/casa/main"
         _, htc_wrapper = build_htcondor_script(
             "calibpipe run -p=my_prof",
             partition="batch",
-            cores=8,
+            request_cpus=8,
             mem="32G",
             omp_num_threads=2,
             openblas_num_threads=2,
@@ -1132,7 +1132,7 @@ casa_root = "/fake/casa/main"
         htc_body, _ = build_htcondor_script(
             "calibpipe run -p=gpu_prof",
             partition="batch",
-            cores=8,
+            request_cpus=8,
             mem="32G",
             request_gpus=2,
             job_name="test_gpu_job",
@@ -1147,7 +1147,7 @@ casa_root = "/fake/casa/main"
         htc_body_default, _ = build_htcondor_script(
             "calibpipe run -p=default_prof",
             partition="batch",
-            cores=8,
+            request_cpus=8,
             mem="32G",
             job_name="test_default_job",
             outfile="/tmp/test.out",
@@ -1162,7 +1162,7 @@ casa_root = "/fake/casa/main"
             "calibpipe run -p=gpu_prof",
             partition="gpu",
             node="1",
-            cores=8,
+            ntasks=8,
             mem="32G",
             request_gpus=1,
             job_name="test_slurm_gpu",
@@ -1280,7 +1280,7 @@ casa_root = "/fake/casa/main"
         script = build_sbatch_script(
             "calibpipe report /tmp/workdir",
             node="1",
-            cores=1,
+            ntasks=1,
             mem="8G",
             job_name="report_job",
             mail_user="user@example.com",

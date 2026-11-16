@@ -133,7 +133,7 @@ def build_sbatch_script(
     partition: str = "plwg",
     queue: str | None = None,
     node: str,
-    cores: int,
+    ntasks: int,
     mem: str | None,
     job_name: str,
     mail_user: str,
@@ -171,7 +171,7 @@ def build_sbatch_script(
         partition: Slurm partition name.
         queue: Backward-compatible alias for `partition`.
         node: Number of nodes (``--nodes``).
-        cores: Number of tasks (``--ntasks``; total allocated logical CPUs = ntasks × cpus_per_task).
+        ntasks: Number of Slurm tasks (``--ntasks``; total allocated logical CPUs = ntasks × cpus_per_task).
         mem: Total memory string (e.g. ``"248G"``); ignored when ``mem_per_cpu`` is set.
         job_name: Slurm job name.
         mail_user: Email address for Slurm notifications.
@@ -236,7 +236,7 @@ def build_sbatch_script(
         partition=active_partition,
         queue=active_partition,
         node=node,
-        cores=cores,
+        ntasks=ntasks,
         job_name=job_name,
         mail_user=mail_user,
         mail_type=mail_type,
@@ -251,7 +251,7 @@ def build_htcondor_script(
     pipejob: str,
     *,
     partition: str = "batch",
-    cores: int = 4,
+    request_cpus: int = 4,
     mem: str | None = None,
     mem_per_cpu: str | None = None,
     job_name: str,
@@ -278,7 +278,7 @@ def build_htcondor_script(
     Args:
         pipejob: Fully assembled calibpipe command line.
         partition: HTCondor partition (+partition directive).
-        cores: Requested number of CPUs (request_cpus).
+        request_cpus: Requested number of CPUs (request_cpus).
         mem: Memory string (request_memory, e.g. "32G").
         mem_per_cpu: Memory per CPU (e.g. "8G"); overrides mem.
         job_name: Batch job name (batch_name).
@@ -323,7 +323,7 @@ def build_htcondor_script(
             else:
                 unit_part += char
         try:
-            total_num = int(float(num_part) * cores)
+            total_num = int(float(num_part) * request_cpus)
             request_memory = f"{total_num}{unit_part}"
         except ValueError:
             request_memory = mem_per_cpu
@@ -387,7 +387,7 @@ def build_htcondor_script(
         requirements=req_expr,
         request_gpus=request_gpus,
         request_memory=request_memory,
-        request_cpus=cores,
+        request_cpus=request_cpus,
         batch_name=job_name,
         initialdir=chdir or "./",
         output=outfile,
@@ -569,7 +569,7 @@ def _dispatch_htcondor(
     htc_body, runner_body = build_htcondor_script(
         pipejob,
         partition=batch_opts.partition,
-        cores=batch_opts.cores,
+        request_cpus=batch_opts.request_cpus,
         mem=mem_str,
         mem_per_cpu=batch_opts.mem_per_cpu,
         job_name=display_name,
@@ -638,7 +638,7 @@ def _dispatch_slurm(
         pipejob,
         partition=batch_opts.partition,
         node=batch_opts.node,
-        cores=batch_opts.cores,
+        ntasks=batch_opts.ntasks,
         mem=mem_str,
         job_name=display_name,
         mail_user=user,
@@ -829,7 +829,8 @@ def _submit_report_job(
 
     report_batch_opts = dataclasses.replace(
         batch_opts,
-        cores=1,
+        ntasks=1,
+        request_cpus=1,
         mem=8,
         mem_per_cpu=None,
         walltime="01:00:00",
@@ -1086,6 +1087,22 @@ def submit_request(request: SubmitRequest) -> int:
         tasks = [(node, collect.parse_test_name(node)) for node in nodes]
     else:
         # Single-job profile submission mode
+        if (
+            options.test_target or options.test_marker or options.test_filter
+        ) and not any(
+            getattr(base_run, name, None)
+            for name in ("mous", "vis", "script", "cmd", "ppr", "interactive")
+        ):
+            prof_label = options.profile or "<profile>"
+            setting_desc = (
+                f"test_target={options.test_target!r}"
+                if options.test_target
+                else "test collection filters"
+            )
+            raise envconfig.ConfigError(
+                f"Profile '{prof_label}' sets {setting_desc} without collect = true; "
+                f"pass a runfile (calibpipe submit <runfile> -p {prof_label}) or set collect = true in the profile."
+            )
         envconfig.validate_target(base_run)
         tasks = [(None, None)]
 

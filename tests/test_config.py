@@ -282,14 +282,16 @@ class TestTypedModels(unittest.TestCase):
         default_args = argparse.Namespace(
             pipefile="test.txt",
             partition=None,
-            cores=None,
+            ntasks=None,
+            request_cpus=None,
             mem=None,
             node=None,
             mail_type=None,
         )
         res1 = resolve_batch_options(cfg, default_args)
         self.assertEqual(res1.partition, "plwg")
-        self.assertEqual(res1.cores, 8)
+        self.assertEqual(res1.ntasks, 8)
+        self.assertEqual(res1.request_cpus, 8)
         self.assertEqual(res1.mem, 248)
         self.assertIsNone(res1.walltime)
         self.assertTrue(res1.no_requeue)
@@ -298,7 +300,8 @@ class TestTypedModels(unittest.TestCase):
         override_args = argparse.Namespace(
             pipefile="test.txt",
             partition="batch2",
-            cores=16,
+            ntasks=16,
+            request_cpus=24,
             mem=512,
             node="2",
             mail_type="FAIL",
@@ -314,7 +317,8 @@ class TestTypedModels(unittest.TestCase):
         )
         res2 = resolve_batch_options(cfg, override_args)
         self.assertEqual(res2.partition, "batch2")
-        self.assertEqual(res2.cores, 16)
+        self.assertEqual(res2.ntasks, 16)
+        self.assertEqual(res2.request_cpus, 24)
         self.assertEqual(res2.mem, 512)
         self.assertEqual(res2.node, "2")
         self.assertEqual(res2.mail_type, "FAIL")
@@ -376,7 +380,7 @@ class TestTypedModels(unittest.TestCase):
         cfg = load_config(CONFIG)
         cfg.profiles["htc_test"] = ProfileConfig(
             partition="batch",
-            cores=16,
+            request_cpus=16,
             mem=64,
             scheduler="htcondor",
             no_requeue=False,
@@ -386,15 +390,15 @@ class TestTypedModels(unittest.TestCase):
         args1 = argparse.Namespace(pipefile="test.txt", profile="htc_test")
         res1 = resolve_batch_options(cfg, args1)
         self.assertEqual(res1.partition, "batch")
-        self.assertEqual(res1.cores, 16)
+        self.assertEqual(res1.request_cpus, 16)
         self.assertEqual(res1.mem, 64)
         self.assertEqual(res1.scheduler, "htcondor")
         self.assertFalse(res1.no_requeue)
 
         # 2. Explicit overrides beat profile
-        args2 = argparse.Namespace(pipefile="test.txt", profile="htc_test", cores=32)
+        args2 = argparse.Namespace(pipefile="test.txt", profile="htc_test", request_cpus=32)
         res2 = resolve_batch_options(cfg, args2)
-        self.assertEqual(res2.cores, 32)
+        self.assertEqual(res2.request_cpus, 32)
         self.assertEqual(res2.scheduler, "htcondor")
 
     def test_resolve_batch_options_auto_derives_chdir_from_workdir(self):
@@ -438,7 +442,7 @@ class TestTypedModels(unittest.TestCase):
         # When optional batch directives are configured
         cfg.batch = BatchConfig(
             partition="batch2",
-            cores=16,
+            ntasks=16,
             mem=64,
             walltime="24:00:00",
             cpus_per_task=2,
@@ -691,7 +695,7 @@ pmr_home = "/opt/pmr"
 
 [batch]
 partition = "plwg"
-cores = 8
+ntasks = 8
 
 [paths]
 scipipe_rootdir = "/site/root/{user}"
@@ -725,7 +729,7 @@ pixi_dir = "/user/ws"
             self.assertEqual(cfg.paths.scipipe_rootdir, "/user/root/{user}")
             # Inherited and overridden batch directives
             self.assertEqual(cfg.batch.partition, "plwg")
-            self.assertEqual(cfg.batch.cores, 8)
+            self.assertEqual(cfg.batch.ntasks, 8)
             self.assertEqual(cfg.batch.mail_type, "FAIL")
             # Additive environments
             self.assertIn("main", cfg.envs)
@@ -782,20 +786,20 @@ class TestBatchProfiles(unittest.TestCase):
         data = {
             "batch": {
                 "partition": "plwg",
-                "cores": 8,
+                "ntasks": 8,
                 "mem": 248,
                 "mail_type": "ALL",
             },
             "profiles": {
                 "debug": {
                     "partition": "debug",
-                    "cores": 4,
+                    "ntasks": 4,
                     "mem": 32,
                     "walltime": "01:00:00",
                 },
                 "heavy": {
                     "partition": "batch2",
-                    "cores": 16,
+                    "ntasks": 16,
                     "cpus_per_task": 2,
                 },
             },
@@ -807,7 +811,7 @@ class TestBatchProfiles(unittest.TestCase):
         # debug profile parsed fields
         debug_cfg = cfg.profiles["debug"]
         self.assertEqual(debug_cfg.partition, "debug")
-        self.assertEqual(debug_cfg.cores, 4)
+        self.assertEqual(debug_cfg.ntasks, 4)
         self.assertEqual(debug_cfg.mem, 32)
         self.assertEqual(debug_cfg.walltime, "01:00:00")
         self.assertIsNone(debug_cfg.mail_type)
@@ -819,18 +823,18 @@ class TestBatchProfiles(unittest.TestCase):
         # heavy profile overrides & inherits mem from [batch]
         heavy_batch = resolve_batch_options(cfg, Namespace(pipefile="jobs.txt", profile="heavy"))
         self.assertEqual(heavy_batch.partition, "batch2")
-        self.assertEqual(heavy_batch.cores, 16)
+        self.assertEqual(heavy_batch.ntasks, 16)
         self.assertEqual(heavy_batch.cpus_per_task, 2)
         self.assertEqual(heavy_batch.mem, 248)
 
     def test_resolve_batch_options_with_profile(self):
         cfg = CalibpipeConfig.from_dict(
             {
-                "batch": {"partition": "plwg", "cores": 8, "mem": 248},
+                "batch": {"partition": "plwg", "ntasks": 8, "mem": 248},
                 "profiles": {
                     "debug": {
                         "partition": "debug",
-                        "cores": 4,
+                        "ntasks": 4,
                         "mem": 32,
                         "walltime": "01:00:00",
                     },
@@ -841,7 +845,7 @@ class TestBatchProfiles(unittest.TestCase):
             pipefile="jobs.txt",
             profile="debug",
             partition=None,
-            cores=None,
+            ntasks=None,
             mem=None,
             node=None,
             mail_type=None,
@@ -849,16 +853,16 @@ class TestBatchProfiles(unittest.TestCase):
         opts = resolve_batch_options(cfg, cli_args)
         self.assertEqual(opts.profile, "debug")
         self.assertEqual(opts.partition, "debug")
-        self.assertEqual(opts.cores, 4)
+        self.assertEqual(opts.ntasks, 4)
         self.assertEqual(opts.mem, 32)
         self.assertEqual(opts.walltime, "01:00:00")
 
     def test_resolve_batch_options_overrides_profile(self):
         cfg = CalibpipeConfig.from_dict(
             {
-                "batch": {"partition": "plwg", "cores": 8, "mem": 248},
+                "batch": {"partition": "plwg", "ntasks": 8, "mem": 248},
                 "profiles": {
-                    "debug": {"partition": "debug", "cores": 4, "mem": 32},
+                    "debug": {"partition": "debug", "ntasks": 4, "mem": 32},
                 },
             }
         )
@@ -866,7 +870,7 @@ class TestBatchProfiles(unittest.TestCase):
             pipefile="jobs.txt",
             profile="debug",
             partition="custom_queue",
-            cores=16,
+            ntasks=16,
             mem=None,
             node=None,
             mail_type=None,
@@ -874,7 +878,7 @@ class TestBatchProfiles(unittest.TestCase):
         opts = resolve_batch_options(cfg, cli_args)
         self.assertEqual(opts.profile, "debug")
         self.assertEqual(opts.partition, "custom_queue")
-        self.assertEqual(opts.cores, 16)
+        self.assertEqual(opts.ntasks, 16)
         self.assertEqual(opts.mem, 32)
 
     def test_resolve_batch_options_unknown_profile_raises(self):
@@ -893,13 +897,13 @@ class TestBatchProfiles(unittest.TestCase):
         self.assertIn("Unknown batch profile 'nonexistent'", str(cm.exception))
         self.assertIn("debug", str(cm.exception))
 
-    def test_resolve_batch_options_cores_and_nprocs(self):
+    def test_resolve_batch_options_ntasks_and_nprocs(self):
         cfg = CalibpipeConfig.from_dict(
             {
                 "profiles": {
                     "vlass_slurm": {
                         "partition": "queue",
-                        "cores": 7,
+                        "ntasks": 7,
                         "cpus_per_task": 3,
                         "nprocs": 8,
                     }
@@ -909,21 +913,21 @@ class TestBatchProfiles(unittest.TestCase):
         cli_args = Namespace(
             pipefile="jobs.txt",
             profile="vlass_slurm",
-            cores=None,
+            ntasks=None,
         )
         opts = resolve_batch_options(cfg, cli_args)
-        # Profile cores=7 is distinct from nprocs=8
-        self.assertEqual(opts.cores, 7)
+        # Profile ntasks=7 is distinct from nprocs=8
+        self.assertEqual(opts.ntasks, 7)
         self.assertEqual(opts.cpus_per_task, 3)
 
         # Explicit override takes precedence over profile
         cli_args_override = Namespace(
             pipefile="jobs.txt",
             profile="vlass_slurm",
-            cores=12,
+            ntasks=12,
         )
         opts_override = resolve_batch_options(cfg, cli_args_override)
-        self.assertEqual(opts_override.cores, 12)
+        self.assertEqual(opts_override.ntasks, 12)
 
 
 class TestConfigExampleSchemaDrift(unittest.TestCase):
@@ -1126,7 +1130,7 @@ class TestSelfContainedProfilesAndTargets(unittest.TestCase):
     def test_dry_run_batch_resolution(self):
         cfg = CalibpipeConfig.from_dict(
             {
-                "batch": {"partition": "plwg", "cores": 8, "dry_run": False},
+                "batch": {"partition": "plwg", "ntasks": 8, "dry_run": False},
                 "profiles": {
                     "dry_batch": {"dry_run": True},
                 },
@@ -1136,7 +1140,7 @@ class TestSelfContainedProfilesAndTargets(unittest.TestCase):
             pipefile="jobs.txt",
             profile="dry_batch",
             partition=None,
-            cores=None,
+            ntasks=None,
             mem=None,
             node=None,
             mail_type=None,
@@ -1165,7 +1169,7 @@ class TestProfileInspection(unittest.TestCase):
                     },
                     "heavy_batch": {
                         "desc": "Heavy HPC queue submission",
-                        "cores": 32,
+                        "ntasks": 32,
                         "mem": 512,
                     },
                 },
@@ -1457,7 +1461,7 @@ class TestNprocsBackwardCompatibility(unittest.TestCase):
             },
             "batch": {
                 "partition": "queue",
-                "cores": 8,
+                "ntasks": 8,
                 "mem": 248,
             },
             "envs": {
@@ -1473,7 +1477,7 @@ class TestNprocsBackwardCompatibility(unittest.TestCase):
                     "nprocs": 16,
                     "verbose": True,
                     "partition": "gpu",
-                    "cores": 16,
+                    "ntasks": 16,
                     "mem_per_cpu": "8G",
                     "casa_root": "/custom/casa-6.7.7-15",
                     "heuristics_dir": "/custom/pipe3283",
@@ -1487,7 +1491,7 @@ class TestNprocsBackwardCompatibility(unittest.TestCase):
         self.assertEqual(prof.casarundata, "/custom/casadata")
         self.assertEqual(prof.workspaces, ["/custom/ws"])
         self.assertEqual(prof.nprocs, 16)
-        self.assertEqual(prof.cores, 16)
+        self.assertEqual(prof.ntasks, 16)
         self.assertEqual(prof.partition, "gpu")
         self.assertEqual(prof.mem_per_cpu, "8G")
 
@@ -1503,7 +1507,7 @@ class TestNprocsBackwardCompatibility(unittest.TestCase):
         # Resolve batch options
         batch_opts = resolve_batch_options(cfg, Namespace(profile="custom"))
         self.assertEqual(batch_opts.partition, "gpu")
-        self.assertEqual(batch_opts.cores, 16)
+        self.assertEqual(batch_opts.ntasks, 16)
         self.assertEqual(batch_opts.mem_per_cpu, "8G")
 
         # Resolve env with run_opts overrides
@@ -1800,7 +1804,7 @@ class TestCasarundataConsolidation(unittest.TestCase):
 
 
 class TestSimplifiedConfigHierarchy(unittest.TestCase):
-    """Test canonical tool paths, nprocs/cores/cpus_per_task, HTCondor options, and default_profile."""
+    """Test canonical tool paths, nprocs/ntasks/request_cpus/cpus_per_task, HTCondor options, and default_profile."""
 
     def test_paths_and_tool_settings(self):
         cfg1 = CalibpipeConfig.from_dict({
@@ -1827,25 +1831,26 @@ class TestSimplifiedConfigHierarchy(unittest.TestCase):
         self.assertEqual(tools["pixi_bin"], "/custom/bin/pixi")
 
     def test_nprocs_and_cpus_per_task_properties(self):
-        # BatchConfig uses cores and cpus_per_task
-        b = BatchConfig.from_dict({"partition": "plwg", "cores": 8, "cpus_per_task": 2})
-        self.assertEqual(b.cores, 8)
+        # BatchConfig uses ntasks (Slurm) and request_cpus (HTCondor) independently
+        b = BatchConfig.from_dict({"partition": "plwg", "ntasks": 8, "request_cpus": 16, "cpus_per_task": 2})
+        self.assertEqual(b.ntasks, 8)
+        self.assertEqual(b.request_cpus, 16)
         self.assertEqual(b.cpus_per_task, 2)
 
-        # ProfileConfig clearly separates MPI application processes (nprocs) from scheduler cores (cores)
-        p = ProfileConfig.from_dict({"partition": "batch2", "nprocs": 12, "cores": 16, "cpus_per_task": 3})
+        # ProfileConfig clearly separates MPI application processes (nprocs) from scheduler ntasks
+        p = ProfileConfig.from_dict({"partition": "batch2", "nprocs": 12, "ntasks": 16, "cpus_per_task": 3})
         self.assertEqual(p.nprocs, 12)
-        self.assertEqual(p.cores, 16)
+        self.assertEqual(p.ntasks, 16)
         self.assertEqual(p.cpus_per_task, 3)
 
         cfg = CalibpipeConfig.from_dict({
-            "batch": {"partition": "plwg", "cores": 8},
+            "batch": {"partition": "plwg", "ntasks": 8},
             "profiles": {
-                "test_preset": {"partition": "batch2", "cores": 16, "cpus_per_task": 2, "mem": 128}
+                "test_preset": {"partition": "batch2", "ntasks": 16, "cpus_per_task": 2, "mem": 128}
             }
         })
         res = resolve_batch_options(cfg, Namespace(profile="test_preset", pipefile="test.txt"))
-        self.assertEqual(res.cores, 16)
+        self.assertEqual(res.ntasks, 16)
         self.assertEqual(res.cpus_per_task, 2)
 
     def test_htcondor_remote_config_options(self):
@@ -1924,7 +1929,7 @@ class TestSimplifiedConfigHierarchy(unittest.TestCase):
                     "vis": ["data/test.ms"],
                     "recipe": "procedure_custom.xml",
                     "nprocs": 12,
-                    "cores": 12,
+                    "ntasks": 12,
                     "partition": "batch2",
                     "mem": 256,
                 },
@@ -1956,7 +1961,7 @@ class TestSimplifiedConfigHierarchy(unittest.TestCase):
         # resolve_batch_options applies explicit profile options
         batch_opts = resolve_batch_options(cfg, Namespace(profile="regression_test", pipefile="test.txt"))
         self.assertEqual(batch_opts.partition, "batch2")
-        self.assertEqual(batch_opts.cores, 12)
+        self.assertEqual(batch_opts.ntasks, 12)
         self.assertEqual(batch_opts.mem, 256)
 
 
