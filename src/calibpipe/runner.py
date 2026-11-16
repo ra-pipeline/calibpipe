@@ -965,19 +965,27 @@ def _run_mous(
             fixes_file.touch()
 
     orig_cwd = os.getcwd()
+    saved_scipipe_rootdir: str | None = None
     try:
         # Change working directory to working/ for CASA execution
         os.chdir(working_path)
+        if run_opts.workdir:
+            # Workdir restructuring invalidates PPR <RelativePath> under SCIPIPE_ROOTDIR;
+            # unset it so executeppr resolves working/ and rawdata/ relative to cwd.
+            saved_scipipe_rootdir = os.environ.pop("SCIPIPE_ROOTDIR", None)
+            env.pop("SCIPIPE_ROOTDIR", None)
 
         # Assemble CASA execution command
         if env_spec.is_pixi:
             piperun_file = (working_path / "casa_piperun.py").resolve()
             resolved_workdir = str(working_path.resolve())
             preamble = build_piperun_preamble(run_opts)
+            clear_rootdir = "os.environ.pop('SCIPIPE_ROOTDIR', None)\n" if run_opts.workdir else ""
             if recipe not in ["image", "image_selfcal"]:
                 if run_opts.useresume:
                     code = (
                         "import os\n"
+                        f"{clear_rootdir}"
                         f"os.chdir(r'{resolved_workdir}')\n"
                         f"{preamble}"
                         "import pipeline.infrastructure.executeppr as eppr\n"
@@ -990,6 +998,7 @@ def _run_mous(
                 else:
                     code = (
                         "import os\n"
+                        f"{clear_rootdir}"
                         f"os.chdir(r'{resolved_workdir}')\n"
                         f"{preamble}"
                         "import pipeline.infrastructure.executeppr as eppr\n"
@@ -1000,6 +1009,7 @@ def _run_mous(
             else:
                 code = (
                     "import os\n"
+                    f"{clear_rootdir}"
                     f"os.chdir(r'{resolved_workdir}')\n"
                     f"{preamble}"
                     "import pipeline.infrastructure.executeppr as eppr\n"
@@ -1057,6 +1067,8 @@ def _run_mous(
         else:
             retcode = mylog.runquiet(cmd)
     finally:
+        if saved_scipipe_rootdir is not None:
+            os.environ["SCIPIPE_ROOTDIR"] = saved_scipipe_rootdir
         finalize_batch_job_logs(working_path, log_message)
         if run_opts.symlink_shortcuts:
             link_weblog(ppmr_dir, working_path, log_message)

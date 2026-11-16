@@ -588,12 +588,21 @@ class TestPMRCLI(unittest.TestCase):
                 patch("calibpipe.pmr.run_pmr", return_value=mock_res) as mock_pmr_run,
                 patch("calibpipe.runner.RunLogger") as mock_logger_cls,
             ):
+                observed_scipipe_during_run: list[str | None] = []
+
+                def fake_runquiet(cmd):
+                    observed_scipipe_during_run.append(os.environ.get("SCIPIPE_ROOTDIR"))
+                    return 0
+
                 mock_logger_inst = MagicMock()
                 mock_logger_inst.run.return_value = 0
-                mock_logger_inst.runquiet.return_value = 0
+                mock_logger_inst.runquiet.side_effect = fake_runquiet
                 mock_logger_cls.return_value = mock_logger_inst
 
-                with patch.dict("os.environ", {"CALIBPIPE_SKIP_PATH_CHECK": "1"}):
+                with patch.dict(
+                    "os.environ",
+                    {"CALIBPIPE_SKIP_PATH_CHECK": "1", "SCIPIPE_ROOTDIR": str(root_dir)},
+                ):
                     orig_getoutput = runner.getoutput
                     try:
                         runner.getoutput = runner.subprocess.getoutput
@@ -610,6 +619,9 @@ class TestPMRCLI(unittest.TestCase):
                         req = mock_pmr_run.call_args[0][0]
                         self.assertEqual(req.mous, "uid://A001/X1/X1")
                         self.assertEqual(req.rename, str(custom_workdir))
+                        self.assertEqual(observed_scipipe_during_run, [None])
+                        self.assertNotIn("SCIPIPE_ROOTDIR", env)
+                        self.assertEqual(os.environ.get("SCIPIPE_ROOTDIR"), str(root_dir))
                     finally:
                         runner.getoutput = orig_getoutput
 
