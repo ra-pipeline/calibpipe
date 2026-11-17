@@ -820,6 +820,216 @@ class TestPMRRenaming(unittest.TestCase):
                 self.assertEqual(res.project_root, expected_root)
                 self.assertTrue(expected_root.is_dir())
 
+    def test_run_pmr_populates_and_reuses_asdm_cache(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cache_root = base / "asdm_cache"
+            runtime = PMRRuntime(
+                acsroot=Path("/opt/pipetools/latest"),
+                acsdata=Path("/opt/acsdata"),
+                scriptdir=Path("/opt/recipes"),
+            )
+
+            # 1. Cache miss: PMR runs with download_asdms=True, populates cache, and symlinks back
+            gen1 = base / "2021.1.01195.S_2026_11_17T03_00_00"
+            mous1 = gen1 / "SOUS_uid___A001_X1_X1" / "GOUS_uid___A001_X1_X2" / "MOUS_uid___A001_X1_X3"
+            (mous1 / "working").mkdir(parents=True)
+            (mous1 / "working" / "PPR.xml").write_text(
+                "<SciPipeRequest><ProjectSummary><ProposalCode>2021.1.01195.S</ProposalCode></ProjectSummary></SciPipeRequest>"
+            )
+            eb1 = mous1 / "rawdata" / "uid___A002_X9_X1"
+            eb1.mkdir(parents=True)
+            (eb1 / "ASDM.xml").write_text("<ASDM/>")
+
+            req = PMRRequest(mous="uid://A001/X1/X3", download_asdms=True)
+            with (
+                patch("calibpipe.pmr.validate_files"),
+                patch("subprocess.Popen") as mock_popen,
+            ):
+                proc1 = MagicMock()
+                proc1.stdout.readline.side_effect = [f"Project root directory is {gen1}\n", ""]
+                proc1.wait.return_value = None
+                proc1.returncode = 0
+                mock_popen.return_value = proc1
+
+                res1 = run_pmr(req, runtime=runtime, asdm_cache=cache_root)
+                self.assertEqual(res1.exit_code, 0)
+                self.assertEqual(res1.command[-3], "true")
+
+            cached_eb = (
+                cache_root
+                / "2021.1.01195.S"
+                / "SOUS_uid___A001_X1_X1"
+                / "GOUS_uid___A001_X1_X2"
+                / "MOUS_uid___A001_X1_X3"
+                / "rawdata"
+                / "uid___A002_X9_X1"
+            )
+            self.assertTrue((cached_eb / "ASDM.xml").is_file())
+            self.assertTrue(eb1.is_symlink())
+            self.assertEqual(eb1.resolve(), cached_eb.resolve())
+
+            # 2. Cache hit: PMR omits --download and symlinks cached ASDM into new rawdata/
+            gen2 = base / "2021.1.01195.S_2026_11_17T03_05_00"
+            mous2 = gen2 / "SOUS_uid___A001_X1_X1" / "GOUS_uid___A001_X1_X2" / "MOUS_uid___A001_X1_X3"
+            (mous2 / "working").mkdir(parents=True)
+            (mous2 / "rawdata").mkdir(parents=True)
+
+            with (
+                patch("calibpipe.pmr.validate_files"),
+                patch("subprocess.Popen") as mock_popen,
+            ):
+                proc2 = MagicMock()
+                proc2.stdout.readline.side_effect = [f"Project root directory is {gen2}\n", ""]
+                proc2.wait.return_value = None
+                proc2.returncode = 0
+                mock_popen.return_value = proc2
+
+                res2 = run_pmr(req, runtime=runtime, asdm_cache=cache_root)
+                self.assertEqual(res2.exit_code, 0)
+                self.assertEqual(res2.command[-3], "false")
+                eb2 = mous2 / "rawdata" / "uid___A002_X9_X1"
+                self.assertTrue(eb2.is_symlink())
+                self.assertEqual(eb2.resolve(), cached_eb.resolve())
+
+    def test_run_pmr_partial_cache_falls_back_to_download(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cache_root = base / "asdm_cache"
+            runtime = PMRRuntime(
+                acsroot=Path("/opt/pipetools/latest"),
+                acsdata=Path("/opt/acsdata"),
+                scriptdir=Path("/opt/recipes"),
+            )
+
+            # Seed cache with only 1 of 2 required EBs
+            cached_raw = (
+                cache_root
+                / "2021.1.01195.S"
+                / "SOUS_uid___A001_X1_X1"
+                / "GOUS_uid___A001_X1_X2"
+                / "MOUS_uid___A001_X1_X3"
+                / "rawdata"
+            )
+            (cached_raw / "uid___A002_X9_X1").mkdir(parents=True)
+            (cached_raw / "uid___A002_X9_X1" / "ASDM.xml").write_text("<ASDM/>")
+
+            ppr_xml = (
+                "<SciPipeRequest>"
+                "<ProjectSummary><ProposalCode>2021.1.01195.S</ProposalCode></ProjectSummary>"
+                "<ProcessingRequests><ProcessingRequest><DataSet>"
+                "<ExecBlockId>uid://A002/X9/X1</ExecBlockId>"
+                "<ExecBlockId>uid://A002/X9/X2</ExecBlockId>"
+                "</DataSet></ProcessingRequest></ProcessingRequests>"
+                "</SciPipeRequest>"
+            )
+
+            # Attempt 1: metadata-only sees partial cache; Attempt 2: full download populates missing EB
+            gen_meta = base / "2021.1.01195.S_meta"
+            mous_meta = gen_meta / "SOUS_uid___A001_X1_X1" / "GOUS_uid___A001_X1_X2" / "MOUS_uid___A001_X1_X3"
+            (mous_meta / "working").mkdir(parents=True)
+            (mous_meta / "rawdata").mkdir(parents=True)
+            (mous_meta / "working" / "PPR.xml").write_text(ppr_xml)
+
+            gen_full = base / "2021.1.01195.S_full"
+            mous_full = gen_full / "SOUS_uid___A001_X1_X1" / "GOUS_uid___A001_X1_X2" / "MOUS_uid___A001_X1_X3"
+            (mous_full / "working").mkdir(parents=True)
+            (mous_full / "working" / "PPR.xml").write_text(ppr_xml)
+            for eb in ("uid___A002_X9_X1", "uid___A002_X9_X2"):
+                (mous_full / "rawdata" / eb).mkdir(parents=True)
+                (mous_full / "rawdata" / eb / "ASDM.xml").write_text("<ASDM/>")
+
+            proc1 = MagicMock()
+            proc1.stdout.readline.side_effect = [f"Project root directory is {gen_meta}\n", ""]
+            proc1.wait.return_value = None
+            proc1.returncode = 0
+
+            proc2 = MagicMock()
+            proc2.stdout.readline.side_effect = [f"Project root directory is {gen_full}\n", ""]
+            proc2.wait.return_value = None
+            proc2.returncode = 0
+
+            req = PMRRequest(mous="uid://A001/X1/X3", download_asdms=True)
+            with (
+                patch("calibpipe.pmr.validate_files"),
+                patch("subprocess.Popen", side_effect=[proc1, proc2]) as mock_popen,
+            ):
+                res = run_pmr(req, runtime=runtime, asdm_cache=cache_root)
+
+            self.assertEqual(mock_popen.call_count, 2)
+            self.assertEqual(res.exit_code, 0)
+            self.assertEqual(res.command[-3], "true")
+            self.assertFalse(gen_meta.exists())
+            self.assertTrue((cached_raw / "uid___A002_X9_X2" / "ASDM.xml").is_file())
+            self.assertTrue((mous_full / "rawdata" / "uid___A002_X9_X2").is_symlink())
+
+    def test_run_pmr_caches_light_xmls_only_when_changed(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cache_root = base / "asdm_cache"
+            runtime = PMRRuntime(
+                acsroot=Path("/opt/pipetools/latest"),
+                acsdata=Path("/opt/acsdata"),
+                scriptdir=Path("/opt/recipes"),
+            )
+
+            def make_pmr_dir(name: str, creation_time: str, rel_root: str, recipe_cmd: str) -> Path:
+                gen = base / name
+                mous = gen / "SOUS_uid___A001_X1_X1" / "GOUS_uid___A001_X1_X2" / "MOUS_uid___A001_X1_X3"
+                (mous / "working").mkdir(parents=True)
+                (mous / "rawdata").mkdir(parents=True)
+                (gen / "AOUS_uid___A001_X1_X0.xml").write_text("<AOUS>v1</AOUS>")
+                (gen / "OBS_uid___A001_X1_X0.xml").write_text("<OBS>v1</OBS>")
+                (gen / "PS_uid___A001_X1_X0.xml").write_text("<PS>v1</PS>")
+                (mous / "working" / "PPR_uid___A001_X1_X3.xml").write_text(
+                    "<SciPipeRequest>"
+                    f"<ProjectSummary><ProposalCode>2021.1.01195.S</ProposalCode><CreationTime>{creation_time}</CreationTime></ProjectSummary>"
+                    f"<ProcessingRequests><RelativePath>{rel_root}/SOUS_uid___A001_X1_X1</RelativePath>"
+                    f"<Command>{recipe_cmd}</Command></ProcessingRequests>"
+                    "</SciPipeRequest>"
+                )
+                return gen
+
+            gen1 = make_pmr_dir("run1", "2026-11-17T01:00:00", "2021.1.01195.S_1", "hifa_calimage")
+            gen2 = make_pmr_dir("run2", "2026-11-17T02:00:00", "2021.1.01195.S_2", "hifa_calimage")
+            gen3 = make_pmr_dir("run3", "2026-11-17T03:00:00", "2021.1.01195.S_3", "hifa_cal")
+
+            req = PMRRequest(mous="uid://A001/X1/X3", download_asdms=False)
+            for gen in (gen1, gen2, gen3):
+                with (
+                    patch("calibpipe.pmr.validate_files"),
+                    patch("subprocess.Popen") as mock_popen,
+                ):
+                    proc = MagicMock()
+                    proc.stdout.readline.side_effect = [f"Project root directory is {gen}\n", ""]
+                    proc.wait.return_value = None
+                    proc.returncode = 0
+                    mock_popen.return_value = proc
+                    res = run_pmr(req, runtime=runtime, asdm_cache=cache_root)
+                    self.assertEqual(res.exit_code, 0)
+
+                cached_ppr = (
+                    cache_root
+                    / "2021.1.01195.S"
+                    / "SOUS_uid___A001_X1_X1"
+                    / "GOUS_uid___A001_X1_X2"
+                    / "MOUS_uid___A001_X1_X3"
+                    / "working"
+                    / "PPR_uid___A001_X1_X3.xml"
+                )
+                if gen is gen1:
+                    inode_after_run1 = cached_ppr.stat().st_ino
+                    self.assertTrue((cache_root / "2021.1.01195.S" / "AOUS_uid___A001_X1_X0.xml").is_file())
+                    self.assertTrue((cache_root / "2021.1.01195.S" / "OBS_uid___A001_X1_X0.xml").is_file())
+                    self.assertTrue((cache_root / "2021.1.01195.S" / "PS_uid___A001_X1_X0.xml").is_file())
+                elif gen is gen2:
+                    # Volatile CreationTime/RelativePath only -> cached PPR not rewritten
+                    self.assertEqual(cached_ppr.stat().st_ino, inode_after_run1)
+                elif gen is gen3:
+                    # Semantic PPR change -> cached PPR updated
+                    self.assertNotEqual(cached_ppr.stat().st_ino, inode_after_run1)
+                    self.assertIn("hifa_cal", cached_ppr.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -737,7 +737,7 @@ def _build_mous_eppr_statements(
 ) -> list[str]:
     """Build CASA executeppr statements for MOUS execution."""
     if _is_restore_image_recipe(recipe) or (not useresume and not has_fixes):
-        return [f"eppr.executeppr('{pprfile}', loglevel='{loglevel}')"]
+        return [f"eppr.executeppr('{pprfile}', importonly=False, loglevel='{loglevel}')"]
     if useresume:
         return [
             f"eppr.executeppr('{pprfile}', breakpoint='hifa_flagdata', bpaction='break', loglevel='{loglevel}')",
@@ -799,6 +799,11 @@ def _run_mous(
         asdms_arg = f"--asdms [{run_opts.onlysemipass}] "
 
     intents_xml = "intents_hsd.xml" if "hsd" in procedure else "intents_hifa.xml"
+    asdm_cache_dir = (
+        run_opts.asdm_cache
+        if (run_opts.asdm_cache and run_opts.use_asdm_cache and not flag_and_go)
+        else None
+    )
     dl_asdms = "false" if oldasdms else "true"
     dl_cal = (
         "true"
@@ -830,6 +835,8 @@ def _run_mous(
         print(f"[DRY RUN] MOUS UID: {mous_uid}")
         print(f"[DRY RUN] Environment: {env_spec.name} ({casaroot})")
         print(f"[DRY RUN] PMR command:\n    {pmr_cmd}")
+        if asdm_cache_dir:
+            print(f"[DRY RUN] ASDM cache: {asdm_cache_dir}")
         if run_opts.procedure_enable_parallel:
             print("[DRY RUN] Procedure parallel: enabled (procedure_add_parallel.py)")
         if run_opts.staticobscal or run_opts.oldcont:
@@ -856,6 +863,7 @@ def _run_mous(
             env=env,
             symlink_shortcuts=run_opts.symlink_shortcuts,
             parallel=run_opts.procedure_enable_parallel,
+            asdm_cache=asdm_cache_dir,
         )
         cmdoutput = pmr_res.output
         ppmr_rel_dir = ""

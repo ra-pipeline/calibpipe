@@ -334,6 +334,7 @@ Configures directories where runs, logs, reference databases, and cluster tools 
   - `rundata`: (Optional) Candidate measures directories for runs. Can also be set to `"none"` or `[]` to explicitly disable runtime measures path configuration.
   - `datapath`: (Optional) Sequence of directories configured for CASA's `datapath` in `.casa/config.py`.
   - `obscaldir`: (Optional) Path to static offline calibrator database (staged when `staticobscal = true` or `oldcont = true`).
+  - `asdm_cache`: (Optional) Shared write-through ASDM cache root (`<asdm_cache>/<project>/SOUS_*/GOUS_*/MOUS_*/rawdata`) used in MOUS mode when `use_asdm_cache = true`.
   - `aUdir`: (Optional) Directory for auxiliary `analysisUtils` scripts.
   - `validation_dir`: (Optional) Directory containing baseline reference products.
   - `heuristics_root`: (Optional) Base directory for multi-branch pipeline checkouts (`{heuristics_root}/{branch}`).
@@ -457,6 +458,7 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `staticobscal`: Stage prior `flux.csv`, `antennapos.csv`, and `*flag*template.txt` files for the MOUS/EBs from `[paths].obscaldir` (default: `false`).
 - `oldcont`: Stage prior `cont.dat` for the MOUS from `[paths].obscaldir` (default: `false`).
 - `procedure_enable_parallel`: Add `parallel=True` to supported tasks in generated MOUS PPRs via `scripts/procedure_add_parallel.py` (default: `false`; config-only).
+- `use_asdm_cache`: Reuse/populate `[paths].asdm_cache` in MOUS mode so ASDMs are not re-downloaded across runs (default: `true`).
 - `cont_dat`: File path to `cont.dat` staged into the working execution directory.
 - `jyperk_csv`: File path to `jyperk.csv` staged into the working execution directory.
 - `parameter_list`: File path to parameter list override staged into the working execution directory (automatically prefixed with `SEIP_` or `QLIP_` for matching recipes).
@@ -576,6 +578,7 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `staticobscal` | Stage prior `flux.csv`, `antennapos.csv`, and flag templates from `obscaldir` (`true`/`false`). |
 | | `oldcont` | Stage prior `cont.dat` from `obscaldir` (`true`/`false`). |
 | | `procedure_enable_parallel` | Enable `parallel=True` in generated MOUS PPRs via `procedure_add_parallel.py` (`true`/`false`; config-only). |
+| | `use_asdm_cache` | Reuse/populate `[paths].asdm_cache` in MOUS mode (`true`/`false`; default: `true`). |
 | | `cont_dat` | File path to `cont.dat` staged into working directory. |
 | | `jyperk_csv` | File path to `jyperk.csv` staged into working directory. |
 | | `parameter_list` | Parameter list override staged into working directory. |
@@ -1318,7 +1321,17 @@ calibpipe pmr uid://A001/X1/X1 --rename my_project_run
 
 # Preview Java command without execution
 calibpipe pmr uid://A001/X1/X1 --dry-run
+
+# Download or reuse cached ASDMs under a shared cache root
+calibpipe pmr uid://A001/X1/X1 --download --asdm-cache /data/pipeline/asdm_cache
 ```
+
+> **ASDM Caching (`[paths].asdm_cache` / `use_asdm_cache`)**:
+> When `[paths].asdm_cache` is configured (or `--asdm-cache` is passed to `calibpipe pmr`) and `use_asdm_cache = true` (default), `pmr.run_pmr` stores ASDMs under `<asdm_cache>/<project>/SOUS_*/GOUS_*/MOUS_*/rawdata/<eb_uid>`:
+> - **Cache hit:** `MakeProcessingRequests` skips the ASDM download (`download_asdms=false`) and symlinks the cached EB directories into the run's `rawdata/` (falling back to a full download if any required EB is missing).
+> - **Cache miss:** `MakeProcessingRequests` downloads the ASDMs once, atomically moves them into `asdm_cache`, and symlinks them back into `rawdata/`.
+> - **Metadata XMLs (write-only):** `AOUS_*.xml`, `OBS_*.xml`, `PS_*.xml`, and the raw `working/PPR*.xml` (pre-parallel) are also cached for reference or future standalone `--ppr` runs, and are only rewritten when changed (ignoring volatile `<CreationTime>`/`<RelativePath>` in `PPR*.xml`). Active PMR runs never read these cached XMLs.
+> - Set `use_asdm_cache = false` in `[run]` or `[profiles.*]` to force a fresh archive download.
 
 ---
 

@@ -763,12 +763,16 @@ class TestMousEpprStatements(unittest.TestCase):
             "procedure_hifa_image_selfcal.xml",
         ):
             stmts = calibPipeIF._build_mous_eppr_statements("PPR.xml", recipe, "info")
-            self.assertEqual(stmts, ["eppr.executeppr('PPR.xml', loglevel='info')"])
+            self.assertEqual(
+                stmts, ["eppr.executeppr('PPR.xml', importonly=False, loglevel='info')"]
+            )
 
     def test_cal_recipe_uses_one_shot_without_fixes(self):
         for recipe in ("calimage", "procedure_hifa_calimage.xml"):
             stmts = calibPipeIF._build_mous_eppr_statements("PPR.xml", recipe, "debug")
-            self.assertEqual(stmts, ["eppr.executeppr('PPR.xml', loglevel='debug')"])
+            self.assertEqual(
+                stmts, ["eppr.executeppr('PPR.xml', importonly=False, loglevel='debug')"]
+            )
 
     def test_cal_recipe_uses_two_phase_when_fixes_present(self):
         for recipe in ("calimage", "procedure_hifa_calimage.xml"):
@@ -796,6 +800,51 @@ class TestMousEpprStatements(unittest.TestCase):
                 "eppr.executeppr('PPR.xml', breakpoint='hifa_importdata', bpaction='resume', loglevel='debug')",
             ],
         )
+
+
+class TestAsdmCacheStaging(unittest.TestCase):
+    """Test find_cached_mous_rawdata, stage_cached_asdms, and populate_asdm_cache."""
+
+    def test_populate_and_reuse_asdm_cache(self):
+        from calibpipe.steps.staging import (
+            extract_proposal_code_from_ppr,
+            find_cached_mous_rawdata,
+            populate_asdm_cache,
+            stage_cached_asdms,
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            cache_root = base / "asdm_cache"
+
+            # 1. Initial miss
+            self.assertIsNone(find_cached_mous_rawdata(cache_root, "uid://A001/X1590/Xd6b"))
+
+            # 2. Simulate downloaded ASDM + PPR in run1
+            run1_raw = base / "run1" / "SOUS_uid___A001_X1590_Xd67" / "GOUS_uid___A001_X1590_Xd68" / "MOUS_uid___A001_X1590_Xd6b" / "rawdata"
+            eb_dir = run1_raw / "uid___A002_X1_X2"
+            eb_dir.mkdir(parents=True)
+            (eb_dir / "ASDM.xml").write_text("<ASDM/>")
+            ppr = base / "PPR.xml"
+            ppr.write_text("<SciPipeRequest><ProjectSummary><ProposalCode>2021.1.01195.S</ProposalCode></ProjectSummary></SciPipeRequest>")
+            self.assertEqual(extract_proposal_code_from_ppr(ppr), "2021.1.01195.S")
+
+            mous_rel = Path("2021.1.01195.S") / "SOUS_uid___A001_X1590_Xd67" / "GOUS_uid___A001_X1590_Xd68" / "MOUS_uid___A001_X1590_Xd6b"
+            cached = populate_asdm_cache(cache_root, mous_rel, run1_raw, ["uid://A002/X1/X2"])
+            self.assertEqual(len(cached), 1)
+            self.assertTrue((cached[0] / "ASDM.xml").is_file())
+            self.assertTrue((run1_raw / "uid___A002_X1_X2").is_symlink())
+
+            # 3. Cache hit on run2
+            found = find_cached_mous_rawdata(cache_root, "uid://A001/X1590/Xd6b")
+            self.assertEqual(found, cache_root / mous_rel / "rawdata")
+
+            run2_raw = base / "run2" / "rawdata"
+            staged, missing = stage_cached_asdms(found, run2_raw, ["uid://A002/X1/X2"])
+            self.assertEqual(missing, [])
+            self.assertEqual(len(staged), 1)
+            self.assertTrue(staged[0].is_symlink())
+            self.assertEqual(staged[0].resolve(), cached[0].resolve())
 
 
 if __name__ == "__main__":

@@ -54,6 +54,9 @@ pickle_dir = "/data/pipeline/pickles/{user}"
 # [Optional] Shared static calibrator database (used with staticobscal / oldcont):
 obscaldir = "/data/pipeline/obscal2021"
 
+# [Optional] Shared ASDM cache root (<asdm_cache>/<project>/SOUS_*/GOUS_*/MOUS_*/rawdata):
+# asdm_cache = "/data/pipeline/asdm_cache"
+
 # [Optional] Directory containing auxiliary analysis scripts (e.g. analysisUtils / aU):
 aUdir = "/opt/analysis_scripts"
 
@@ -259,6 +262,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # staticobscal = false                    # Stage flux.csv, antennapos.csv, and flag templates from obscaldir
 # oldcont = false                         # Stage cont.dat from obscaldir
 # procedure_enable_parallel = false       # Add parallel=True to supported tasks in generated MOUS PPRs
+# use_asdm_cache = true                   # Reuse/populate [paths].asdm_cache for MOUS ASDMs (default: true)
 # cont_dat = "cont.dat"                   # Path to continuum ranges file to stage into working directory
 # jyperk_csv = "jyperk.csv"               # Path to Single-Dish Jy/K conversion table to stage into working directory
 # parameter_list = "parameter.list"       # Path to pipeline parameter override list to stage into working directory
