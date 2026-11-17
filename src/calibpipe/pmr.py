@@ -44,6 +44,11 @@ JVM flags configured when launching the process:
   --add-opens: Opens encapsulated Xerces packages on Java 9+.
 """
 
+# Replaced the standalone pipelineMakeRequest CLI wrapper with a typed
+# library/CLI module (config-backed PMRRuntime, streaming PMRResult, dry-run,
+# rename/strip-timestamp, symlink shortcuts, --procedure-enable-parallel, and
+# --asdm-cache). See docs/internals.md ("Differences from Standalone pipelineMakeRequest").
+
 from __future__ import annotations
 
 import argparse
