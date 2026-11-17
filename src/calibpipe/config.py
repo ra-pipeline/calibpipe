@@ -454,6 +454,7 @@ class RunConfig(Model):
     backup: bool = False
     staticobscal: bool = False
     oldcont: bool = False
+    procedure_enable_parallel: bool = False
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -517,6 +518,7 @@ class ProfileConfig(Model):
     backup: bool | None = None
     staticobscal: bool | None = None
     oldcont: bool | None = None
+    procedure_enable_parallel: bool | None = None
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -638,6 +640,7 @@ class ResolvedRunOptions(Model):
     backup: bool = False
     staticobscal: bool = False
     oldcont: bool = False
+    procedure_enable_parallel: bool = False
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -1014,6 +1017,7 @@ def resolve_run_options(
     backup = _val("backup", cfg.run.backup)
     staticobscal = _val("staticobscal", cfg.run.staticobscal)
     oldcont = _val("oldcont", cfg.run.oldcont)
+    procedure_enable_parallel = _val("procedure_enable_parallel", cfg.run.procedure_enable_parallel)
     cont_dat = _val("cont_dat", cfg.run.cont_dat)
     jyperk_csv = _val("jyperk_csv", cfg.run.jyperk_csv)
     parameter_list = _val("parameter_list", cfg.run.parameter_list)
@@ -1410,6 +1414,7 @@ def resolve_run_options(
         backup=bool(backup),
         staticobscal=bool(staticobscal),
         oldcont=bool(oldcont),
+        procedure_enable_parallel=bool(procedure_enable_parallel),
         cont_dat=str(cont_dat) if cont_dat is not None else None,
         jyperk_csv=str(jyperk_csv) if jyperk_csv is not None else None,
         parameter_list=str(parameter_list) if parameter_list is not None else None,

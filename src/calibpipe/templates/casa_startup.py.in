@@ -28,11 +28,13 @@ if _is_client:
 
         print("+" * 80)
         print("Start a pipeline processing session:")
-        for mod_name in ("casatasks", "casatools", "casashell"):
+        for mod_name in ("casatasks", "casatools", "casashell", "pipeline"):
             try:
                 mod = __import__(mod_name)
                 if hasattr(mod, "version_string"):
                     print(f"{mod_name + ' version:':<25}{mod.version_string()}")
+                elif hasattr(mod, "__version__"):
+                    print(f"{mod_name + ' version:':<25}{mod.__version__}")
             except Exception:
                 pass
         print(f"{'casalog.num_cpus:':<25}{casalog.getNumCPUs()}")

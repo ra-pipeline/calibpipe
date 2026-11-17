@@ -258,6 +258,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # backup = false                          # Rotate existing working directories to timestamped _backup_ directories
 # staticobscal = false                    # Stage flux.csv, antennapos.csv, and flag templates from obscaldir
 # oldcont = false                         # Stage cont.dat from obscaldir
+# procedure_enable_parallel = false       # Add parallel=True to supported tasks in generated MOUS PPRs
 # cont_dat = "cont.dat"                   # Path to continuum ranges file to stage into working directory
 # jyperk_csv = "jyperk.csv"               # Path to Single-Dish Jy/K conversion table to stage into working directory
 # parameter_list = "parameter.list"       # Path to pipeline parameter override list to stage into working directory

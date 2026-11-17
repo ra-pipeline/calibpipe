@@ -751,5 +751,52 @@ class TestLog2termExecution(CalibPipeIFCaptureCase):
         self.assertNotIn("--log2term", casa_calls[0])
 
 
+class TestMousEpprStatements(unittest.TestCase):
+    """Test _build_mous_eppr_statements across recipe and useresume variants."""
+
+    def test_image_recipes_use_single_executeppr_call(self):
+        for recipe in (
+            "image",
+            "image_selfcal",
+            "image_selfcal_nocube",
+            "procedure_hifa_image.xml",
+            "procedure_hifa_image_selfcal.xml",
+        ):
+            stmts = calibPipeIF._build_mous_eppr_statements("PPR.xml", recipe, "info")
+            self.assertEqual(stmts, ["eppr.executeppr('PPR.xml', loglevel='info')"])
+
+    def test_cal_recipe_uses_one_shot_without_fixes(self):
+        for recipe in ("calimage", "procedure_hifa_calimage.xml"):
+            stmts = calibPipeIF._build_mous_eppr_statements("PPR.xml", recipe, "debug")
+            self.assertEqual(stmts, ["eppr.executeppr('PPR.xml', loglevel='debug')"])
+
+    def test_cal_recipe_uses_two_phase_when_fixes_present(self):
+        for recipe in ("calimage", "procedure_hifa_calimage.xml"):
+            stmts = calibPipeIF._build_mous_eppr_statements(
+                "PPR.xml", recipe, "debug", has_fixes=True
+            )
+            self.assertEqual(
+                stmts,
+                [
+                    "eppr.executeppr('PPR.xml',importonly=True, loglevel='debug')",
+                    "execfile('sacmPL-fixes.casa.py.txt')",
+                    "eppr.executeppr('PPR.xml',importonly=False,loglevel='debug')",
+                ],
+            )
+
+    def test_cal_recipe_useresume_uses_breakpoints(self):
+        stmts = calibPipeIF._build_mous_eppr_statements(
+            "PPR.xml", "calimage", "debug", useresume=True
+        )
+        self.assertEqual(
+            stmts,
+            [
+                "eppr.executeppr('PPR.xml', breakpoint='hifa_flagdata', bpaction='break', loglevel='debug')",
+                "execfile('sacmPL-fixes.casa.py.txt')",
+                "eppr.executeppr('PPR.xml', breakpoint='hifa_importdata', bpaction='resume', loglevel='debug')",
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

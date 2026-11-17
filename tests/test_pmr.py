@@ -565,6 +565,7 @@ class TestPMRCLI(unittest.TestCase):
                 mous="uid://A001/X1/X1",
                 recipe="calimage",
                 workdir=str(custom_workdir),
+                procedure_enable_parallel=True,
                 dry_run=False,
             )
             env_spec = EnvSpec(name="test_env", casa_root="/fake/casa")
@@ -619,6 +620,7 @@ class TestPMRCLI(unittest.TestCase):
                         req = mock_pmr_run.call_args[0][0]
                         self.assertEqual(req.mous, "uid://A001/X1/X1")
                         self.assertEqual(req.rename, str(custom_workdir))
+                        self.assertTrue(mock_pmr_run.call_args[1]["parallel"])
                         self.assertEqual(observed_scipipe_during_run, [None])
                         self.assertNotIn("SCIPIPE_ROOTDIR", env)
                         self.assertEqual(os.environ.get("SCIPIPE_ROOTDIR"), str(root_dir))

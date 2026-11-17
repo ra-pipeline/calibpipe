@@ -439,7 +439,7 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `recipe`: Default pipeline reduction recipe (default: `calimage`).
 - `nprocs`: Default worker/MPI process count passed to `mpicasa` `-n` / `CASA_NPROCS` (default: `8`).
 - `loglevel`: Default pipeline log level (default: `debug`).
-- `useresume`: Use breakpoint / resume execution instead of two sequential CASA contexts (default: `false`).
+- `useresume`: Use breakpoint/resume execution (`hifa_flagdata` break → `sacmPL-fixes.casa.py.txt` → `hifa_importdata` resume) instead of single-pass `executeppr` (or two-phase `importonly=True`/`False` when a non-empty `sacmPL-fixes.casa.py.txt` is present in `rawdata/` or `working/`) (default: `false`).
 - `symlink_shortcuts`: Automatically create convenience symlinks (`working`, `products`, `rawdata`, and `weblog` when pipeline HTML exists) in the project run root (default: `true`).
 - `log2term`: Mirror CASA log messages to stdout / terminal in real time (default: `false`).
 - `verbose`: Stream full subprocess output line-by-line to terminal and execution logs (default: `false`; override via `-v` / `--verbose`).
@@ -456,6 +456,7 @@ Configures single-run driver execution defaults for `calibpipe run`:
 - `backup`: Rotate existing non-empty working directories to timestamped `_backup_<timestamp>` directories before execution (default: `false`).
 - `staticobscal`: Stage prior `flux.csv`, `antennapos.csv`, and `*flag*template.txt` files for the MOUS/EBs from `[paths].obscaldir` (default: `false`).
 - `oldcont`: Stage prior `cont.dat` for the MOUS from `[paths].obscaldir` (default: `false`).
+- `procedure_enable_parallel`: Add `parallel=True` to supported tasks in generated MOUS PPRs via `scripts/procedure_add_parallel.py` (default: `false`; config-only).
 - `cont_dat`: File path to `cont.dat` staged into the working execution directory.
 - `jyperk_csv`: File path to `jyperk.csv` staged into the working execution directory.
 - `parameter_list`: File path to parameter list override staged into the working execution directory (automatically prefixed with `SEIP_` or `QLIP_` for matching recipes).
@@ -557,7 +558,7 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | **Run & Telemetry** | `recipe` | Pipeline reduction recipe (`calimage`, `procedure_vlassCCIP.xml`, etc.). |
 | | `nprocs` | MPI process count passed to `mpicasa -n` (default: `8`). |
 | | `loglevel` | Pipeline log level (`debug`, `info`). |
-| | `useresume` | Use breakpoint / resume execution (`true`/`false`). |
+| | `useresume` | Use breakpoint/resume execution (`hifa_flagdata` break → `hifa_importdata` resume); otherwise MOUS runs single-pass unless a non-empty `sacmPL-fixes.casa.py.txt` triggers two-phase `importonly` (`true`/`false`). |
 | | `symlink_shortcuts` | Create convenience symlinks in project root (`true`/`false`). |
 | | `log2term` | Mirror CASA log messages to stdout / terminal in real time. |
 | | `verbose` | Stream full subprocess output to terminal and execution logs. |
@@ -574,6 +575,7 @@ Profiles support all execution target, driver tuning, cluster submission, enviro
 | | `backup` | Rotate existing run directory to timestamped `_backup_<timestamp>`. |
 | | `staticobscal` | Stage prior `flux.csv`, `antennapos.csv`, and flag templates from `obscaldir` (`true`/`false`). |
 | | `oldcont` | Stage prior `cont.dat` from `obscaldir` (`true`/`false`). |
+| | `procedure_enable_parallel` | Enable `parallel=True` in generated MOUS PPRs via `procedure_add_parallel.py` (`true`/`false`; config-only). |
 | | `cont_dat` | File path to `cont.dat` staged into working directory. |
 | | `jyperk_csv` | File path to `jyperk.csv` staged into working directory. |
 | | `parameter_list` | Parameter list override staged into working directory. |

@@ -1274,6 +1274,32 @@ casa_root = "/fake/casa/main"
         self.assertTrue(file_safe_no_prof.startswith("uid___A002_X1_"))
         self.assertNotIn("/", file_safe_no_prof)
 
+    def test_job_name_with_mous_and_profile_format(self):
+        """Verify job_name formats {profilename}/{mous_suffix}_{timestamp} when both are given."""
+        display, file_safe = runbatch.job_name(
+            "--mous=uid://A001/X1590/Xd6b",
+            profile_name="2021.1.01195.S/pipe3189",
+        )
+        self.assertTrue(display.startswith("2021.1.01195.S/pipe3189/X1590_Xd6b_"))
+        self.assertTrue(file_safe.startswith("2021.1.01195.S_pipe3189_X1590_Xd6b_"))
+        self.assertNotIn("/", file_safe)
+
+        display_no_prof, file_safe_no_prof = runbatch.job_name("--mous=uid://A001/X1590/Xd6b")
+        self.assertTrue(display_no_prof.startswith("X1590_Xd6b_"))
+        self.assertTrue(file_safe_no_prof.startswith("X1590_Xd6b_"))
+
+    def test_htcondor_script_sanitizes_log_file_for_slashed_job_name(self):
+        """Verify HTCondor keeps slashes in batch_name but sanitizes log filename."""
+        htc_content, _ = runbatch.build_htcondor_script(
+            "calibpipe run",
+            job_name="2021.1.01195.S/pipe3189/X1590_Xd6b_20261116-160734",
+            outfile="batch.out",
+            errfile="batch.err",
+            wrapper_script_path="/tmp/run.sh",
+        )
+        self.assertIn("batch_name = 2021.1.01195.S/pipe3189/X1590_Xd6b_20261116-160734", htc_content)
+        self.assertIn("log = condor.2021.1.01195.S_pipe3189_X1590_Xd6b_20261116-160734.$(ClusterId).log", htc_content)
+
     def test_build_sbatch_script_with_dependency(self):
         """Verify build_sbatch_script emits --dependency directive."""
         from calibpipe.batch import build_sbatch_script

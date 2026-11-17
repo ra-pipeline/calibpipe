@@ -2186,6 +2186,18 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
                 os.path.expanduser("~/nonexistent_obscal_a"),
             )
 
+    def test_procedure_enable_parallel_cascading(self):
+        cfg = CalibpipeConfig.from_dict({
+            "run": {"procedure_enable_parallel": False},
+            "profiles": {
+                "par_prof": {"procedure_enable_parallel": True},
+                "inherit_prof": {},
+            },
+        })
+        self.assertFalse(resolve_run_options(cfg, Namespace()).procedure_enable_parallel)
+        self.assertTrue(resolve_run_options(cfg, Namespace(profile="par_prof")).procedure_enable_parallel)
+        self.assertFalse(resolve_run_options(cfg, Namespace(profile="inherit_prof")).procedure_enable_parallel)
+
 
 if __name__ == "__main__":
     unittest.main()
