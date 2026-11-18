@@ -244,3 +244,31 @@ Native batch submission writes one frozen TOML snapshot (`batch.<timestamp>.toml
 scripts. Workers load only that frozen snapshot via `--config-only`, build their
 environment from current scheduler variables and frozen explicit settings, validate paths,
 and execute through `calibpipe.runner.execute`.
+
+---
+
+## Differences from Standalone `pipelineMakeRequest`
+
+`calibpipe.pmr` (`src/calibpipe/pmr.py`) replaces the standalone `pipelineMakeRequest`
+CLI wrapper while preserving the underlying Java driver
+(`alma.pipelinescience.reqmanager.MakeProcessingRequests`), JVM options, and 7-argument
+positional contract.
+
+```mermaid
+flowchart LR
+    Inputs["CLI + TOML ([site] / [paths])"] --> Runtime["PMRRuntime.from_env()"]
+    Runtime --> CacheCheck{"--asdm-cache hit?"}
+    CacheCheck -->|Hit: skip ASDM download| Java["MakeProcessingRequests (Java)"]
+    CacheCheck -->|Miss| Java
+    Java --> Stream["Stream output & parse Project root"]
+    Stream --> StageCache["Stage cached EBs or populate cache"]
+    StageCache --> Post["Optional: --rename / --strip-timestamp<br/>--procedure-enable-parallel<br/>--symlink-shortcuts"]
+```
+
+### Key Changes
+
+- **Config-driven runtime & explicit CLI:** `calibpipe pmr <mous>` replaces required positional arguments with optional flags (`--download`, `--restore`, `--dry-run`, `--config`, `--env`), drops implicit filename-based restore heuristics, and resolves `ACSROOT`, `ACSDATA`, and `JAVA_HOME` from TOML (`[site]`) when not set in the shell.
+- **Streaming output & typed results:** `_run_pmr_subprocess()` streams Java stdout/stderr line-by-line, parses the generated `Project root` (`parse_project_root()`), and returns a structured `PMRResult` instead of only an exit code.
+- **Dry-run preview:** `--dry-run` validates XML inputs, builds the Java command, and prints planned `--rename`, `--procedure-enable-parallel`, and cache actions without modifying disk or invoking Java.
+- **ASDM & metadata caching:** `--asdm-cache` (or `[paths].asdm_cache` when `[run].use_asdm_cache` is enabled) stages cached EBs first (invoking Java with `download_asdms=false`), populates caches after fresh downloads, and automatically falls back to a full PMR download if any EB in `PPR*.xml` is missing from cache.
+- **Post-PMR workspace setup:** Adds `--rename` / `--strip-timestamp` (with `.backup_*` rotation), `--symlink-shortcuts`, and `--procedure-enable-parallel` (via `scripts/procedure_add_parallel.py`).

@@ -273,6 +273,7 @@ class PathsConfig(Model):
     scipipe_logdir: str = ""
     pickle_dir: str | None = None
     obscaldir: str | None = None
+    asdm_cache: str | list[str] | None = None
     aUdir: str | None = None
     validation_dir: str | None = None
     heuristics_root: str | None = None
@@ -283,7 +284,7 @@ class PathsConfig(Model):
     pixi_bin: str | None = None
 
     def __post_init__(self):
-        for key in ("scipipe_rootdir", "scipipe_logdir", "casarundata"):
+        for key in ("scipipe_rootdir", "scipipe_logdir", "casarundata", "asdm_cache"):
             value = getattr(self, key)
             if isinstance(value, (list, tuple)):
                 setattr(
@@ -454,6 +455,8 @@ class RunConfig(Model):
     backup: bool = False
     staticobscal: bool = False
     oldcont: bool = False
+    procedure_enable_parallel: bool = False
+    use_asdm_cache: bool = True
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -517,6 +520,8 @@ class ProfileConfig(Model):
     backup: bool | None = None
     staticobscal: bool | None = None
     oldcont: bool | None = None
+    procedure_enable_parallel: bool | None = None
+    use_asdm_cache: bool | None = None
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -567,6 +572,7 @@ class ProfileConfig(Model):
     casarundata: str | None = None
     pickle_dir: str | None = None
     obscaldir: str | None = None
+    asdm_cache: str | list[str] | None = None
     aUdir: str | None = None
     validation_dir: str | None = None
     mous: str | None = None
@@ -638,6 +644,8 @@ class ResolvedRunOptions(Model):
     backup: bool = False
     staticobscal: bool = False
     oldcont: bool = False
+    procedure_enable_parallel: bool = False
+    use_asdm_cache: bool = True
     cont_dat: str | None = None
     jyperk_csv: str | None = None
     parameter_list: str | None = None
@@ -659,6 +667,7 @@ class ResolvedRunOptions(Model):
     scipipe_logdir: str | None = None
     casarundata: str | None = None
     obscaldir: str | None = None
+    asdm_cache: str | None = None
 
 
 @dataclass
@@ -1014,6 +1023,8 @@ def resolve_run_options(
     backup = _val("backup", cfg.run.backup)
     staticobscal = _val("staticobscal", cfg.run.staticobscal)
     oldcont = _val("oldcont", cfg.run.oldcont)
+    procedure_enable_parallel = _val("procedure_enable_parallel", cfg.run.procedure_enable_parallel)
+    use_asdm_cache = _val("use_asdm_cache", cfg.run.use_asdm_cache)
     cont_dat = _val("cont_dat", cfg.run.cont_dat)
     jyperk_csv = _val("jyperk_csv", cfg.run.jyperk_csv)
     parameter_list = _val("parameter_list", cfg.run.parameter_list)
@@ -1244,6 +1255,19 @@ def resolve_run_options(
         obscal_str = ""
     resolved_obscaldir = os.path.expanduser(obscal_str) if obscal_str else None
 
+    cli_asdm_cache = getattr(cli_opts, "asdm_cache", None)
+    prof_asdm_cache = profile.asdm_cache if profile else None
+    raw_asdm_cache = cli_asdm_cache or prof_asdm_cache or cfg.paths.asdm_cache
+    if isinstance(raw_asdm_cache, (list, tuple)):
+        asdm_cache_str = resolve_first_existing_path(
+            raw_asdm_cache, workspaces=resolved_workspaces
+        )
+    elif raw_asdm_cache is not None:
+        asdm_cache_str = str(raw_asdm_cache).strip()
+    else:
+        asdm_cache_str = ""
+    resolved_asdm_cache = os.path.expanduser(asdm_cache_str) if asdm_cache_str else None
+
     if isinstance(resolved_scipipe_rootdir, (list, tuple)):
         resolved_scipipe_rootdir = resolve_first_existing_path(
             resolved_scipipe_rootdir, workspaces=resolved_workspaces
@@ -1410,6 +1434,8 @@ def resolve_run_options(
         backup=bool(backup),
         staticobscal=bool(staticobscal),
         oldcont=bool(oldcont),
+        procedure_enable_parallel=bool(procedure_enable_parallel),
+        use_asdm_cache=bool(use_asdm_cache),
         cont_dat=str(cont_dat) if cont_dat is not None else None,
         jyperk_csv=str(jyperk_csv) if jyperk_csv is not None else None,
         parameter_list=str(parameter_list) if parameter_list is not None else None,
@@ -1431,6 +1457,7 @@ def resolve_run_options(
         scipipe_logdir=resolved_scipipe_logdir,
         casarundata=resolved_casarundata,
         obscaldir=resolved_obscaldir,
+        asdm_cache=resolved_asdm_cache,
     )
 
 
@@ -2189,6 +2216,7 @@ def format_config_overview(
         "scipipe_logdir",
         "casarundata",
         "obscaldir",
+        "asdm_cache",
     ):
         value = getattr(options, key, None)
         if value is not None:

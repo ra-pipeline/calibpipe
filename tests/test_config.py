@@ -2186,6 +2186,39 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
                 os.path.expanduser("~/nonexistent_obscal_a"),
             )
 
+    def test_procedure_enable_parallel_cascading(self):
+        cfg = CalibpipeConfig.from_dict({
+            "run": {"procedure_enable_parallel": False},
+            "profiles": {
+                "par_prof": {"procedure_enable_parallel": True},
+                "inherit_prof": {},
+            },
+        })
+        self.assertFalse(resolve_run_options(cfg, Namespace()).procedure_enable_parallel)
+        self.assertTrue(resolve_run_options(cfg, Namespace(profile="par_prof")).procedure_enable_parallel)
+        self.assertFalse(resolve_run_options(cfg, Namespace(profile="inherit_prof")).procedure_enable_parallel)
+
+    def test_asdm_cache_and_use_asdm_cache_cascading(self):
+        cfg = CalibpipeConfig.from_dict({
+            "paths": {"asdm_cache": "/site/asdm_cache"},
+            "run": {"use_asdm_cache": True},
+            "profiles": {
+                "no_cache_prof": {"use_asdm_cache": False},
+                "override_prof": {"asdm_cache": "/prof/asdm_cache"},
+            },
+        })
+        base = resolve_run_options(cfg, Namespace())
+        self.assertEqual(base.asdm_cache, "/site/asdm_cache")
+        self.assertTrue(base.use_asdm_cache)
+
+        no_cache = resolve_run_options(cfg, Namespace(profile="no_cache_prof"))
+        self.assertEqual(no_cache.asdm_cache, "/site/asdm_cache")
+        self.assertFalse(no_cache.use_asdm_cache)
+
+        override = resolve_run_options(cfg, Namespace(profile="override_prof"))
+        self.assertEqual(override.asdm_cache, "/prof/asdm_cache")
+        self.assertTrue(override.use_asdm_cache)
+
 
 if __name__ == "__main__":
     unittest.main()

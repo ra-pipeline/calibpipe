@@ -473,3 +473,265 @@ def stage_obscal_files(
     return staged
 
 
+def extract_proposal_code_from_ppr(ppr_path: str | Path | None) -> str:
+    """Extract ``<ProposalCode>`` from a PPR XML file, or return empty string."""
+    if not ppr_path:
+        return ""
+    path = Path(ppr_path)
+    if not path.is_file():
+        return ""
+    try:
+        root = ET.parse(path).getroot()
+        for elem in root.iter():
+            if elem.tag.split("}")[-1] == "ProposalCode" and elem.text:
+                return elem.text.strip()
+    except (ET.ParseError, OSError):
+        pass
+    return ""
+
+
+def _valid_asdm_dir(path: Path) -> bool:
+    """Return True if *path* is a directory containing an ``ASDM.xml`` file."""
+    return path.is_dir() and (path / "ASDM.xml").is_file()
+
+
+def find_cached_mous_rawdata(
+    cache_root: str | Path | None,
+    mous_uid: str,
+) -> Path | None:
+    """Locate a cached ``rawdata`` directory for *mous_uid* under *cache_root*.
+
+    Supports both ``<cache_root>/<project>/SOUS_*/GOUS_*/MOUS_<uid>/rawdata``
+    and ``<cache_root>/MOUS_<uid>/rawdata``.
+    """
+    if not cache_root or not mous_uid:
+        return None
+    root = Path(cache_root).expanduser()
+    if not root.is_dir():
+        return None
+
+    mous_dir_name = f"MOUS_{uid_to_underscores(mous_uid)}"
+    patterns = (
+        f"*/SOUS_*/GOUS_*/{mous_dir_name}/rawdata",
+        f"SOUS_*/GOUS_*/{mous_dir_name}/rawdata",
+        f"{mous_dir_name}/rawdata",
+    )
+    for pattern in patterns:
+        for candidate in sorted(root.glob(pattern)):
+            if candidate.is_dir() and any(_valid_asdm_dir(p) for p in candidate.iterdir()):
+                return candidate
+    return None
+
+
+def stage_cached_asdms(
+    cached_rawdata: Path,
+    dest_rawdata: Path,
+    eb_uids: Sequence[str] = (),
+    *,
+    log_func: Callable[[str], None] | None = None,
+) -> tuple[list[Path], list[str]]:
+    """Symlink cached ASDM directories from *cached_rawdata* into *dest_rawdata*.
+
+    Returns ``(staged_symlinks, missing_eb_uids)``.
+    """
+    dest_rawdata.mkdir(parents=True, exist_ok=True)
+    expected = [uid_to_underscores(eb) for eb in eb_uids if eb]
+    staged: list[Path] = []
+    missing: list[str] = []
+
+    if expected:
+        candidates = [(eb, cached_rawdata / eb) for eb in expected]
+    else:
+        candidates = [
+            (p.name, p)
+            for p in sorted(cached_rawdata.iterdir())
+            if _valid_asdm_dir(p)
+        ]
+
+    for eb_name, src_eb in candidates:
+        if not _valid_asdm_dir(src_eb):
+            missing.append(eb_name)
+            continue
+        link_path = dest_rawdata / eb_name
+        if link_path.is_symlink() or link_path.exists():
+            if link_path.is_symlink() and link_path.resolve() == src_eb.resolve():
+                staged.append(link_path)
+                continue
+            if log_func:
+                log_func(f"Notice: {link_path} already exists; skipping cached ASDM symlink")
+            continue
+        os.symlink(src_eb.resolve(), link_path)
+        staged.append(link_path)
+        if log_func:
+            log_func(f"Staged cached ASDM: {link_path} -> {src_eb.resolve()}")
+
+    return staged, missing
+
+
+def populate_asdm_cache(
+    cache_root: str | Path,
+    mous_rel_path: str | Path,
+    src_rawdata: Path,
+    eb_uids: Sequence[str] = (),
+    *,
+    log_func: Callable[[str], None] | None = None,
+) -> list[Path]:
+    """Move downloaded ASDMs from *src_rawdata* into *cache_root* and symlink back.
+
+    Uses a per-process staging directory inside the target ``rawdata`` cache
+    directory before renaming into place so concurrent jobs do not corrupt an
+    in-progress cache entry.
+    """
+    if not src_rawdata.is_dir():
+        return []
+
+    cache_rawdata = Path(cache_root).expanduser() / mous_rel_path / "rawdata"
+    cache_rawdata.mkdir(parents=True, exist_ok=True)
+
+    if eb_uids:
+        targets = [src_rawdata / uid_to_underscores(eb) for eb in eb_uids if eb]
+    else:
+        targets = [p for p in sorted(src_rawdata.iterdir()) if not p.is_symlink()]
+
+    cached_paths: list[Path] = []
+    for src_eb in targets:
+        if src_eb.is_symlink() or not _valid_asdm_dir(src_eb):
+            continue
+
+        dest_eb = cache_rawdata / src_eb.name
+        if _valid_asdm_dir(dest_eb):
+            shutil.rmtree(src_eb)
+            os.symlink(dest_eb.resolve(), src_eb)
+            cached_paths.append(dest_eb)
+            if log_func:
+                log_func(f"Linked existing cached ASDM: {src_eb} -> {dest_eb.resolve()}")
+            continue
+
+        tmp_eb = cache_rawdata / f".{src_eb.name}.tmp.{os.getpid()}"
+        if tmp_eb.exists():
+            shutil.rmtree(tmp_eb, ignore_errors=True)
+        try:
+            shutil.move(str(src_eb), str(tmp_eb))
+            try:
+                os.rename(tmp_eb, dest_eb)
+            except OSError:
+                # Another job won the race and populated dest_eb first.
+                shutil.rmtree(tmp_eb, ignore_errors=True)
+                if not _valid_asdm_dir(dest_eb):
+                    raise
+            os.symlink(dest_eb.resolve(), src_eb)
+            cached_paths.append(dest_eb)
+            if log_func:
+                log_func(f"Cached ASDM: {dest_eb} (symlinked from {src_eb})")
+        except OSError as exc:
+            if tmp_eb.exists() and not src_eb.exists():
+                shutil.move(str(tmp_eb), str(src_eb))
+            if log_func:
+                log_func(f"Warning: Failed to cache ASDM {src_eb.name} in {cache_rawdata}: {exc}")
+
+    return cached_paths
+
+
+_PPR_VOLATILE_RE = re.compile(
+    r"<(?:CreationTime|RelativePath)>.*?</(?:CreationTime|RelativePath)>",
+    re.DOTALL,
+)
+
+
+def _normalize_ppr_for_compare(text: str) -> str:
+    """Strip volatile timestamp/path tags so identical PPR logic compares equal."""
+    return _PPR_VOLATILE_RE.sub("", text)
+
+
+def _sync_cached_file(
+    src: Path,
+    dest: Path,
+    *,
+    normalize_ppr: bool = False,
+) -> bool:
+    """Atomically copy *src* to *dest* only if missing or content changed."""
+    src_bytes = src.read_bytes()
+    if dest.is_file():
+        try:
+            dest_bytes = dest.read_bytes()
+            if normalize_ppr:
+                src_norm = _normalize_ppr_for_compare(src_bytes.decode("utf-8", errors="replace"))
+                dest_norm = _normalize_ppr_for_compare(dest_bytes.decode("utf-8", errors="replace"))
+                if src_norm == dest_norm:
+                    return False
+            elif src_bytes == dest_bytes:
+                return False
+        except OSError:
+            pass
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_dest = dest.parent / f".{dest.name}.tmp.{os.getpid()}"
+    try:
+        tmp_dest.write_bytes(src_bytes)
+        os.replace(tmp_dest, dest)
+    finally:
+        if tmp_dest.exists():
+            tmp_dest.unlink(missing_ok=True)
+    return True
+
+
+def cache_pmr_metadata(
+    cache_root: str | Path,
+    proposal_code: str,
+    project_root: Path,
+    mous_dir: Path,
+    *,
+    log_func: Callable[[str], None] | None = None,
+) -> list[Path]:
+    """Cache lightweight PMR XML files for reference / standalone-PPR reuse.
+
+    Copies ``AOUS_*.xml``, ``OBS_*.xml``, and ``PS_*.xml`` into
+    ``<cache_root>/<proposal_code>/`` and ``PPR_*.xml`` into
+    ``<cache_root>/<proposal_code>/<mous_subpath>/working/``, updating each file
+    only when missing or meaningfully changed.
+    """
+    if not cache_root or not project_root.is_dir() or not mous_dir.is_dir():
+        return []
+
+    root = Path(cache_root).expanduser()
+    try:
+        mous_subpath = mous_dir.resolve().relative_to(project_root.resolve())
+    except ValueError:
+        mous_subpath = Path(mous_dir.name)
+
+    proj_cache_dir = root / proposal_code if proposal_code else root
+    working_cache_dir = proj_cache_dir / mous_subpath / "working"
+
+    updated: list[Path] = []
+    for pattern in ("AOUS_*.xml", "OBS_*.xml", "PS_*.xml"):
+        for src_xml in sorted(project_root.glob(pattern)):
+            if not src_xml.is_file():
+                continue
+            dest_xml = proj_cache_dir / src_xml.name
+            try:
+                if _sync_cached_file(src_xml, dest_xml, normalize_ppr=False):
+                    updated.append(dest_xml)
+                    if log_func:
+                        log_func(f"Cached PMR metadata: {dest_xml}")
+            except OSError as exc:
+                if log_func:
+                    log_func(f"Warning: Failed to cache {src_xml.name}: {exc}")
+
+    working_dir = mous_dir / "working"
+    if working_dir.is_dir():
+        for src_ppr in sorted(working_dir.glob("PPR*.xml")):
+            if not src_ppr.is_file():
+                continue
+            dest_ppr = working_cache_dir / src_ppr.name
+            try:
+                if _sync_cached_file(src_ppr, dest_ppr, normalize_ppr=True):
+                    updated.append(dest_ppr)
+                    if log_func:
+                        log_func(f"Cached raw PPR: {dest_ppr}")
+            except OSError as exc:
+                if log_func:
+                    log_func(f"Warning: Failed to cache {src_ppr.name}: {exc}")
+
+    return updated
+
+

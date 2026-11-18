@@ -720,6 +720,37 @@ def build_casarun_prefix(
     return casarun, casaroot
 
 
+def _is_restore_image_recipe(recipe: str) -> bool:
+    """Return True if *recipe* resolves to a restore-only imaging procedure."""
+    procedure = envconfig.resolve_recipe_procedure(recipe)
+    stem = Path(procedure).stem
+    return bool(re.search(r"(?:^|_)image(?:$|_)", stem))
+
+
+def _build_mous_eppr_statements(
+    pprfile: str,
+    recipe: str,
+    loglevel: str,
+    *,
+    useresume: bool = False,
+    has_fixes: bool = False,
+) -> list[str]:
+    """Build CASA executeppr statements for MOUS execution."""
+    if _is_restore_image_recipe(recipe) or (not useresume and not has_fixes):
+        return [f"eppr.executeppr('{pprfile}', importonly=False, loglevel='{loglevel}')"]
+    if useresume:
+        return [
+            f"eppr.executeppr('{pprfile}', breakpoint='hifa_flagdata', bpaction='break', loglevel='{loglevel}')",
+            "execfile('sacmPL-fixes.casa.py.txt')",
+            f"eppr.executeppr('{pprfile}', breakpoint='hifa_importdata', bpaction='resume', loglevel='{loglevel}')",
+        ]
+    return [
+        f"eppr.executeppr('{pprfile}',importonly=True, loglevel='{loglevel}')",
+        "execfile('sacmPL-fixes.casa.py.txt')",
+        f"eppr.executeppr('{pprfile}',importonly=False,loglevel='{loglevel}')",
+    ]
+
+
 def _run_mous(
     run_opts: envconfig.ResolvedRunOptions,
     env_spec: envconfig.EnvSpec,
@@ -768,10 +799,15 @@ def _run_mous(
         asdms_arg = f"--asdms [{run_opts.onlysemipass}] "
 
     intents_xml = "intents_hsd.xml" if "hsd" in procedure else "intents_hifa.xml"
+    asdm_cache_dir = (
+        run_opts.asdm_cache
+        if (run_opts.asdm_cache and run_opts.use_asdm_cache and not flag_and_go)
+        else None
+    )
     dl_asdms = "false" if oldasdms else "true"
     dl_cal = (
         "true"
-        if (recipe in ["image", "image_selfcal"] and not flag_and_go)
+        if (_is_restore_image_recipe(recipe) and not flag_and_go)
         else "false"
     )
 
@@ -799,6 +835,10 @@ def _run_mous(
         print(f"[DRY RUN] MOUS UID: {mous_uid}")
         print(f"[DRY RUN] Environment: {env_spec.name} ({casaroot})")
         print(f"[DRY RUN] PMR command:\n    {pmr_cmd}")
+        if asdm_cache_dir:
+            print(f"[DRY RUN] ASDM cache: {asdm_cache_dir}")
+        if run_opts.procedure_enable_parallel:
+            print("[DRY RUN] Procedure parallel: enabled (procedure_add_parallel.py)")
         if run_opts.staticobscal or run_opts.oldcont:
             print(
                 f"[DRY RUN] Obscal staging: staticobscal={run_opts.staticobscal}, "
@@ -818,7 +858,13 @@ def _run_mous(
                 ppmr_rel_dir = line.split()[-1]
                 break
     else:
-        pmr_res = pmr.run_pmr(pmr_req, env=env, symlink_shortcuts=run_opts.symlink_shortcuts)
+        pmr_res = pmr.run_pmr(
+            pmr_req,
+            env=env,
+            symlink_shortcuts=run_opts.symlink_shortcuts,
+            parallel=run_opts.procedure_enable_parallel,
+            asdm_cache=asdm_cache_dir,
+        )
         cmdoutput = pmr_res.output
         ppmr_rel_dir = ""
         if pmr_res.project_root:
@@ -952,7 +998,8 @@ def _run_mous(
             skip_files=[p.name for p in ancillary_staged],
             log_func=log_message,
         )
-    if recipe not in ["image", "image_selfcal"]:
+    has_fixes = False
+    if not _is_restore_image_recipe(recipe):
         fixes_file = working_path / "sacmPL-fixes.casa.py.txt"
         rawdata_fixes = (
             Path(ppmr_fulldir.replace("//", "/"))
@@ -963,6 +1010,7 @@ def _run_mous(
             shutil.copy(rawdata_fixes, fixes_file)
         elif not fixes_file.exists():
             fixes_file.touch()
+        has_fixes = fixes_file.is_file() and fixes_file.stat().st_size > 0
 
     orig_cwd = os.getcwd()
     saved_scipipe_rootdir: str | None = None
@@ -976,45 +1024,27 @@ def _run_mous(
             env.pop("SCIPIPE_ROOTDIR", None)
 
         # Assemble CASA execution command
+        eppr_stmts = _build_mous_eppr_statements(
+            pprfile,
+            recipe,
+            run_opts.loglevel,
+            useresume=run_opts.useresume,
+            has_fixes=has_fixes,
+        )
         if env_spec.is_pixi:
             piperun_file = (working_path / "casa_piperun.py").resolve()
             resolved_workdir = str(working_path.resolve())
             preamble = build_piperun_preamble(run_opts)
             clear_rootdir = "os.environ.pop('SCIPIPE_ROOTDIR', None)\n" if run_opts.workdir else ""
-            if recipe not in ["image", "image_selfcal"]:
-                if run_opts.useresume:
-                    code = (
-                        "import os\n"
-                        f"{clear_rootdir}"
-                        f"os.chdir(r'{resolved_workdir}')\n"
-                        f"{preamble}"
-                        "import pipeline.infrastructure.executeppr as eppr\n"
-                        f"eppr.executeppr('{pprfile}', breakpoint='hifa_flagdata', bpaction='break', "
-                        f"loglevel='{run_opts.loglevel}')\n"
-                        "execfile('sacmPL-fixes.casa.py.txt')\n"
-                        f"eppr.executeppr('{pprfile}', breakpoint='hifa_importdata', bpaction='resume', "
-                        f"loglevel='{run_opts.loglevel}')\n"
-                    )
-                else:
-                    code = (
-                        "import os\n"
-                        f"{clear_rootdir}"
-                        f"os.chdir(r'{resolved_workdir}')\n"
-                        f"{preamble}"
-                        "import pipeline.infrastructure.executeppr as eppr\n"
-                        f"eppr.executeppr('{pprfile}', importonly=True, loglevel='{run_opts.loglevel}')\n"
-                        "execfile('sacmPL-fixes.casa.py.txt')\n"
-                        f"eppr.executeppr('{pprfile}', importonly=False, loglevel='{run_opts.loglevel}')\n"
-                    )
-            else:
-                code = (
-                    "import os\n"
-                    f"{clear_rootdir}"
-                    f"os.chdir(r'{resolved_workdir}')\n"
-                    f"{preamble}"
-                    "import pipeline.infrastructure.executeppr as eppr\n"
-                    f"eppr.executeppr('{pprfile}', loglevel='{run_opts.loglevel}')\n"
-                )
+            eppr_block = "\n".join(eppr_stmts)
+            code = (
+                "import os\n"
+                f"{clear_rootdir}"
+                f"os.chdir(r'{resolved_workdir}')\n"
+                f"{preamble}"
+                "import pipeline.infrastructure.executeppr as eppr\n"
+                f"{eppr_block}\n"
+            )
             piperun_file.write_text(code, encoding="utf-8")
             cmd = wrap_cmd(
                 f"{casarun} -c {piperun_file}",
@@ -1034,25 +1064,8 @@ def _run_mous(
             if run_opts.pl_psrecord:
                 preamble_cmd += "import pipeline.infrastructure.utils as utils; utils.enable_psrecord(); "
 
-            if recipe not in ["image", "image_selfcal"]:
-                if run_opts.useresume:
-                    inner_cmd = (
-                        f"{casarun} -c "
-                        f"\"{preamble_cmd}eppr.executeppr('{pprfile}',breakpoint='hifa_flagdata',bpaction='break', "
-                        f"loglevel='{run_opts.loglevel}');"
-                        f"execfile('sacmPL-fixes.casa.py.txt');"
-                        f"eppr.executeppr('{pprfile}',breakpoint='hifa_importdata',bpaction='resume', "
-                        f"loglevel='{run_opts.loglevel}');exit;\""
-                    )
-                else:
-                    inner_cmd = (
-                        f"{casarun} -c "
-                        f"\"{preamble_cmd}eppr.executeppr('{pprfile}',importonly=True, loglevel='{run_opts.loglevel}');"
-                        f"execfile('sacmPL-fixes.casa.py.txt');"
-                        f"eppr.executeppr('{pprfile}',importonly=False,loglevel='{run_opts.loglevel}');exit;\""
-                    )
-            else:
-                inner_cmd = f"{casarun} -c \"{preamble_cmd}eppr.executeppr('{pprfile}', loglevel='{run_opts.loglevel}');exit;\""
+            eppr_inline = ";".join(eppr_stmts)
+            inner_cmd = f'{casarun} -c "{preamble_cmd}{eppr_inline};exit;"'
 
             cmd = wrap_cmd(
                 inner_cmd,

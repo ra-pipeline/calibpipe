@@ -44,6 +44,11 @@ JVM flags configured when launching the process:
   --add-opens: Opens encapsulated Xerces packages on Java 9+.
 """
 
+# Replaced the standalone pipelineMakeRequest CLI wrapper with a typed
+# library/CLI module (config-backed PMRRuntime, streaming PMRResult, dry-run,
+# rename/strip-timestamp, symlink shortcuts, --procedure-enable-parallel, and
+# --asdm-cache). See docs/internals.md ("Differences from Standalone pipelineMakeRequest").
+
 from __future__ import annotations
 
 import argparse
@@ -54,11 +59,19 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
 from calibpipe import config as envconfig
+from calibpipe.steps.staging import (
+    cache_pmr_metadata,
+    extract_eb_uids_from_ppr,
+    extract_proposal_code_from_ppr,
+    find_cached_mous_rawdata,
+    populate_asdm_cache,
+    stage_cached_asdms,
+)
 from calibpipe.workspace import create_project_symlinks
 
 
@@ -390,6 +403,35 @@ def enable_ppr_parallel(root: Path, script: Path, logger: Callable[[str], None])
             logger(f"Enabled parallel keywords in {ppr}")
 
 
+def _run_pmr_subprocess(
+    cmd_str: str,
+    runtime: PMRRuntime,
+    log: Callable[[str], None],
+) -> tuple[int, str, Path | None]:
+    """Execute the Java PMR command and stream output to *log*."""
+    log("Executing ALMA MakeProcessingRequests...")
+    log(f"Command: {cmd_str}")
+    process = subprocess.Popen(
+        cmd_str,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=runtime.extra_env,
+    )
+    output_lines: list[str] = []
+    if process.stdout:
+        for line in iter(process.stdout.readline, ""):
+            output_lines.append(line)
+            log(line.rstrip())
+    process.wait()
+
+    combined_output = "".join(output_lines)
+    exit_code = process.returncode
+    root = parse_project_root(combined_output)
+    return exit_code, combined_output, root
+
+
 def run_pmr(
     req: PMRRequest,
     runtime: PMRRuntime | None = None,
@@ -399,6 +441,7 @@ def run_pmr(
     logger: Callable[[str], None] | None = None,
     symlink_shortcuts: bool = False,
     parallel: bool = False,
+    asdm_cache: str | Path | None = None,
 ) -> PMRResult:
     """Execute Java MakeProcessingRequests with real-time log streaming.
 
@@ -411,6 +454,7 @@ def run_pmr(
         logger: Optional logging callback. Defaults to `print`.
         symlink_shortcuts: Create project shortcuts (default: False).
         parallel: Add parallel=True to supported PPR tasks; requires a procedure.
+        asdm_cache: Optional ASDM cache root directory; overrides ``cfg.paths.asdm_cache``.
 
     Returns:
         PMRResult with exit code, command, combined output, and parsed project root.
@@ -420,8 +464,19 @@ def run_pmr(
     if runtime is None:
         runtime = PMRRuntime.from_env(env=env, cfg=cfg)
 
-    validate_files(req.intents, req.procedure, runtime.scriptdir)
-    cmd_list, cmd_str = build_java_command(req, runtime)
+    effective_cache = asdm_cache
+    if effective_cache is None and cfg is not None and cfg.run.use_asdm_cache:
+        effective_cache = cfg.paths.asdm_cache
+
+    cached_rawdata: Path | None = None
+    effective_req = req
+    if req.download_asdms and effective_cache:
+        cached_rawdata = find_cached_mous_rawdata(effective_cache, req.mous)
+        if cached_rawdata is not None:
+            effective_req = replace(req, download_asdms=False)
+
+    validate_files(effective_req.intents, effective_req.procedure, runtime.scriptdir)
+    cmd_list, cmd_str = build_java_command(effective_req, runtime)
 
     parallel_script = runtime.scriptdir.resolve().parent.parent / "scripts/procedure_add_parallel.py"
     if parallel:
@@ -447,6 +502,11 @@ def run_pmr(
             log("[DRY RUN] Planned directory rename: strip trailing timestamp")
         if parallel:
             log(f"[DRY RUN] Will update generated working/PPR*.xml using {parallel_script}")
+        if req.download_asdms and effective_cache:
+            if cached_rawdata is not None:
+                log(f"[DRY RUN] ASDM cache: hit ({cached_rawdata})")
+            else:
+                log(f"[DRY RUN] ASDM cache: miss (will populate {effective_cache})")
         return PMRResult(
             exit_code=0,
             command=cmd_list,
@@ -455,30 +515,73 @@ def run_pmr(
             project_root=None,
         )
 
-    log("Executing ALMA MakeProcessingRequests...")
-    log(f"Command: {cmd_str}")
-
     try:
-        process = subprocess.Popen(
-            cmd_str,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=runtime.extra_env,
-        )
-        output_lines: list[str] = []
-        if process.stdout:
-            for line in iter(process.stdout.readline, ""):
-                output_lines.append(line)
-                log(line.rstrip())
-        process.wait()
-
-        combined_output = "".join(output_lines)
-        exit_code = process.returncode
-        root = parse_project_root(combined_output)
+        exit_code, combined_output, root = _run_pmr_subprocess(cmd_str, runtime, log)
 
         if root and root.exists() and exit_code == 0:
+            mous_dirs = sorted(root.glob("SOUS_*/GOUS_*/MOUS_*")) or sorted(root.glob("MOUS_*"))
+            if req.download_asdms and effective_cache and cached_rawdata is not None:
+                all_missing: list[str] = []
+                for mous_dir in mous_dirs:
+                    ppr_candidates = sorted((mous_dir / "working").glob("PPR*.xml"))
+                    ppr_path = ppr_candidates[0] if ppr_candidates else None
+                    eb_uids = extract_eb_uids_from_ppr(ppr_path)
+                    _, missing_cached = stage_cached_asdms(
+                        cached_rawdata,
+                        mous_dir / "rawdata",
+                        eb_uids,
+                        log_func=log,
+                    )
+                    all_missing.extend(missing_cached)
+                if all_missing:
+                    log(
+                        f"Notice: ASDM cache {cached_rawdata} is missing EB(s) "
+                        f"({', '.join(all_missing)}); falling back to full PMR download."
+                    )
+                    shutil.rmtree(root, ignore_errors=True)
+                    cached_rawdata = None
+                    cmd_list, cmd_str = build_java_command(req, runtime)
+                    exit_code, combined_output, root = _run_pmr_subprocess(cmd_str, runtime, log)
+                    mous_dirs = (
+                        sorted(root.glob("SOUS_*/GOUS_*/MOUS_*")) or sorted(root.glob("MOUS_*"))
+                        if root and root.exists()
+                        else []
+                    )
+
+        if root and root.exists() and exit_code == 0:
+            if req.download_asdms and effective_cache and cached_rawdata is None:
+                mous_dirs = sorted(root.glob("SOUS_*/GOUS_*/MOUS_*")) or sorted(root.glob("MOUS_*"))
+                for mous_dir in mous_dirs:
+                    ppr_candidates = sorted((mous_dir / "working").glob("PPR*.xml"))
+                    ppr_path = ppr_candidates[0] if ppr_candidates else None
+                    eb_uids = extract_eb_uids_from_ppr(ppr_path)
+                    proposal_code = extract_proposal_code_from_ppr(ppr_path)
+                    mous_subpath = mous_dir.relative_to(root)
+                    mous_rel_path = (
+                        Path(proposal_code) / mous_subpath if proposal_code else mous_subpath
+                    )
+                    populate_asdm_cache(
+                        effective_cache,
+                        mous_rel_path,
+                        mous_dir / "rawdata",
+                        eb_uids,
+                        log_func=log,
+                    )
+
+            if effective_cache:
+                mous_dirs = sorted(root.glob("SOUS_*/GOUS_*/MOUS_*")) or sorted(root.glob("MOUS_*"))
+                for mous_dir in mous_dirs:
+                    ppr_candidates = sorted((mous_dir / "working").glob("PPR*.xml"))
+                    ppr_path = ppr_candidates[0] if ppr_candidates else None
+                    proposal_code = extract_proposal_code_from_ppr(ppr_path)
+                    cache_pmr_metadata(
+                        effective_cache,
+                        proposal_code,
+                        root,
+                        mous_dir,
+                        log_func=log,
+                    )
+
             if req.rename:
                 root = rename_project_root(root, req.rename, logger=log)
             elif req.strip_timestamp:
@@ -664,6 +767,10 @@ Examples:
         help="Rename generated project root directory to specified name or path",
     )
     parser.add_argument(
+        "--asdm-cache",
+        help="Shared ASDM cache root directory (overrides [paths].asdm_cache)",
+    )
+    parser.add_argument(
         "--config",
         help="Path to TOML configuration file",
     )
@@ -736,6 +843,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         req, runtime=runtime, cfg=cfg, dry_run=args.dry_run,
         symlink_shortcuts=args.symlink_shortcuts,
         parallel=args.procedure_enable_parallel,
+        asdm_cache=args.asdm_cache,
     )
     return result.exit_code
 

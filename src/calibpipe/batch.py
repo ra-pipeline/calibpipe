@@ -247,6 +247,11 @@ def build_sbatch_script(
     )
 
 
+def _sanitize_file_name(name: str) -> str:
+    """Replace path and delimiter characters in a name for safe filenames."""
+    return name.replace("/", "_").replace("@", "_").replace(":", "_")
+
+
 def build_htcondor_script(
     pipejob: str,
     *,
@@ -330,7 +335,8 @@ def build_htcondor_script(
     else:
         request_memory = mem or "32G"
     extra_req = f' && ( TARGET.Machine == "{nodelist}" )' if nodelist else ""
-    log_file = f"condor.{job_name}.$(ClusterId).log"
+    safe_log_name = _sanitize_file_name(job_name)
+    log_file = f"condor.{safe_log_name}.$(ClusterId).log"
 
     # Map Slurm mail_type to valid HTCondor notification keywords:
     # 'Never', 'Always', 'Complete', or 'Error'
@@ -418,37 +424,26 @@ def job_name(
         while file_safe_name normalizes path separators for stdout/stderr/sbatch file paths.
     """
     timestr = time.strftime("%Y%m%d-%H%M%S")
+    safe_prof = _sanitize_file_name(profile_name) if profile_name else ""
+
     if test_name:
-        safe_test = re.sub(r"[^\w\-.]", "_", test_name)
-        if profile_name:
-            full_display = f"{profile_name}/{safe_test}_{timestr}"
-            safe_prof = profile_name.replace("/", "_").replace("@", "_").replace(":", "_")
-            full_safe = f"{safe_prof}_{safe_test}_{timestr}"
-        else:
-            full_display = f"{safe_test}_{timestr}"
-            full_safe = full_display
-        return full_display, full_safe
-
-    prefix = ""
-    for tok in pipejob.split():
-        if tok.startswith("--mous="):
-            prefix = tok.split("=", 1)[-1][11:]
-            prefix = prefix.strip("/").replace("/", "_")
-            break
-
-    timestr = time.strftime("%Y%m%d-%H%M%S")
-    if prefix:
-        full_display = f"{prefix}_{timestr}"
-        full_safe = full_display
-    elif profile_name:
-        full_display = f"{profile_name}_{timestr}"
-        safe_prefix = profile_name.replace("/", "_").replace("@", "_").replace(":", "_")
-        full_safe = f"{safe_prefix}_{timestr}"
+        label = re.sub(r"[^\w\-.]", "_", test_name)
     else:
-        full_display = f"job_{timestr}"
-        full_safe = full_display
+        label = ""
+        for tok in pipejob.split():
+            if tok.startswith("--mous="):
+                label = tok.split("=", 1)[-1][11:].strip("/").replace("/", "_")
+                break
 
-    return full_display, full_safe
+    if label:
+        if profile_name:
+            return f"{profile_name}/{label}_{timestr}", f"{safe_prof}_{label}_{timestr}"
+        return f"{label}_{timestr}", f"{label}_{timestr}"
+
+    if profile_name:
+        return f"{profile_name}_{timestr}", f"{safe_prof}_{timestr}"
+
+    return f"job_{timestr}", f"job_{timestr}"
 
 
 def print_queue(
@@ -697,7 +692,7 @@ def _dispatch_job(
         display_name, file_name = name
     else:
         display_name = name
-        file_name = name.replace("/", "_").replace("@", "_").replace(":", "_")
+        file_name = _sanitize_file_name(name)
 
     print(f"job name = {display_name}")
     if batch_opts.logdir:
