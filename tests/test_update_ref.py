@@ -296,6 +296,67 @@ class TestUpdateRefStagingAndApply(unittest.TestCase):
             expected = working / "13A-537.casa-6.7.4-12-pipeline-2026.3.0.42.restore.results.txt.candidate"
             self.assertTrue(expected.is_file())
 
+    def test_skips_run_with_passing_junit_xml_unless_forced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            working = root / "13A_537__restore__PPR" / "working"
+            working.mkdir(parents=True)
+
+            (root / "regression-results-13A_537__restore__PPR.xml").write_text(
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0">'
+                '<testcase name="test_13A_537__restore__PPR__regression"/>'
+                "</testsuite></testsuites>\n",
+                encoding="utf-8",
+            )
+            (working / "13A-537.casa-6.2.1.7-pipeline-2021.2.0.128.restore.results.txt").write_text(
+                "s2.hifv_statwt.mean=1.6493377758284253\n",
+                encoding="utf-8",
+            )
+            (working / "13A-537.ms.NEW.results.txt").write_text(
+                "s2.hifv_statwt.mean=1.6493377376726983\n",
+                encoding="utf-8",
+            )
+
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = update_ref.main([str(root), "--no-color"])
+            self.assertEqual(code, 0)
+            self.assertIn("= PASSED:", buf.getvalue())
+            self.assertFalse(list(working.glob("*.candidate")))
+
+            with redirect_stdout(io.StringIO()):
+                code_forced = update_ref.main([str(root), "--force", "--no-color"])
+            self.assertEqual(code_forced, 0)
+            self.assertEqual(len(list(working.glob("*.candidate"))), 1)
+
+    def test_updates_run_with_failing_junit_xml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            working = root / "13A_537__procedure_hifv" / "working"
+            working.mkdir(parents=True)
+
+            (root / "regression-results-13A_537__procedure_hifv.xml").write_text(
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<testsuites><testsuite tests="1" failures="1" errors="0" skipped="0">'
+                '<testcase name="test_13A_537__procedure_hifv__regression"><failure/></testcase>'
+                "</testsuite></testsuites>\n",
+                encoding="utf-8",
+            )
+            (working / "13A-537.casa-6.7.4-12-pipeline-2026.3.0.42.results.txt").write_text(
+                "s1.mean=1.0\n",
+                encoding="utf-8",
+            )
+            (working / "13A-537.ms.NEW.results.txt").write_text(
+                "s1.mean=2.0\n",
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(io.StringIO()):
+                code = update_ref.main([str(root), "--no-color"])
+            self.assertEqual(code, 0)
+            self.assertEqual(len(list(working.glob("*.candidate"))), 1)
+
 
 class TestCliIntegration(unittest.TestCase):
     """Test CLI subcommand routing for update-ref."""

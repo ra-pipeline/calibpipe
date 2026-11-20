@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import argparse
 import os
-from pathlib import Path
 import re
 import shutil
 import sys
-from typing import NamedTuple, Sequence
-
+import xml.etree.ElementTree as ET
+from collections.abc import Sequence
+from pathlib import Path
+from typing import NamedTuple
 
 # Regex patterns matching CASA and Pipeline version tags in filenames or logs
 REGEX_CASA_VERSION = re.compile(r".*casa-([\d.]+(?:-\d+)?)")
@@ -555,6 +556,33 @@ def find_baseline_reference(
     return baseline, canonical_dest
 
 
+def _find_passing_junit_xml(new_results_path: Path) -> Path | None:
+    """Return a sibling/ancestor regression-results-*.xml if it proves the run passed."""
+    candidates_checked: set[Path] = set()
+    for parent in (new_results_path.parent, new_results_path.parent.parent, new_results_path.parent.parent.parent):
+        if parent in candidates_checked or not parent.is_dir():
+            continue
+        candidates_checked.add(parent)
+        xml_files = list(parent.glob("regression-results-*.xml"))
+        if len(xml_files) != 1:
+            continue
+        xml_path = xml_files[0]
+        try:
+            root = ET.parse(xml_path).getroot()
+        except (ET.ParseError, OSError):
+            continue
+        suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+        if not suites:
+            continue
+        tests = sum(int(s.attrib.get("tests", 0)) for s in suites)
+        failures = sum(int(s.attrib.get("failures", 0)) for s in suites)
+        errors = sum(int(s.attrib.get("errors", 0)) for s in suites)
+        skipped = sum(int(s.attrib.get("skipped", 0)) for s in suites)
+        if tests > 0 and failures == 0 and errors == 0 and skipped == 0:
+            return xml_path
+    return None
+
+
 def process_results_update(
     new_results_path: Path,
     ref_path: Path | None = None,
@@ -578,6 +606,17 @@ def process_results_update(
     if not new_results_path.is_file():
         print(f"Error: New results file not found: {new_results_path}", file=sys.stderr)
         return 1, False
+
+    if not force and not diff_only:
+        passing_xml = _find_passing_junit_xml(new_results_path)
+        if passing_xml is not None:
+            if not quiet:
+                c = lambda txt, col: colorize(txt, col, enable=use_color)
+                print(
+                    f"{c('= PASSED:', 'dim')} {new_results_path.name} "
+                    f"(verified by {passing_xml.name}; use --force to update)"
+                )
+            return 0, False
 
     new_entries = parse_results_file(new_results_path)
 
