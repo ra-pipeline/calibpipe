@@ -1044,17 +1044,28 @@ def submit_request(request: SubmitRequest) -> int:
                 parts = shlex.split(line)
                 if len(parts) > 2:
                     raise envconfig.ConfigError(
-                        f"Expected '<MOUS/dataset> [recipe]' in runfile: {line}"
+                        f"Expected '<MOUS/dataset/profile> [recipe]' in runfile: {line}"
                     )
                 target = parts[0]
-                targets = (
-                    {"mous": target}
-                    if target.startswith(("uid://", "uid___"))
-                    else {"vis": [target]}
-                )
-                tasks.append(
-                    (targets, parts[1] if len(parts) > 1 else base_run.recipe)
-                )
+                recipe_override = parts[1] if len(parts) > 1 else None
+                if target.startswith("profile:"):
+                    prof_name = target.split(":", 1)[1]
+                    if prof_name not in cfg.profiles:
+                        raise envconfig.ConfigError(
+                            f"Unknown profile in runfile: {prof_name!r}"
+                        )
+                    tasks.append(({"profile": prof_name}, recipe_override))
+                elif target in cfg.profiles:
+                    tasks.append(({"profile": target}, recipe_override))
+                else:
+                    targets = (
+                        {"mous": target}
+                        if target.startswith(("uid://", "uid___"))
+                        else {"vis": [target]}
+                    )
+                    tasks.append(
+                        (targets, recipe_override or base_run.recipe)
+                    )
     elif options.collect:
         # Array test collection mode
         test_jobs = True
@@ -1117,6 +1128,7 @@ def submit_request(request: SubmitRequest) -> int:
     for target, detail in tasks:
         job_options = options
         test_name: str | None = None
+        effective_profile_name = options.profile
         if test_jobs:
             test_name = detail
             test_workdir = base_workdir / test_name
@@ -1129,6 +1141,16 @@ def submit_request(request: SubmitRequest) -> int:
             )
             job_options = dataclasses.replace(
                 options, chdir=options.chdir or str(base_workdir)
+            )
+        elif isinstance(target, dict) and "profile" in target:
+            effective_profile_name = target["profile"]
+            run_request = dataclasses.replace(
+                base_request,
+                profile=effective_profile_name,
+                recipe=detail or base_request.recipe,
+            )
+            job_options = envconfig.resolve_batch_options(
+                cfg, dataclasses.replace(request, profile=effective_profile_name)
             )
         elif target:
             run_request = dataclasses.replace(base_request, **target, recipe=detail)
@@ -1153,36 +1175,51 @@ def submit_request(request: SubmitRequest) -> int:
             job_options.pixi_dir = spec.pixi_dir
         name = job_name(
             f"--mous={run_options.mous}" if run_options.mous else "",
-            profile_name=options.profile,
+            profile_name=effective_profile_name,
             test_name=test_name,
         )
         resolved_tasks.append((run_request, run_options, name, job_options))
 
     user = os.environ.get("USER", "")
     snapshot_dir = _resolve_snapshot_dir(options, user)
-    snapshot_data = envconfig.build_batch_snapshot(
-        cfg,
-        base_run,
-        cwd=submit_cwd,
-        overrides=request.overrides or None,
-    )
-    snapshot_path = _write_batch_snapshot(snapshot_dir, snapshot_data)
-    print(f"Batch config snapshot: {snapshot_path}")
-
-    prepared: list[tuple[str, str | tuple[str, str], envconfig.ResolvedBatchOptions]] = [
-        (
-            _build_batch_command(
-                snapshot_path=snapshot_path,
-                run_request=run_req,
-                run_options=run_opts,
-                isolate_root=test_jobs,
-                cwd=submit_cwd,
-            ),
-            name,
-            job_opts,
+    snapshot_paths: dict[str | None, Path] = {}
+    if test_jobs:
+        snapshot_data = envconfig.build_batch_snapshot(
+            cfg,
+            base_run,
+            cwd=submit_cwd,
+            overrides=request.overrides or None,
         )
-        for run_req, run_opts, name, job_opts in resolved_tasks
-    ]
+        default_snap = _write_batch_snapshot(snapshot_dir, snapshot_data)
+        print(f"Batch config snapshot: {default_snap}")
+        snapshot_paths[base_run.profile] = default_snap
+
+    prepared: list[tuple[str, str | tuple[str, str], envconfig.ResolvedBatchOptions]] = []
+    for run_req, run_opts, name, job_opts in resolved_tasks:
+        snap_key = base_run.profile if test_jobs else run_opts.profile
+        if snap_key not in snapshot_paths:
+            snap_data = envconfig.build_batch_snapshot(
+                cfg,
+                run_opts,
+                cwd=submit_cwd,
+                overrides=request.overrides or None,
+            )
+            snap_path = _write_batch_snapshot(snapshot_dir, snap_data)
+            print(f"Batch config snapshot: {snap_path}")
+            snapshot_paths[snap_key] = snap_path
+        prepared.append(
+            (
+                _build_batch_command(
+                    snapshot_path=snapshot_paths[snap_key],
+                    run_request=run_req,
+                    run_options=run_opts,
+                    isolate_root=test_jobs,
+                    cwd=submit_cwd,
+                ),
+                name,
+                job_opts,
+            )
+        )
 
     ids: list[str] = []
     failed = False

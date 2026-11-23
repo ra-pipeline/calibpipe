@@ -1480,6 +1480,77 @@ casa_root = "/fake/casa/main"
         finally:
             os.unlink(pipe_path)
 
+    def test_batch_submit_runfile_with_profiles(self):
+        """Verify .run files can reference profile names (bare or profile:<name>) and apply CLI overrides."""
+        test_cfg = (
+            'default_env = "main"\n'
+            "[envs.main]\n"
+            'casa_root = "/fake/casa/main"\n'
+            'heuristics_dir = "/fake/main_pipeline"\n'
+            "[envs.pipe2941]\n"
+            'casa_root = "/fake/casa/test"\n'
+            'heuristics_dir = "/fake/pipe2941_pipeline"\n'
+            '[profiles."ds1/selfcal"]\n'
+            'vis = ["/fake/ds1.ms"]\n'
+            'ancillary = ["/fake/ds1/cont.dat"]\n'
+            'recipe = "tests/test_procedure_hifa_selfcal.xml"\n'
+            'partition = "plwg"\n'
+            "ntasks = 4\n"
+            "nprocs = 5\n"
+            '[profiles."ds2/selfcal"]\n'
+            'vis = ["/fake/ds2_a.ms", "/fake/ds2_b.ms"]\n'
+            'recipe = "tests/test_procedure_hifa_selfcal.xml"\n'
+            'partition = "batch2"\n'
+            "ntasks = 2\n"
+            "nprocs = 1\n"
+        )
+        cfg_path = self._write_temp_config(test_cfg)
+        with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as pf:
+            pf.write(
+                "# comment line\n"
+                "ds1/selfcal\n"
+                "profile:ds2/selfcal procedure_hifa_calimage.xml\n"
+            )
+            pipe_path = pf.name
+        try:
+            calls = self.run_and_capture(
+                ["--config", cfg_path, "--env", "pipe2941", pipe_path]
+            )
+            self.assertEqual(len(calls), 2)
+
+            _, script1 = calls[0]
+            state1 = self._extract_run_state(script1)
+            self.assertEqual(state1["run"].profile, "ds1/selfcal")
+            self.assertEqual(state1["run"].env_name, "pipe2941")
+            self.assertEqual(state1["config"].envs["pipe2941"].casa_root, "/fake/casa/test")
+            self.assertEqual(state1["config"].envs["pipe2941"].heuristics_dir, "/fake/pipe2941_pipeline")
+            self.assertEqual(state1["run"].vis, ["/fake/ds1.ms"])
+            self.assertEqual(state1["run"].ancillary, ["/fake/ds1/cont.dat"])
+            self.assertTrue(state1["run"].recipe.endswith("tests/test_procedure_hifa_selfcal.xml"))
+            self.assertIn("#SBATCH --partition=plwg", script1)
+            self.assertIn("#SBATCH --ntasks=4", script1)
+
+            _, script2 = calls[1]
+            state2 = self._extract_run_state(script2)
+            self.assertEqual(state2["run"].profile, "ds2/selfcal")
+            self.assertEqual(state2["run"].env_name, "pipe2941")
+            self.assertEqual(state2["run"].vis, ["/fake/ds2_a.ms", "/fake/ds2_b.ms"])
+            self.assertEqual(state2["run"].recipe, "procedure_hifa_calimage.xml")
+            self.assertIn("#SBATCH --partition=batch2", script2)
+            self.assertIn("#SBATCH --ntasks=2", script2)
+
+            with tempfile.NamedTemporaryFile("w", suffix=".run", delete=False) as bad_pf:
+                bad_pf.write("profile:nonexistent\n")
+                bad_path = bad_pf.name
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    self.run_and_capture(["--config", cfg_path, bad_path])
+                self.assertEqual(ctx.exception.code, 1)
+            finally:
+                os.unlink(bad_path)
+        finally:
+            os.unlink(pipe_path)
+
 
 if __name__ == "__main__":
     unittest.main()
