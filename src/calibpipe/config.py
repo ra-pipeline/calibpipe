@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
@@ -387,13 +388,14 @@ class BatchConfig(Model):
     outfile: str | None = None
     errfile: str | None = None
     save_runfile: str | None = None
+    job_name: str | None = None
 
 
 @dataclass
 class Request:
     """Typed execution request shared at the CLI parser boundary."""
 
-    config: str | None = None
+    config: str | list[str] | None = None
     profile: str | None = None
     env: str | None = None
     no_site_config: bool = False
@@ -429,6 +431,8 @@ class SubmitRequest(Request):
     """Typed request for batch submission."""
 
     pipefile: str | None = None
+    profiles: list[str] | None = None
+    envs: list[str] | None = None
 
 
 @dataclass
@@ -499,6 +503,7 @@ class ProfileConfig(Model):
     """Named execution and batch resource profile."""
 
     desc: str | None = None
+    extends: str | list[str] | None = None
     env: str | None = None
     recipe: str | None = None
     nprocs: int | None = None
@@ -603,6 +608,7 @@ class ProfileConfig(Model):
     outfile: str | None = None
     errfile: str | None = None
     save_runfile: str | None = None
+    job_name: str | None = None
 
 
 @dataclass
@@ -722,6 +728,7 @@ class ResolvedBatchOptions(Model):
     with_report: bool = False
     max_concurrent: int | None = None
     save_runfile: str | None = None
+    job_name: str | None = None
 
 
 @dataclass
@@ -940,6 +947,172 @@ def validate_config(data, file):
             )
             raise ConfigError(f"{file}: unknown or retired table/key {key}; {hint}")
 
+def _normalize_branch_name(
+    heuristics_dir: str | None = None,
+    branch: str | None = None,
+) -> str:
+    """Derive a clean branch label from an explicit branch or heuristics_dir path."""
+    if branch:
+        return str(branch).strip()
+    if not heuristics_dir:
+        return ""
+    s = str(heuristics_dir).strip().rstrip("/\\")
+    if s.endswith("/pipeline") or s.endswith("\\pipeline"):
+        s = s[: -len("/pipeline")]
+    if "/branches/" in s:
+        s = s.split("/branches/", 1)[1]
+    elif s.startswith("branches/"):
+        s = s[len("branches/") :]
+    elif "/" in s:
+        s = Path(s).name
+    return s
+
+
+def _short_casa_version(casa_root: str | None = None) -> str:
+    """Extract a concise CASA version string from a casa_root name or path."""
+    if not casa_root:
+        return ""
+    name = Path(str(casa_root).rstrip("/\\")).name
+    if name.startswith("casa-"):
+        name = name[len("casa-") :]
+    name = re.sub(r"-py\d.*$", "", name)
+    return name
+
+
+def build_template_context(
+    *,
+    profile: str | None = None,
+    env_name: str | None = None,
+    casa_root: str | None = None,
+    heuristics_dir: str | None = None,
+    branch: str | None = None,
+    recipe: str | None = None,
+    mous: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, str]:
+    """Build placeholder dictionary for workdir and job_name template expansion."""
+    ts = timestamp or time.strftime("%Y%m%d-%H%M%S")
+    date_part = ts.split("-", 1)[0]
+    recipe_stem = Path(str(recipe)).stem if recipe else ""
+    mous_clean = str(mous).replace("://", "___").replace("/", "_") if mous else ""
+    prof_str = str(profile or "")
+    project = prof_str.split("/", 1)[0] if "/" in prof_str else prof_str
+    return {
+        "profile": prof_str,
+        "project": project,
+        "env": str(env_name or ""),
+        "heuristics_dir": str(heuristics_dir or ""),
+        "branch": _normalize_branch_name(heuristics_dir, branch),
+        "casa_root": str(casa_root or ""),
+        "casa": _short_casa_version(casa_root),
+        "recipe": recipe_stem,
+        "mous": mous_clean,
+        "timestamp": ts,
+        "date": date_part,
+    }
+
+
+def format_template(
+    value: str,
+    context: dict[str, str],
+    *,
+    field_name: str = "template",
+) -> str:
+    """Expand `{key}` placeholders in `value` using `context`."""
+    if "{" not in value and "}" not in value:
+        return value
+    try:
+        return value.format_map(context)
+    except KeyError as e:
+        valid = ", ".join(sorted(context))
+        raise ConfigError(
+            f"Unknown placeholder {e} in {field_name}={value!r}. Available: {valid}"
+        ) from None
+    except ValueError as e:
+        raise ConfigError(
+            f"Invalid template syntax in {field_name}={value!r}: {e}"
+        ) from None
+
+
+def _resolve_template_context(
+    cfg: CalibpipeConfig,
+    *,
+    profile_name: str | None,
+    env_name: str | None,
+    casa_root: str | None,
+    heuristics_dir: str | None,
+    branch: str | None,
+    recipe: str | None,
+    mous: str | None,
+) -> dict[str, str]:
+    """Assemble template context from resolved overrides and [envs.<name>] fallback."""
+    env_entry = cfg.envs.get(env_name) if env_name else None
+    tmpl_casa = casa_root or (env_entry.casa_root if env_entry else None)
+    tmpl_heur = heuristics_dir or (env_entry.heuristics_dir if env_entry else None)
+    tmpl_branch = (
+        branch
+        if branch
+        else (None if heuristics_dir else (env_entry.branch if env_entry else None))
+    )
+    return build_template_context(
+        profile=profile_name,
+        env_name=env_name,
+        casa_root=tmpl_casa,
+        heuristics_dir=tmpl_heur,
+        branch=tmpl_branch,
+        recipe=recipe,
+        mous=mous,
+    )
+
+
+def resolve_profile_inheritance(
+    profiles: dict[str, ProfileConfig],
+) -> dict[str, ProfileConfig]:
+    """Resolve `extends` inheritance chains across profile definitions."""
+    if not any(p.extends is not None for p in profiles.values()):
+        return profiles
+
+    resolved: dict[str, ProfileConfig] = {}
+    visiting: set[str] = set()
+    profile_fields = [f.name for f in fields(ProfileConfig) if f.name != "extends"]
+
+    def _resolve_one(name: str) -> ProfileConfig:
+        if name in resolved:
+            return resolved[name]
+        if name in visiting:
+            raise ConfigError(f"Circular profile inheritance detected involving {name!r}.")
+        prof = profiles[name]
+        if prof.extends is None:
+            resolved[name] = prof
+            return prof
+
+        visiting.add(name)
+        parents = [prof.extends] if isinstance(prof.extends, str) else list(prof.extends)
+        merged_vals: dict[str, Any] = {}
+        for parent_name in parents:
+            if parent_name not in profiles:
+                raise ConfigError(
+                    f"Profile {name!r} extends unknown profile {parent_name!r}."
+                )
+            parent_prof = _resolve_one(parent_name)
+            for fname in profile_fields:
+                pval = getattr(parent_prof, fname)
+                if pval is not None:
+                    merged_vals[fname] = pval
+        for fname in profile_fields:
+            cval = getattr(prof, fname)
+            if cval is not None:
+                merged_vals[fname] = cval
+        visiting.remove(name)
+        res_prof = ProfileConfig(**merged_vals, extends=None)
+        resolved[name] = res_prof
+        return res_prof
+
+    for pname in profiles:
+        _resolve_one(pname)
+    return resolved
+
+
 def resolve_run_options(
     config: CalibpipeConfig | dict[str, Any],
     cli_opts: Any,
@@ -952,6 +1125,7 @@ def resolve_run_options(
         cfg = config
     else:
         cfg = CalibpipeConfig.from_dict(config)
+        cfg.profiles = resolve_profile_inheritance(cfg.profiles)
 
     profile_name = getattr(cli_opts, "profile", None)
     if not profile_name and cfg.default_profile:
@@ -1366,6 +1540,19 @@ def resolve_run_options(
             str(rawdata_p.resolve()) if _safe_exists(rawdata_p) else str(rawdata_p)
         )
 
+    if workdir and ("{" in workdir or "}" in workdir):
+        tmpl_ctx = _resolve_template_context(
+            cfg,
+            profile_name=profile_name,
+            env_name=env_name,
+            casa_root=resolved_casa_root,
+            heuristics_dir=resolved_heuristics_dir,
+            branch=resolved_branch,
+            recipe=recipe,
+            mous=mous,
+        )
+        workdir = format_template(workdir, tmpl_ctx, field_name="workdir")
+
     if workdir:
         user_name = os.environ.get("USER", "")
         effective_rootdir = resolved_scipipe_rootdir or cfg.paths.scipipe_rootdir
@@ -1470,6 +1657,7 @@ def resolve_batch_options(
         cfg = config
     else:
         cfg = CalibpipeConfig.from_dict(config)
+        cfg.profiles = resolve_profile_inheritance(cfg.profiles)
 
     profile_name = getattr(cli_args, "profile", None) or cfg.default_profile
     pipefile_arg = getattr(cli_args, "pipefile", None)
@@ -1558,6 +1746,30 @@ def resolve_batch_options(
     requested_workdir = getattr(cli_args, "workdir", None) or (
         profile.workdir if profile else None
     )
+    if (chdir and ("{" in str(chdir) or "}" in str(chdir))) or (
+        requested_workdir and ("{" in str(requested_workdir) or "}" in str(requested_workdir))
+    ):
+        tmpl_ctx = _resolve_template_context(
+            cfg,
+            profile_name=profile_name,
+            env_name=env_name,
+            casa_root=getattr(cli_args, "casa_root", None)
+            or (profile.casa_root if profile else None),
+            heuristics_dir=getattr(cli_args, "heuristics_dir", None)
+            or (profile.heuristics_dir if profile else None),
+            branch=getattr(cli_args, "branch", None)
+            or (profile.branch if profile else None),
+            recipe=getattr(cli_args, "recipe", None)
+            or (profile.recipe if profile else None),
+            mous=getattr(cli_args, "mous", None)
+            or (profile.mous if profile else None),
+        )
+        if requested_workdir and ("{" in str(requested_workdir) or "}" in str(requested_workdir)):
+            requested_workdir = format_template(
+                str(requested_workdir), tmpl_ctx, field_name="workdir"
+            )
+        if chdir and ("{" in str(chdir) or "}" in str(chdir)):
+            chdir = format_template(str(chdir), tmpl_ctx, field_name="chdir")
     if chdir is None and requested_workdir:
         raw_workdir = Path(os.path.expanduser(requested_workdir))
         # Derive project_root so working/ or custom workdir can be cleanly rotated if backup=True
@@ -1790,6 +2002,7 @@ def resolve_batch_options(
         with_report=with_report,
         max_concurrent=max_concurrent,
         save_runfile=_cli_or_cfg("save_runfile", active_batch.save_runfile),
+        job_name=_cli_or_cfg("job_name", active_batch.job_name),
     )
 
 
@@ -1954,7 +2167,7 @@ def find_project_config() -> Path | None:
 
 
 def find_config_layers(
-    cli_arg: str | Path | None = None,
+    cli_arg: str | Path | Sequence[str | Path] | None = None,
     *,
     include_site: bool = True,
 ) -> list[Path]:
@@ -1996,22 +2209,28 @@ def find_config_layers(
         if site_cfg:
             layers.append(site_cfg)
 
-    explicit_path: Path | None = None
+    explicit_paths: list[Path] = []
     if cli_arg:
-        path = Path(cli_arg).expanduser().resolve()
-        if not path.exists():
-            raise ConfigError(f"--config file not found: {path}")
-        explicit_path = path
+        raw_args = (
+            [cli_arg]
+            if isinstance(cli_arg, (str, Path))
+            else list(cli_arg)
+        )
+        for item in raw_args:
+            path = Path(item).expanduser().resolve()
+            if not path.exists():
+                raise ConfigError(f"--config file not found: {path}")
+            explicit_paths.append(path)
     elif "CALIBPIPE_CONFIG" in os.environ:
         env_val = os.environ["CALIBPIPE_CONFIG"]
         if env_val:
             path = Path(env_val).expanduser().resolve()
             if not path.exists():
                 raise ConfigError(f"$CALIBPIPE_CONFIG file not found: {path}")
-            explicit_path = path
+            explicit_paths.append(path)
 
-    if explicit_path:
-        layers.append(explicit_path)
+    if explicit_paths:
+        layers.extend(explicit_paths)
     else:
         user_cfgs = find_user_configs()
         layers.extend(user_cfgs)
@@ -2121,12 +2340,13 @@ def load_config(
         resolved_layers.append(resolved)
 
     cfg = CalibpipeConfig.from_dict(merged_data, loaded_layers=resolved_layers)
+    cfg.profiles = resolve_profile_inheritance(cfg.profiles)
     cfg.sources = sources
     return cfg
 
 
 def load_merged_config(
-    cli_arg: str | Path | None = None,
+    cli_arg: str | Path | Sequence[str | Path] | None = None,
     *,
     include_site: bool = True,
 ) -> CalibpipeConfig:
@@ -2905,7 +3125,7 @@ def freeze_recipe_path(
     if resolved.is_absolute() and _safe_exists(resolved):
         return str(resolved)
     candidate = resolved if _safe_exists(resolved) else (base / resolved)
-    if _safe_exists(candidate) or "/" in text or text.startswith("."):
+    if _safe_exists(candidate):
         return str(candidate.resolve())
     return text
 

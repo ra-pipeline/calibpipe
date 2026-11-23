@@ -2219,6 +2219,58 @@ class TestNologgerAndLogfileConfig(unittest.TestCase):
         self.assertEqual(override.asdm_cache, "/prof/asdm_cache")
         self.assertTrue(override.use_asdm_cache)
 
+    def test_profile_extends_and_workdir_templating(self):
+        cfg = {
+            "default_env": "main",
+            "envs": {
+                "main": {
+                    "casa_root": "casa-6.7.7-15-py3.12.el8",
+                    "heuristics_dir": "branches/main",
+                },
+                "pipe2941": {
+                    "casa_root": "casa-6.8.0-4-py3.12.el8",
+                    "heuristics_dir": "PIPE-2941/pipeline",
+                },
+            },
+            "profiles": {
+                "base": {
+                    "recipe": "tests/test_procedure_hifa_selfcal.xml",
+                    "workdir": "{profile}/{branch}_{casa}",
+                    "nprocs": 5,
+                },
+                "ds1": {
+                    "extends": "base",
+                    "vis": ["a.ms"],
+                },
+                "ds1_serial": {
+                    "extends": "ds1",
+                    "nprocs": 1,
+                },
+            },
+        }
+        opts = resolve_run_options(cfg, Namespace(profile="ds1_serial", env="pipe2941"))
+        self.assertEqual(opts.recipe, "tests/test_procedure_hifa_selfcal.xml")
+        self.assertEqual(opts.vis, ["a.ms"])
+        self.assertEqual(opts.nprocs, 1)
+        self.assertTrue(opts.workdir.endswith("ds1_serial/pipe2941_6.8.0-4"))
+
+        bad_cycle = {
+            "profiles": {
+                "a": {"extends": "b"},
+                "b": {"extends": "a"},
+            }
+        }
+        with self.assertRaises(ConfigError):
+            resolve_run_options(bad_cycle, Namespace(profile="a"))
+
+        bad_placeholder = {
+            "profiles": {
+                "p": {"workdir": "{unknown_var}/x"},
+            }
+        }
+        with self.assertRaises(ConfigError):
+            resolve_run_options(bad_placeholder, Namespace(profile="p"))
+
 
 if __name__ == "__main__":
     unittest.main()
