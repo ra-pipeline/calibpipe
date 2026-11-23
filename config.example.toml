@@ -188,6 +188,7 @@ pixi_dir = "/data/pipeline/branches/main"
 # outfile = "batch.out"                   # Custom stdout filename or path for batch jobs
 # errfile = "batch.err"                   # Custom stderr filename or path for batch jobs
 # save_runfile = "tests.run"              # Persist collected regression test node IDs to a runfile
+# job_name = "{profile}@{branch}"         # Batch job title template ({profile}, {project}, {env}, {branch}, {casa}, {recipe}, {mous}, {timestamp}, {date})
 # max_concurrent = 8                      # Chained Slurm dependency slot throttle
 # omp_num_threads = 1                     # OMP_NUM_THREADS override in batch wrapper scripts
 # openblas_num_threads = 1                # OPENBLAS_NUM_THREADS override in batch wrapper scripts
@@ -305,6 +306,19 @@ pixi_dir = "/data/pipeline/branches/main"
 # backup = true
 # partition = "plwg"
 # mem = 120
+#
+# [profiles.selfcal_base]
+# env = "main"
+# recipe = "tests/test_procedure_hifa_selfcal.xml"
+# workdir = "{profile}/{branch}_{casa}"
+# job_name = "{project}/sc_{branch}_{casa}"
+# partition = "batch2"
+# ntasks = 4
+# nprocs = 5
+#
+# [profiles."2018.1.01284.S/selfcal"]
+# extends = "selfcal_base"                # Inherit from a base profile (or list: ["base_a", "base_b"])
+# vis = ["alma_if/2018.1.01284.S/working/uid___A002_Xd32f6a_X4ec4_targets.ms"]
 #
 # [profiles.custom_checkout]
 # casa_root = "/opt/casa/casa-6.7.7-15-py3.12.el8"

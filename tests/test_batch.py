@@ -1480,6 +1480,61 @@ casa_root = "/fake/casa/main"
         finally:
             os.unlink(pipe_path)
 
+    def test_batch_submit_extends_templating_and_multi_env_sweep(self):
+        """Verify profile extends, workdir/job_name templating, and repeatable --env sweeps."""
+        base_cfg = self._write_temp_config(
+            'default_env = "main"\n'
+            "[envs.main]\n"
+            'casa_root = "casa-6.7.7-15-py3.12.el8"\n'
+            'heuristics_dir = "branches/main"\n'
+            "[envs.pipe2941]\n"
+            'casa_root = "casa-6.8.0-4-py3.12.el8"\n'
+            'heuristics_dir = "PIPE-2941/pipeline"\n'
+            "[profiles.selfcal_base]\n"
+            'recipe = "tests/test_procedure_hifa_selfcal.xml"\n'
+            'workdir = "{profile}/{branch}_{casa}"\n'
+            'job_name = "{profile}@{branch}_{casa}"\n'
+            'partition = "batch2"\n'
+            "ntasks = 4\n"
+            "nprocs = 5\n"
+        )
+        overlay_cfg = self._write_temp_config(
+            '[profiles."ds_a"]\n'
+            'extends = "selfcal_base"\n'
+            'vis = ["/fake/ds_a.ms"]\n'
+            'partition = "plwg"\n'
+        )
+        calls = self.run_and_capture(
+            [
+                "-f",
+                base_cfg,
+                "-f",
+                overlay_cfg,
+                "-p",
+                "ds_a",
+                "--env",
+                "main",
+                "--env",
+                "pipe2941",
+            ]
+        )
+        self.assertEqual(len(calls), 2)
+
+        _, script_main = calls[0]
+        state_main = self._extract_run_state(script_main)
+        self.assertEqual(state_main["run"].env_name, "main")
+        self.assertEqual(state_main["run"].vis, ["/fake/ds_a.ms"])
+        self.assertTrue(state_main["run"].workdir.endswith("ds_a/main_6.7.7-15"))
+        self.assertIn("#SBATCH --job-name=ds_a@main_6.7.7-15", script_main)
+        self.assertIn("#SBATCH --chdir=ds_a/main_6.7.7-15", script_main)
+        self.assertIn("#SBATCH --partition=plwg", script_main)
+
+        _, script_pipe = calls[1]
+        state_pipe = self._extract_run_state(script_pipe)
+        self.assertEqual(state_pipe["run"].env_name, "pipe2941")
+        self.assertTrue(state_pipe["run"].workdir.endswith("ds_a/pipe2941_6.8.0-4"))
+        self.assertIn("#SBATCH --job-name=ds_a@pipe2941_6.8.0-4", script_pipe)
+
     def test_batch_submit_runfile_with_profiles(self):
         """Verify .run files can reference profile names (bare or profile:<name>) and apply CLI overrides."""
         test_cfg = (
@@ -1526,7 +1581,7 @@ casa_root = "/fake/casa/main"
             self.assertEqual(state1["config"].envs["pipe2941"].heuristics_dir, "/fake/pipe2941_pipeline")
             self.assertEqual(state1["run"].vis, ["/fake/ds1.ms"])
             self.assertEqual(state1["run"].ancillary, ["/fake/ds1/cont.dat"])
-            self.assertTrue(state1["run"].recipe.endswith("tests/test_procedure_hifa_selfcal.xml"))
+            self.assertEqual(state1["run"].recipe, "tests/test_procedure_hifa_selfcal.xml")
             self.assertIn("#SBATCH --partition=plwg", script1)
             self.assertIn("#SBATCH --ntasks=4", script1)
 

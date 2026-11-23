@@ -624,6 +624,38 @@ Precedence order when resolving parameters is strictly hierarchical:
 
 When a CLI target (such as `--mous` or `--vis`) is provided alongside `-p <name>`, the CLI target takes precedence and overrides the profile's embedded target.
 
+##### Profile Inheritance (`extends`), Overlay Files (`-f`), and Templates
+
+Profiles support single, multi-level, or list inheritance via `extends` (e.g., `extends = "selfcal_base"` or `extends = ["base_a", "base_b"]` merged left-to-right; 1–2 levels is recommended for readability) and `{...}` template placeholders on `workdir` and `job_name` (or `--job-name` on `calibpipe submit`, expanded after `extends`, `[envs.*]`, and CLI overrides are resolved):
+
+```toml
+[profiles.selfcal_base]
+recipe = "tests/test_procedure_hifa_selfcal.xml"
+workdir = "{profile}/{branch}_{casa}"
+job_name = "{profile}@{branch}_{casa}"
+partition = "batch2"
+ntasks = 4
+nprocs = 5
+
+[profiles."2018.1.01284.S"]
+extends = "selfcal_base"
+vis = ["alma_if/2018.1.01284.S/working/uid___A002_Xd32f6a_X4ec4_targets.ms"]
+ancillary = ["alma_if/2018.1.01284.S/working/cont.dat"]
+```
+
+- **Overlay configs (`-f` / `--config`):** Pass `-f` / `--config` multiple times across `run`, `submit`, `profile`, `config`, `env`, and `collect` to layer suite files on top of your base config (e.g. `calibpipe submit -f config.toml -f selfcal.toml -p 2018.1.01284.S` or `calibpipe profile show 2018.1.01284.S -f config.toml -f selfcal.toml`).
+- **Template placeholders:**
+  - `{profile}`: Full profile name (e.g., `2021.1.00657.T/selfcal`).
+  - `{project}`: Prefix of `{profile}` before `/` (e.g., `2021.1.00657.T`), or `{profile}` if there is no `/`.
+  - `{env}`: Selected `[envs.<name>]` key.
+  - `{branch}`: Explicit `branch` (or `[envs.<name>]` name when `heuristics_dir` is not overridden); otherwise normalized from `heuristics_dir` by stripping trailing `/pipeline` and `/branches/` (e.g., `PIPE-2941/pipeline` → `PIPE-2941`, `branches/main` → `main`), or taking the final path component.
+  - `{heuristics_dir}`: Raw `heuristics_dir` value.
+  - `{casa}`: Short CASA version extracted from `casa_root` (e.g., `casa-6.8.0-4-py3.12.el8` → `6.8.0-4`).
+  - `{casa_root}`: Full `casa_root` name or path.
+  - `{recipe}`: Recipe filename stem (e.g., `test_procedure_hifa_selfcal`).
+  - `{mous}`: Sanitized MOUS UID (with `://` → `___` and `/` → `_`).
+  - `{timestamp}` / `{date}`: Submission timestamp (`YYYYMMDD-HHMMSS`) and date (`YYYYMMDD`).
+
 #### Policies: Site, Cluster & PMR Tooling (`[site]`) (Optional)
 
 `[site]` defines operational constraints, ALMA archive/PMR tooling installation paths, and remote service endpoints across an observatory cluster:
@@ -937,6 +969,13 @@ calibpipe submit -p e2e_mous_calimage
 
 # Preview the rendered #SBATCH script without submitting:
 calibpipe submit -p e2e_mous_calimage --dry-run
+
+# Sweep one profile across multiple environments, or multiple profiles across an environment:
+calibpipe submit -f config.toml -f selfcal.toml -p 2018.1.01284.S --env main --env pipe2941
+calibpipe submit -f config.toml -f selfcal.toml -p ds_a -p ds_b --env pipe2941
+
+# Or list profile names (bare or `profile:<name>`) in a .run file:
+calibpipe submit selfcal.run --env pipe2941 --config config.toml
 ```
 
 **What `calibpipe submit` does under the hood:**

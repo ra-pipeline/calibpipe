@@ -147,6 +147,7 @@ RETIRED_GROUPS = {
     "[profiles.<name>].test_filter": ("-k", "--filter", "--test-filter"),
     "[profiles.<name>].test_opts": ("--test-opts", "--pytest-opts"),
     "[batch].save_runfile or [profiles.<name>].save_runfile": ("--save-runfile",),
+    "[batch].job_name or [profiles.<name>].job_name": ("--job-name",),
     "[profiles.<name>].with_report": ("--with-report", "--report"),
     "[batch].max_concurrent or [profiles.<name>].max_concurrent": (
         "--max-concurrent",
@@ -226,12 +227,30 @@ class Parser(argparse.ArgumentParser):
 def execution_parser(kind: str) -> Parser:
     """Build the shared argument parser for `run` and `submit`."""
     p = Parser(add_help=False)
-    p.add_argument("--config", help="TOML configuration file")
+    p.add_argument(
+        "-f",
+        "--config",
+        action="append",
+        help="TOML configuration file (repeatable; later files override earlier ones)",
+    )
     p.add_argument(
         "--no-site-config", action="store_true", help="Exclude site configuration"
     )
-    p.add_argument("-p", "--profile", help="Named configuration profile")
-    p.add_argument("--env", help="Named CASA/Pixi environment")
+    if kind == "submit":
+        p.add_argument(
+            "-p",
+            "--profile",
+            action="append",
+            help="Named configuration profile (repeatable for batch sweeps)",
+        )
+        p.add_argument(
+            "--env",
+            action="append",
+            help="Named CASA/Pixi environment (repeatable for batch sweeps)",
+        )
+    else:
+        p.add_argument("-p", "--profile", help="Named configuration profile")
+        p.add_argument("--env", help="Named CASA/Pixi environment")
     p.add_argument("--workdir", help="Execution working directory")
     p.add_argument("--recipe", help="Pipeline reduction recipe override")
     p.add_argument("--dry-run", action=argparse.BooleanOptionalAction, default=None)
@@ -264,7 +283,19 @@ def execution_parser(kind: str) -> Parser:
 
 def request(namespace: argparse.Namespace, model):
     """Convert a parsed argparse.Namespace into a typed request dataclass."""
-    values = vars(namespace)
+    values = dict(vars(namespace))
+    cfg_val = values.get("config")
+    if isinstance(cfg_val, list) and len(cfg_val) == 1:
+        values["config"] = cfg_val[0]
+    if model is SubmitRequest:
+        prof_val = values.get("profile")
+        if isinstance(prof_val, list):
+            values["profiles"] = prof_val if len(prof_val) > 1 else None
+            values["profile"] = prof_val[0] if prof_val else None
+        env_val = values.get("env")
+        if isinstance(env_val, list):
+            values["envs"] = env_val if len(env_val) > 1 else None
+            values["env"] = env_val[0] if env_val else None
     return model(**{f.name: values[f.name] for f in fields(model) if f.name in values})
 
 
@@ -312,7 +343,12 @@ def build_parser() -> argparse.ArgumentParser:
         "env",
         help="Resolve and print CASA/pipeline environment variables for shell sourcing",
     )
-    env_parser.add_argument("--config", help="Path to TOML config file")
+    env_parser.add_argument(
+        "-f",
+        "--config",
+        action="append",
+        help="Path to TOML config file (repeatable; later files override earlier ones)",
+    )
     env_parser.add_argument(
         "--no-site-config",
         action="store_true",
@@ -333,7 +369,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inspect resolved configuration values, paths, and environment definitions",
     )
     config_parser.add_argument("action", nargs="?", default="show", choices=["show"], help="Action to perform (default: show)")
-    config_parser.add_argument("--config", help="Path to TOML config file")
+    config_parser.add_argument(
+        "-f",
+        "--config",
+        action="append",
+        help="Path to TOML config file (repeatable; later files override earlier ones)",
+    )
     config_parser.add_argument(
         "--no-site-config",
         action="store_true",
@@ -348,7 +389,12 @@ def build_parser() -> argparse.ArgumentParser:
         "profile",
         help="List or inspect execution and batch profiles",
     )
-    profile_parser.add_argument("--config", help="Path to TOML config file")
+    profile_parser.add_argument(
+        "-f",
+        "--config",
+        action="append",
+        help="Path to TOML config file (repeatable; later files override earlier ones)",
+    )
     profile_parser.add_argument(
         "--no-site-config",
         action="store_true",
@@ -358,7 +404,12 @@ def build_parser() -> argparse.ArgumentParser:
     profile_subparsers = profile_parser.add_subparsers(dest="profile_action")
 
     list_p = profile_subparsers.add_parser("list", help="List all available execution and batch profiles")
-    list_p.add_argument("--config", help="Path to TOML config file")
+    list_p.add_argument(
+        "-f",
+        "--config",
+        action="append",
+        help="Path to TOML config file (repeatable; later files override earlier ones)",
+    )
     list_p.add_argument(
         "--no-site-config",
         action="store_true",
@@ -368,7 +419,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     show_p = profile_subparsers.add_parser("show", help="Show details of a specific execution or batch profile")
     show_p.add_argument("name", help="Profile name to inspect")
-    show_p.add_argument("--config", help="Path to TOML config file")
+    show_p.add_argument(
+        "-f",
+        "--config",
+        action="append",
+        help="Path to TOML config file (repeatable; later files override earlier ones)",
+    )
     show_p.add_argument(
         "--no-site-config",
         action="store_true",
@@ -408,7 +464,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write collected test node IDs to a runfile for batch execution",
     )
     collect_parser.add_argument(
-        "--config", help="Path to TOML config file"
+        "-f",
+        "--config",
+        action="append",
+        help="Path to TOML config file (repeatable; later files override earlier ones)",
     )
     collect_parser.add_argument(
         "--no-site-config",
