@@ -259,6 +259,59 @@ CUSTOM_SETTING = "explicit"
     assert "extra_vars" not in env
 
 
+def test_profile_extra_vars_merge_inherit_and_override_env(configured):
+    configured.write_text(
+        configured.read_text()
+        + """[envs.main.extra_vars]
+SHARED_VAR = "from_env"
+ENV_ONLY = "env_val"
+
+[profiles.science.extra_vars]
+PARENT_VAR = "from_parent"
+SHARED_VAR = "from_parent_profile"
+
+[profiles.child]
+extends = "science"
+
+[profiles.child.extra_vars]
+SHARED_VAR = "from_child_profile"
+OPENBLAS_CORETYPE = "HASWELL"
+"""
+    )
+    cfg = load(configured)
+    run = config.resolve_run_options(cfg, RunRequest(profile="child"))
+    assert run.extra_vars == {
+        "PARENT_VAR": "from_parent",
+        "SHARED_VAR": "from_child_profile",
+        "OPENBLAS_CORETYPE": "HASWELL",
+    }
+
+    env = config.build_environment(
+        cfg,
+        config.resolve_env(cfg, run.env_name),
+        validate_paths=False,
+        extra_vars=run.extra_vars,
+    )
+    assert env["ENV_ONLY"] == "env_val"
+    assert env["PARENT_VAR"] == "from_parent"
+    assert env["SHARED_VAR"] == "from_child_profile"
+    assert env["OPENBLAS_CORETYPE"] == "HASWELL"
+
+    snapshot = config.build_batch_snapshot(cfg, run)
+    assert snapshot["profiles"]["child"]["extra_vars"] == run.extra_vars
+
+
+def test_profile_extra_vars_rejects_non_string_values(tmp_path):
+    path = tmp_path / "invalid_profile_extra_vars.toml"
+    path.write_text(
+        """[profiles.bad.extra_vars]
+OPENBLAS_CORETYPE = 123
+"""
+    )
+    with pytest.raises(config.ConfigError, match="invalid value"):
+        config.load_config(path)
+
+
 def test_job_snapshot_matches_local_resolution_and_survives_config_edits(
     configured, tmp_path, monkeypatch
 ):

@@ -1893,7 +1893,12 @@ def execute(
         branch=run_opts.branch,
         workspaces=run_opts.workspaces,
     )
-    env = envconfig.build_environment(cfg_effective, env_spec, subdir=run_opts.subdir)
+    env = envconfig.build_environment(
+        cfg_effective,
+        env_spec,
+        subdir=run_opts.subdir,
+        extra_vars=run_opts.extra_vars,
+    )
     if isolate_root:
         env.pop("SCIPIPE_ROOTDIR", None)
         os.environ.pop("SCIPIPE_ROOTDIR", None)

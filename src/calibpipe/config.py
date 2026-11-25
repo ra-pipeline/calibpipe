@@ -571,6 +571,7 @@ class ProfileConfig(Model):
     pixi_dir: str | None = None
     pixi_env: str | None = None
     branch: str | None = None
+    extra_vars: dict[str, str] | None = None
     workspaces: list[str] | None = None
     scipipe_rootdir: str | None = None
     scipipe_logdir: str | None = None
@@ -668,6 +669,7 @@ class ResolvedRunOptions(Model):
     pixi_dir: str | None = None
     pixi_env: str | None = None
     branch: str | None = None
+    extra_vars: dict[str, str] = field(default_factory=dict)
     workspaces: list[str] = field(default_factory=list)
     scipipe_rootdir: str | None = None
     scipipe_logdir: str | None = None
@@ -1098,11 +1100,17 @@ def resolve_profile_inheritance(
             for fname in profile_fields:
                 pval = getattr(parent_prof, fname)
                 if pval is not None:
-                    merged_vals[fname] = pval
+                    if fname == "extra_vars":
+                        merged_vals[fname] = {**merged_vals.get(fname, {}), **pval}
+                    else:
+                        merged_vals[fname] = pval
         for fname in profile_fields:
             cval = getattr(prof, fname)
             if cval is not None:
-                merged_vals[fname] = cval
+                if fname == "extra_vars":
+                    merged_vals[fname] = {**merged_vals.get(fname, {}), **cval}
+                else:
+                    merged_vals[fname] = cval
         visiting.remove(name)
         res_prof = ProfileConfig(**merged_vals, extends=None)
         resolved[name] = res_prof
@@ -1639,6 +1647,7 @@ def resolve_run_options(
         pixi_dir=resolved_pixi_dir,
         pixi_env=resolved_pixi_env,
         branch=resolved_branch,
+        extra_vars=dict(profile.extra_vars) if profile and profile.extra_vars else {},
         workspaces=resolved_workspaces,
         scipipe_rootdir=resolved_scipipe_rootdir,
         scipipe_logdir=resolved_scipipe_logdir,
@@ -2625,6 +2634,7 @@ def build_environment(
     env_spec: EnvSpec | dict[str, Any],
     subdir: str | None = None,
     validate_paths: bool = True,
+    extra_vars: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the process environment for a CASA + pipeline run.
 
@@ -2634,6 +2644,8 @@ def build_environment(
         subdir: Optional extra path component appended to `SCIPIPE_ROOTDIR`.
         validate_paths: If True, checks that key paths exist on disk and warns
             (or raises ConfigError if strict_paths is enabled) if unreachable.
+        extra_vars: Optional profile/run-level environment variables overlaid on
+            top of `env_spec.extra_vars`.
 
     Returns:
         Environment mapping ready to inject into subprocesses.
@@ -2807,7 +2819,10 @@ def build_environment(
     env["MATPLOTLIBRC"] = str(Path.home() / ".casa" / "matplotlib")
 
     for k, v in spec.extra_vars.items():
-        env[k] = v
+        env[k] = str(v)
+    if extra_vars:
+        for k, v in extra_vars.items():
+            env[k] = str(v)
 
     if validate_paths and not os.environ.get("CALIBPIPE_SKIP_PATH_CHECK"):
         strict = bool(site.get("strict_paths", False))
@@ -3232,6 +3247,8 @@ def build_batch_snapshot(
             )
         if prof_raw.get("workspaces") is not None:
             prof_raw["workspaces"] = _freeze_value(prof_raw["workspaces"], cwd=base_cwd)
+        if not prof_raw.get("extra_vars"):
+            prof_raw.pop("extra_vars", None)
 
     effective_workspaces = (
         prof_raw["workspaces"]

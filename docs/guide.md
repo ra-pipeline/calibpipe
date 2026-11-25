@@ -261,7 +261,7 @@ flowchart TD
 
 1. **CLI Flags (Highest Priority):** Explicit command-line arguments on `run`/`submit` (such as `-p/--profile`, `--env`, `--workdir`, `--recipe`, `--dry-run`, `-v/--verbose`, and run targets `--mous`, `--vis`, `--script`, `--cmd`, `--ppr`, `-i/--interactive`, `--config-only`) override profile and file-based settings. (Execution tuning and scheduler resource options live in TOML rather than CLI flags; see [Migrating to 0.2](migration-0.2.md).)
 2. **Profile Overrides:** Settings defined with **flat keys** directly inside `[profiles.<name>]`:
-   - Environment overrides: `env`, `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, `branch`
+   - Environment overrides: `env`, `casa_root`, `heuristics_dir`, `pixi_dir`, `pixi_env`, `branch`, `extra_vars` (`[profiles.<name>.extra_vars]`, overlaid on `[envs.<name>.extra_vars]`)
    - Path overrides: `workspaces`, `casarundata`, `scipipe_rootdir`, `scipipe_logdir`, `pickle_dir`, `obscaldir`, `aUdir`, `validation_dir`, `datapath`, `rundata`, `workdir`
    - Run & target options: `mous`, `vis`, `script`, `cmd`, `ppr`, `vla`, `interactive`, `recipe`, `nprocs`, `loglevel`, `useresume`, `symlink_shortcuts`, `log2term`, `verbose`, `use_custom_rcdir`, `omp_num_threads`, `openblas_num_threads`, `omp_max_threads`, `mem_frac`, etc.
    - Batch & test-array options: `partition`, `ntasks`, `request_cpus`, `mem`, `mem_per_cpu`, `cpus_per_task`, `scheduler`, `logdir`, `outfile`, `errfile`, `save_runfile`, `max_concurrent`, `collect`, `test_target`, `test_marker`, `test_filter`, `test_opts`, `with_report`, etc.
@@ -681,14 +681,14 @@ flowchart TD
     A["1. Host Shell Environment (os.environ: USER, HOME, PATH)"] --> B["2. Built-in &amp; [site] Settings (JAVA_HOME, ACSDATA, PMR/tool paths, FLUX_SERVICE_URL*)"]
     B --> C["3. [paths] &amp; [run] Settings (SCIPIPE_ROOTDIR, SCIPIPE_LOGDIR, CASADATA)"]
     C --> D["4. [envs.&lt;name&gt;] (CASA_ROOT / PIXI_DIR, heuristics, PATH prepends, extra_vars)"]
-    D --> E["5. Path Reachability Validation (check_paths)"]
+    D --> E["5. [profiles.&lt;name&gt;.extra_vars] &amp; Path Validation (check_paths)"]
 ```
 
 1. **Host Environment:** Reads baseline `os.environ` (inherits `USER`, `HOME`, base `PATH`).
 2. **Site Tooling & Endpoints:** Resolves `JAVA_HOME`, `ACSDATA`, `ACSROOT` (`pmr_home`), `DATAPACKER_HOME`, `JARSDIR`, `FLUX_SERVICE_URL`, and `FLUX_SERVICE_URL_BACKUP`.
 3. **Paths & Run Behavior:** Resolves and creates `SCIPIPE_ROOTDIR` and `SCIPIPE_LOGDIR` (interpolating `{user}` and optional `subdir`) and resolves `CASADATA`/`CASARUNDATA`.
 4. **Environment Target Resolution:** Sets `CASA_ROOT` (or `PIXI_DIR`), prepends `pmr_home/bin` and `casa_root/bin` (or `[paths].pixi_bin` parent dir) to `PATH`, sets `SCIPIPE_HEURISTICS`/`SCIPIPE_SCRIPTDIR`, sets `MATPLOTLIBRC`, and overlays `[envs.<name>.extra_vars]`.
-5. **Path Validation:** `check_paths()` verifies `CASA_ROOT` (or `pixi_dir` and `pixi_bin`), plus `pmr_home`, `datapacker_home`, `acsdata`, and `java_home` when running MOUS/PMR workflows. Missing paths print actionable warnings to `sys.stderr` (or raise `ConfigError` when `strict_paths = true`).
+5. **Profile Overlay & Path Validation:** Overlays `[profiles.<name>.extra_vars]` (when running with a profile), and `check_paths()` verifies `CASA_ROOT` (or `pixi_dir` and `pixi_bin`), plus `pmr_home`, `datapacker_home`, `acsdata`, and `java_home` when running MOUS/PMR workflows. Missing paths print actionable warnings to `sys.stderr` (or raise `ConfigError` when `strict_paths = true`).
 
 ---
 
