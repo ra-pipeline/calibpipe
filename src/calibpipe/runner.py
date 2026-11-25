@@ -77,6 +77,7 @@ def log_subprocess_environment(
     runtime_vars = [
         "OMP_NUM_THREADS",
         "OPENBLAS_NUM_THREADS",
+        "OPENBLAS_CORETYPE",
         "PYTHONNOUSERSITE",
         "KOKKOS_DISABLE_WARNINGS",
         "CASA_NPROCS",
@@ -109,8 +110,11 @@ def log_subprocess_environment(
             "PYTHONPATH",
             "LD_LIBRARY_PATH",
         ]
+        extra_keys = set(run_opts.extra_vars) if run_opts and run_opts.extra_vars else set()
         for k in sorted(env.keys()):
-            if k in core_env_keys or k not in os.environ:
+            if k in core_env_keys or k in extra_keys or k not in os.environ:
+                if k in runtime_vars:
+                    continue
                 log_func(f"    {k} = {env[k]}")
 
 
@@ -1893,6 +1897,11 @@ def execute(
         branch=run_opts.branch,
         workspaces=run_opts.workspaces,
     )
+    if env_spec.extra_vars:
+        run_opts = replace(
+            run_opts,
+            extra_vars={**env_spec.extra_vars, **run_opts.extra_vars},
+        )
     env = envconfig.build_environment(
         cfg_effective,
         env_spec,

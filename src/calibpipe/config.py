@@ -722,6 +722,7 @@ class ResolvedBatchOptions(Model):
     logdir: str | None = None
     omp_num_threads: int | None = None
     openblas_num_threads: int | None = None
+    extra_vars: dict[str, str] = field(default_factory=dict)
     collect: bool = False
     test_target: str | None = None
     test_marker: str | None = None
@@ -1970,6 +1971,14 @@ def resolve_batch_options(
         )
     )
 
+    env_extra = (
+        dict(cfg.envs[env_name].extra_vars)
+        if env_name in cfg.envs and cfg.envs[env_name].extra_vars
+        else {}
+    )
+    prof_extra = dict(profile.extra_vars) if profile and profile.extra_vars else {}
+    resolved_extra_vars = {**env_extra, **prof_extra}
+
     return ResolvedBatchOptions(
         pipefile=Path(pipefile_arg) if pipefile_arg else None,
         env_name=env_name,
@@ -2003,6 +2012,7 @@ def resolve_batch_options(
         logdir=logdir,
         omp_num_threads=omp_num_threads,
         openblas_num_threads=openblas_num_threads,
+        extra_vars=resolved_extra_vars,
         collect=collect,
         test_target=test_target,
         test_marker=test_marker,

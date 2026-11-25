@@ -300,6 +300,28 @@ OPENBLAS_CORETYPE = "HASWELL"
     snapshot = config.build_batch_snapshot(cfg, run)
     assert snapshot["profiles"]["child"]["extra_vars"] == run.extra_vars
 
+    batch_opts = config.resolve_batch_options(cfg, SubmitRequest(profile="child"))
+    assert batch_opts.extra_vars == {
+        "SHARED_VAR": "from_child_profile",
+        "ENV_ONLY": "env_val",
+        "PARENT_VAR": "from_parent",
+        "OPENBLAS_CORETYPE": "HASWELL",
+    }
+
+    from calibpipe import runner
+
+    logged: list[str] = []
+    orig_env = dict(os.environ)
+    try:
+        os.environ.update(env)
+        runner.log_subprocess_environment(logged.append, env=env, run_opts=run)
+    finally:
+        os.environ.clear()
+        os.environ.update(orig_env)
+    joined = "\n".join(logged)
+    assert "OPENBLAS_CORETYPE = HASWELL" in joined
+    assert "SHARED_VAR = from_child_profile" in joined
+
 
 def test_profile_extra_vars_rejects_non_string_values(tmp_path):
     path = tmp_path / "invalid_profile_extra_vars.toml"

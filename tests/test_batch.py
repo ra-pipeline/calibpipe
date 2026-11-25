@@ -1125,6 +1125,40 @@ casa_root = "/fake/casa/main"
         self.assertIn("export OMP_NUM_THREADS=2", htc_wrapper)
         self.assertIn("export OPENBLAS_NUM_THREADS=2", htc_wrapper)
 
+    def test_build_script_exports_extra_vars(self):
+        from calibpipe.batch import build_htcondor_script, build_sbatch_script
+
+        slurm_script = build_sbatch_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            node="1",
+            ntasks=4,
+            mem="16G",
+            job_name="test_extra_vars_job",
+            mail_user="test",
+            mail_type="ALL",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            script_record_path="/tmp/test.sbatch",
+            extra_vars={"OPENBLAS_CORETYPE": "HASWELL", "CUSTOM_OPT": "a b"},
+        )
+        self.assertIn("export OPENBLAS_CORETYPE=HASWELL", slurm_script)
+        self.assertIn("export CUSTOM_OPT='a b'", slurm_script)
+
+        _, htc_wrapper = build_htcondor_script(
+            "calibpipe run -p=my_prof",
+            partition="batch",
+            request_cpus=4,
+            mem="16G",
+            job_name="test_htc_extra_vars_job",
+            outfile="/tmp/test.out",
+            errfile="/tmp/test.err",
+            wrapper_script_path="/tmp/test.sh",
+            script_record_path="/tmp/test.htc",
+            extra_vars={"OPENBLAS_CORETYPE": "HASWELL"},
+        )
+        self.assertIn("export OPENBLAS_CORETYPE=HASWELL", htc_wrapper)
+
     def test_build_htcondor_and_slurm_with_request_gpus(self):
         from calibpipe.batch import build_htcondor_script, build_sbatch_script
 

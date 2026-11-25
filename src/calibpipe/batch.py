@@ -81,6 +81,7 @@ def _build_batch_env_exports(
     cpus_per_task: int | None = None,
     batch_env_exports: str | None = None,
     is_pixi: bool = False,
+    extra_vars: dict[str, str] | None = None,
 ) -> str:
     """Build the shell export statements injected into batch wrapper scripts.
 
@@ -124,6 +125,10 @@ def _build_batch_env_exports(
     if effective_openblas is not None:
         env_lines.append(f"export OPENBLAS_NUM_THREADS={effective_openblas}")
 
+    if extra_vars:
+        for k, v in extra_vars.items():
+            env_lines.append(f"export {k}={shlex.quote(str(v))}")
+
     return "\n" + "\n".join(env_lines)
 
 
@@ -157,6 +162,7 @@ def build_sbatch_script(
     openblas_num_threads: int | None = None,
     request_gpus: int = 0,
     is_pixi: bool = False,
+    extra_vars: dict[str, str] | None = None,
 ) -> str:
     """Create the shell script body submitted to Slurm.
 
@@ -228,6 +234,7 @@ def build_sbatch_script(
         cpus_per_task=cpus_per_task,
         batch_env_exports=batch_env_exports,
         is_pixi=is_pixi,
+        extra_vars=extra_vars,
     )
 
     return render_template(
@@ -277,6 +284,7 @@ def build_htcondor_script(
     spool: bool = False,
     should_transfer_files: str | bool | None = None,
     when_to_transfer_output: str | None = None,
+    extra_vars: dict[str, str] | None = None,
 ) -> tuple[str, str]:
     """Create the HTCondor submit description (.htc) and shell wrapper script (.sh).
 
@@ -310,6 +318,7 @@ def build_htcondor_script(
         cpus_per_task=cpus_per_task,
         batch_env_exports=batch_env_exports,
         is_pixi=is_pixi,
+        extra_vars=extra_vars,
     )
 
     runner_script = render_template(
@@ -592,6 +601,7 @@ def _dispatch_htcondor(
         spool=getattr(batch_opts, "spool", False),
         should_transfer_files=getattr(batch_opts, "should_transfer_files", None),
         when_to_transfer_output=getattr(batch_opts, "when_to_transfer_output", None),
+        extra_vars=getattr(batch_opts, "extra_vars", None),
     )
 
     script_record_sh_path = Path(script_record_sh).resolve()
@@ -663,6 +673,7 @@ def _dispatch_slurm(
         openblas_num_threads=getattr(batch_opts, "openblas_num_threads", None),
         request_gpus=getattr(batch_opts, "request_gpus", 0),
         is_pixi=bool(getattr(batch_opts, "pixi_dir", None)),
+        extra_vars=getattr(batch_opts, "extra_vars", None),
     )
 
     script_record_path_obj = Path(script_record_path).resolve()
